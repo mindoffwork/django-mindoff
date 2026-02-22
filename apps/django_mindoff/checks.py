@@ -1,20 +1,59 @@
-from django.core.checks import Error, register
-from django.urls import get_resolver
-from django.urls.resolvers import URLResolver, URLPattern
-from django.core.exceptions import ImproperlyConfigured
-from django.apps import apps as django_apps
-from inspect import isclass
-import inspect
+from importlib.util import find_spec
 import importlib
 import pkgutil
 import sys
+from inspect import isclass
 
-from .components.api_kit import MindoffAPIMixin
+from django.apps import apps as django_apps
+from django.core.checks import Error, register
+
+REQUIRED_INTEGRATION_DEPENDENCIES = [
+    ("djangorestframework", "rest_framework"),
+    ("python-decouple", "decouple"),
+    ("django-ratelimit", "django_ratelimit"),
+    ("typeguard", "typeguard"),
+    ("polars", "polars"),
+    ("pandas", "pandas"),
+    ("sqlalchemy", "sqlalchemy"),
+    ("orjson", "orjson"),
+    ("pyarrow", "pyarrow"),
+    ("dramatiq", "dramatiq"),
+    ("redis", "redis"),
+]
 
 
 @register()
 def check_mindoff_api_configs(app_configs, **kwargs):
     errors = []
+    missing = _get_missing_dependencies()
+    if missing:
+        dep_list = ", ".join(missing)
+        errors.append(
+            Error(
+                f"Missing django-mindoff integration dependencies: {dep_list}",
+                hint=(
+                    "Install required dependencies first. Example: "
+                    f"pip install {' '.join(missing)}"
+                ),
+                id="django_mindoff.DEPENDENCY_ERR",
+            )
+        )
+        return errors
+
+    try:
+        from .components.api_kit import MindoffAPIMixin
+    except Exception as exc:
+        errors.append(
+            Error(
+                f"Failed to import django-mindoff API components: {exc}",
+                hint=(
+                    "Ensure django-mindoff integration dependencies are installed "
+                    "and importable in this environment."
+                ),
+                id="django_mindoff.DEPENDENCY_ERR",
+            )
+        )
+        return errors
 
     for app_config in django_apps.get_app_configs():
         apis_dir = (
@@ -63,3 +102,11 @@ def _validate_view_class(view_class, errors):
                 id=f"django_mindoff.{error_code}",
             )
         )
+
+
+def _get_missing_dependencies():
+    missing = []
+    for pip_name, module_name in REQUIRED_INTEGRATION_DEPENDENCIES:
+        if find_spec(module_name) is None:
+            missing.append(pip_name)
+    return missing

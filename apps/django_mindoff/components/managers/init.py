@@ -81,7 +81,7 @@ class DjangoProjectCreator:
             "sqlalchemy",
             "orjson",
             "pyarrow",
-            # Queuing & Task Management
+            # Queuing
             "dramatiq",
             "redis",
         ]
