@@ -66,32 +66,24 @@ class DjangoProjectCreator:
         print("[ACTION] Installing required packages.")
 
         base_packages = [
+            # Core
             "django",
             "djangorestframework",
             "python-decouple",
+            "django-ratelimit",
             "pytest",
             "pytest-django",
-            "pytest-cov",
             "model-bakery",
-            "Faker",
+            "typeguard",
+            # Polars
             "polars",
             "pandas",
-            "numpy",
-            "tqdm",
-            "autoflake",
-            "isort",
-            "black",
-            "rarfile",
-            "py7zr",
-            "moviepy",
-            "typeguard",
-            "dramatiq",
-            "redis",
-            "hiredis",
-            "django-ratelimit",
             "sqlalchemy",
             "orjson",
             "pyarrow",
+            # Queuing & Task Management
+            "dramatiq",
+            "redis",
         ]
         subprocess.run(
             [self.pip_cmd, "install", *base_packages],
