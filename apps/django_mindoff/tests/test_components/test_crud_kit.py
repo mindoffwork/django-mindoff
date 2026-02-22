@@ -72,7 +72,7 @@ def _unregister_app(app_name: str, temp_dir: Path, override):
     """
     override.disable()
     clear_url_caches()
-    for mod in sys.modules:
+    for mod in list(sys.modules):
         if mod == app_name or mod.startswith(f"{app_name}."):
             sys.modules.pop(mod, None)
     sys.path[:] = [p for p in sys.path if str(p) != str(temp_dir)]
