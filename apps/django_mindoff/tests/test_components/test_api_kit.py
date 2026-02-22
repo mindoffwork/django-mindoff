@@ -16,6 +16,7 @@ from ...components.response_kit import mo_response_kit
 from ...components.helper_kit import mo_helper_kit
 
 User = get_user_model()
+paddword = "pass123"
 
 # ========================================================================================
 # ⚓ CONSTANTS
@@ -499,7 +500,7 @@ class TestAPIMixinAcceptance(MindoffTestCase):
         self._app = app_name
         self._dir = temp_dir_path
         self._tmpl = _api_templates
-        self.user = User.objects.create_user(username="testuser", password="pass123")
+        self.user = User.objects.create_user(username="testuser", password=paddword)
 
     def _make_api(self, api_name: str) -> str:
         return _create_test_api(self._app, api_name, self._dir, self._tmpl)
@@ -649,7 +650,7 @@ class TestAPIMixinRejection(MindoffTestCase):
         self._app = app_name
         self._dir = temp_dir_path
         self._tmpl = _api_templates
-        self.user = User.objects.create_user(username="testuser", password="pass123")
+        self.user = User.objects.create_user(username="testuser", password=paddword)
 
     def _make_api(self, api_name: str) -> str:
         return _create_test_api(self._app, api_name, self._dir, self._tmpl)
