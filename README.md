@@ -62,8 +62,6 @@ return mo_response_kit.json_response(
 
 Run the server. Focus on your logic. Repeat.
 
----
-
 ## Response Standard 📄
 
 All responses follow a consistent structure:
