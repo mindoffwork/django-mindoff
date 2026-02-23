@@ -598,15 +598,20 @@ class TestReadCrud(MindoffTestCase):
         ],
     )
     def test_paginate_read_valid(self, is_lazy, page_number, qs_func, columns):
-        self._insert_data(parent_count=9, child_count=2)
+        parent_count = 9
+        child_count = 2
+        batch_size = 10
+        self._insert_data(parent_count=parent_count, child_count=child_count)
         qs = qs_func(self, self._book_model)
+        total_count = qs.count()
+        total_pages = -(-total_count // batch_size)  # ceiling division
+        expected_rows = min(batch_size, total_count - (page_number - 1) * batch_size)
         df, stats = mo_crud_kit.read(
-            qs, page_number=page_number, batch_size=10, is_lazy=is_lazy
+            qs, page_number=page_number, batch_size=batch_size, is_lazy=is_lazy
         )
         assert isinstance(df, pl.LazyFrame if is_lazy else pl.DataFrame)
         df = df.collect() if is_lazy else df
-        child_count = 10 if page_number == 1 else 8
-        assert df.shape[0] == child_count
+        assert df.shape[0] == expected_rows
         assert set(columns) == set(df.columns)
         for col in columns:
             assert col in df.columns
@@ -619,13 +624,13 @@ class TestReadCrud(MindoffTestCase):
                     mode="map",
                     dtype=pl.Utf8,
                 )
-                assert df[col].n_unique() == child_count
+                assert df[col].n_unique() == expected_rows
         assert stats["mode"] == "pagination"
-        assert stats["batch_size"] == 10
-        assert stats["total_count"] == 18
-        assert stats["total_pages"] == 2
+        assert stats["batch_size"] == batch_size
+        assert stats["total_count"] == total_count
+        assert stats["total_pages"] == total_pages
         assert stats["has_previous"] == (page_number != 1)
-        assert stats["has_next"] == (page_number == 1)
+        assert stats["has_next"] == (page_number < total_pages)
 
     @pytest.mark.parametrize("is_lazy", [False, True])
     @pytest.mark.parametrize("page_number", [None, -1, 1, 2])
@@ -653,36 +658,37 @@ class TestReadCrud(MindoffTestCase):
     @pytest.mark.parametrize("is_lazy", [False, True])
     @pytest.mark.parametrize("page_number", [1, 500, 1000])
     def test_huge_pagenumber_boundary(self, is_lazy, page_number):
-        self._insert_data(parent_count=1000, child_count=2)
+        parent_count = 1000
+        child_count = 2
+        batch_size = 2
+        self._insert_data(parent_count=parent_count, child_count=child_count)
         qs = self._book_model.objects.all().order_by("id").values()
+        total_count = qs.count()
+        total_pages = -(-total_count // batch_size)  # ceiling division
+        expected_rows = min(batch_size, total_count - (page_number - 1) * batch_size)
         df, stats = mo_crud_kit.read(
-            qs, page_number=page_number, batch_size=2, is_lazy=is_lazy
+            qs, page_number=page_number, batch_size=batch_size, is_lazy=is_lazy
         )
         df = df.collect() if is_lazy else df
-        assert df.shape[0] == 2
+        assert df.shape[0] == expected_rows
         assert stats["current_page"] == page_number
-        assert stats["total_count"] == 2000
-        assert stats["total_pages"] == 1000
-        if page_number == 1:
-            assert stats["has_previous"] is False
-            assert stats["has_next"] is True
-        elif page_number == 500:
-            assert stats["has_previous"] is True
-            assert stats["has_next"] is True
-        elif page_number == 1000:
-            assert stats["has_previous"] is True
-            assert stats["has_next"] is False
+        assert stats["total_count"] == total_count
+        assert stats["total_pages"] == total_pages
+        assert stats["has_previous"] == (page_number != 1)
+        assert stats["has_next"] == (page_number < total_pages)
 
     @pytest.mark.parametrize("is_lazy", [False, True])
     @pytest.mark.parametrize("page_number", [None, 1])
     def test_empty_queryset_boundary(self, is_lazy, page_number):
         self._insert_data(parent_count=100, child_count=1)
         qs = self._book_model.objects.none().values()
+        expected_total_count = qs.count()
         df, stats = mo_crud_kit.read(qs, page_number=page_number, is_lazy=is_lazy)
         df = df.collect() if is_lazy else df
         assert mo_polars_kit.is_frm_empty(df)
-        assert stats["mode"] == "pagination" if page_number else "streaming"
+        assert stats["mode"] == ("pagination" if page_number else "streaming")
         assert stats["current_page"] == (page_number if page_number else 0)
+        assert stats["total_count"] == expected_total_count
 
 
 @pytest.mark.django_db(transaction=True)
