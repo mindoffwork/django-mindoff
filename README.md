@@ -112,7 +112,7 @@ project_root/
 │  ├─ urls.py
 │  ├─ asgi.py
 │  ├─ wsgi.py
-│  └─ Responses.csv
+│  └─ responses.csv
 │
 ├─ templates/
 │  ├─ index.html

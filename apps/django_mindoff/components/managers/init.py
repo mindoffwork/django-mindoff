@@ -221,9 +221,9 @@ POLARS_VALIDATOR_ERROR_COL = "__error__info"
         target = self.project_root / ".gitignore"
         shutil.copy(source, target)
 
-        print("[ACTION] Copying Responses.csv to config folder.")
-        responses_src = Path(__file__).parent / "resources" / "Responses.csv"
-        responses_dst = self.config_dir / "Responses.csv"
+        print("[ACTION] Copying responses.csv to config folder.")
+        responses_src = Path(__file__).parent / "resources" / "responses.csv"
+        responses_dst = self.config_dir / "responses.csv"
         shutil.copy(responses_src, responses_dst)
 
     def _initialize_git(self):
