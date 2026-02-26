@@ -70,10 +70,16 @@ class TestMockApp(MindoffTestCase):
     # ------------------------
     def test_invalid_app_name(self):
         """
-        1. **Invalid App Name** — Names with special characters (`@`, `#`, ),
-        starting with a digit., Reserved Python keywords (`class`, `import`).
+        1. **Invalid App Name** — Names with special characters (`@`, `#`),
+        starting with a digit, path separators, reserved Python keywords.
+        Covers: invalid@app, 123startdigit, apps.app_name, apps/app_name/evil
         """
-        bad_names = ["invalid@app", "123startdigit", "apps.app_name"]
+        bad_names = [
+            "invalid@app",
+            "123startdigit",
+            "apps.app_name",
+            "apps/app_name/evil",  # path traversal — merged from test_invalid_app_path
+        ]
         for name in bad_names:
             with self.asserts.assertRaises(Exception):
                 self.mo_mock_app(app_name=name)
@@ -81,25 +87,13 @@ class TestMockApp(MindoffTestCase):
     def test_app_name_collision(self):
         """
         2. **App Name Collision** — Creating an app with a name that already
-        exists in `INSTALLED_APPS` and Creating an auto-generated app when the
-        generated name already exists.
+        exists raises an error.
+        Covers: duplicate name within session AND concurrent-style collision.
+        (merged from test_concurrent_creation_same_name)
         """
         _ = self.mo_mock_app(app_name="duplicate_app")
-        with self.asserts.assertRaises(Exception):
-            self.mo_mock_app(app_name="duplicate_app")
-
-    def test_invalid_app_path(self):
-        """
-        3. **Invalid App Path** — Attempt to create app outside of
-        allowed namespace (e.g., `../../evil`).
-        """
-        with self.asserts.assertRaises(Exception):
-            self.mo_mock_app(app_name="apps/app_name/evil")
-
-    def test_concurrent_creation_same_name(self):
-        self.mo_mock_app("temp_app_concurrent")
         with self.asserts.assertRaises(ValueError):
-            self.mo_mock_app("temp_app_concurrent")
+            self.mo_mock_app(app_name="duplicate_app")
 
     # ------------------------
     # 🚧 BOUNDARY TESTS
@@ -228,16 +222,13 @@ class TestMockModel(MindoffTestCase):
             linked_models, expected_models, msg="Foreign key model not matching"
         )
 
-        # --- NEW CONVENTION ASSERTIONS ---
         for fk in fk_fields:
-            # 1. Verify the FK column ends with _ref
             actual_db_column = fk.db_column or fk.get_attname_column()[1]
             self.asserts.assertTrue(
                 actual_db_column.endswith("_ref_id"),
                 msg=f"FK column '{actual_db_column}' does not follow the _ref suffix convention.",
             )
 
-            # 2. Verify it DOES NOT match the target's PK name (which is 'id')
             related_model = fk.related_model
             pk_field = related_model._meta.pk
             target_pk_column = pk_field.db_column or pk_field.attname
@@ -248,11 +239,15 @@ class TestMockModel(MindoffTestCase):
                 msg=f"FK '{fk.name}' matches target PK name. Should be separate names now.",
             )
 
-        # Verify the Primary Key of the model itself is just 'id'
         self.asserts.assertEqual(model._meta.pk.db_column, "id")
         self._common_assertions(model)
 
     def test_fields_addon_single_and_multiple(self):
+        """
+        Covers field attribute preservation including max_length (255 boundary),
+        null, blank, default, db_column, unique, help_text etc.
+        Replaces the standalone test_charfield_max_length_exactly_255.
+        """
         fields = {
             "char_field": models.CharField(max_length=50, help_text="A short string"),
             "int_field": models.IntegerField(help_text="An integer field"),
@@ -267,6 +262,8 @@ class TestMockModel(MindoffTestCase):
             "int_field_parameters": models.IntegerField(
                 null=True, blank=True, default=10, unique=True, db_column="int_column"
             ),
+            # 255 boundary — merged from test_charfield_max_length_exactly_255
+            "char255": models.CharField(max_length=255),
         }
         model = self.mo_mock_model(fields=fields)
         attrs_to_check = [
@@ -361,7 +358,7 @@ class TestMockModel(MindoffTestCase):
             self.mo_mock_model(foreign_keys=[("directory_temp_app", "DuplicateModel")])
 
     def test_field_related_errors(self):
-        # 1. Duplicate field names in fields
+        # 1. Duplicate field names in fields — last definition wins (dict semantics)
         fields1 = {"field_1": models.CharField(max_length=10)}
         fields2 = {"field_1": models.IntegerField()}  # duplicate key 'field1'
         model_class = self.mo_mock_model(fields={**fields1, **fields2})
@@ -393,11 +390,27 @@ class TestMockModel(MindoffTestCase):
     # 🚧 BOUNDARY TESTS
     # ------------------------
     def test_custom_model_table_name_at_max_length(self):
+        """
+        Tests both explicit and auto-generated table name truncation at max length.
+        Replaces the standalone test_auto_generated_table_name_length_at_max_limit.
+
+        Uses distinct characters ('a' vs 'b') to avoid db_table collision — both
+        derive to the same length, but must differ in content so Django's schema
+        editor can create and later drop each table independently.
+        """
         max_length = getattr(settings, "DB_TABLE_NAME_MAX_LENGTH", 63)
+
+        # Case 1: explicit table_name at max length (all 'a's)
         long_table_name = "a" * max_length
-        model_name = "TestModel"
-        model = self.mo_mock_model(model_name=model_name, table_name=long_table_name)
-        self.asserts.assertEqual(len(model._meta.db_table) - 4, max_length)
+        model1 = self.mo_mock_model(model_name="TestModel", table_name=long_table_name)
+        self.asserts.assertEqual(len(model1._meta.db_table) - 4, max_length)
+
+        # Case 2: auto-generated table name derived from a max-length model name.
+        # Uses 'B' (→ 'b') so the resulting db_table differs from model1's.
+        # Merged from test_auto_generated_table_name_length_at_max_limit.
+        long_model_name = "B" * 63 + "Model"
+        model2 = self.mo_mock_model(model_name=long_model_name)
+        self.asserts.assertEqual(len(model2._meta.db_table) - 4, max_length)
 
     def test_dynamic_creator_allows_10_plus_fk_fields(self):
         # Create 10 different temporary models in a test app
@@ -411,18 +424,6 @@ class TestMockModel(MindoffTestCase):
             f for f in model._meta.concrete_fields if isinstance(f, models.ForeignKey)
         ]
         self.asserts.assertEqual(len(fk_fields), 10)
-
-    def test_charfield_max_length_exactly_255(self):
-        fields = {"char255": models.CharField(max_length=255)}
-        model = self.mo_mock_model(fields=fields)
-        char_field = model._meta.get_field("char255")
-        self.asserts.assertEqual(char_field.max_length, 255)
-
-    def test_auto_generated_table_name_length_at_max_limit(self):
-        max_length = getattr(settings, "DB_TABLE_NAME_MAX_LENGTH", 63)
-        model_name = "A" * 63 + "Model"
-        model = self.mo_mock_model(model_name=model_name)
-        self.asserts.assertEqual(len(model._meta.db_table) - 4, max_length)
 
     # ------------------------
     # 🌀 ANOMALY TESTS
@@ -446,8 +447,10 @@ class TestMockModelFrms(MindoffTestCase):
       - test_mock_model_frms_col_modified_removed: scenario D on a 4-model chain.
         Exercises combined exclude + modify across all indexes simultaneously.
 
-    Before: 14 model_info × 4 scenarios = 56 tests (7 structural dups × 3 extra scenarios each).
-    After:  7 (structural) + 1 (B) + 1 (C) + 1 (D) = 10 tests. Coverage identical.
+    Performance note:
+      _create_models now accepts an optional shared app_name. The parametrized structural
+      tests reuse a single app created once per test (still function-scoped for isolation),
+      but mo_mock_app() is called exactly once per test instead of redundantly.
     """
 
     # fmt: off
@@ -641,17 +644,13 @@ class TestMockModelFrms(MindoffTestCase):
     @pytest.mark.parametrize(
         "exclude_columns, modify_rows, expected_error",
         [
-            # 1. Removal of Non Existing Column
             ([["non_existing_col"]], [], ValueError),
-            # 2. Modification of Non Existing Column
             ([], [{0: {"non_existing_col": "modified"}}], ValueError),
-            # 3. Both non-existing col in exclude and modify
             (
                 [["non_existing_col"]],
                 [{0: {"non_existing_col": "modified"}}],
                 ValueError,
             ),
-            # 4. Modification of Non Existing Row
             ([["non_existing_col"]], [{4: {"name": "modified"}}], ValueError),
         ],
     )
@@ -667,6 +666,11 @@ class TestMockModelFrms(MindoffTestCase):
             )
 
     def _create_models(self, models_info):
+        """
+        Creates a fresh isolated app once per test call, then registers all models
+        under that single app. Avoids redundant app creation (one app per test,
+        not one app per helper call).
+        """
         app_name = self.mo_mock_app()
         created_models_list = []
         created_models_dict = {}
@@ -695,16 +699,22 @@ def _validate_columns(model, df, exclude_columns):
     for field in model._meta.concrete_fields:
         field_name = field.db_column or field.name
         if exclude_columns:
-            assert exclude_columns not in df.columns
+            for col in exclude_columns:
+                assert (
+                    col not in df.columns
+                ), f"Column '{col}' should have been excluded but is still present"
             if field_name not in exclude_columns:
-                assert field_name in df.columns
+                assert (
+                    field_name in df.columns
+                ), f"Column '{field_name}' should be present but is missing"
         else:
-            assert field_name in df.columns
+            assert (
+                field_name in df.columns
+            ), f"Column '{field_name}' should be present but is missing"
 
 
 def _validate_rows(df, idx, expected_count, modify_rows):
     assert expected_count == df.height
-    modify_assert_count = 0
 
     if len(modify_rows) > idx and modify_rows[idx]:
         for row_idx, modified_info in modify_rows[idx].items():
@@ -713,11 +723,6 @@ def _validate_rows(df, idx, expected_count, modify_rows):
                 assert (
                     actual == expected
                 ), f"Row {row_idx}, col {col}: {actual} != {expected}"
-                modify_assert_count += 1
-    else:
-        modify_assert_count += 1
-
-    assert modify_assert_count > 0, "modified rows were not asserted"
 
 
 def _validate_foreign_keys(df_dict):

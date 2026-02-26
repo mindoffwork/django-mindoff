@@ -127,6 +127,7 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # MINDOFF SPECIFIC SETTINGS OPTIONS
+AUTH_USER_MODEL = "django_mindoff.User"
 MINDOFF_LOG_ERRORS_IN_DEBUG = False
 MINDOFF_TRACEBACK_DIRS = ["apps", "config"]
 REDIS_URL = config("REDIS_URL")

@@ -37,8 +37,7 @@ from django.contrib.auth import get_user_model
 PASCAL_CASE_REGEX = r"^[A-Z][a-zA-Z0-9]+$"
 SNAKE_CASE_REGEX = r"^[a-z0-9_]+$"
 test_case = SimpleTestCase()
-_ANSI_YELLOW = "\033[93m"
-_ANSI_RESET = "\033[0m"
+json_key = "application/json"
 
 
 # ----------------
@@ -71,10 +70,14 @@ class MindoffTestCase:
         """
         Temporary Django App Creation Fixture (isolated, real-structure).
         """
+        from typing import NamedTuple
 
-        CreatedApp = namedtuple(
-            "CreatedApp", ["app_name", "temp_dir", "override", "creator"]
-        )
+        class CreatedApp(NamedTuple):
+            app_name: str
+            temp_dir: str
+            override: bool
+            creator: str
+
         created_apps: list[CreatedApp] = []
 
         def __setup(app_name: str | None = None, *, is_return_path: bool = False):
@@ -359,7 +362,7 @@ urlpatterns = original_patterns + [
                 version = None
 
             api_cls_attr = _get_api_cls_attributes(api_url_name, version=version)
-            JSON_CT = "application/json"
+            JSON_CT = json_key
 
             method = getattr(api_cls_attr, "method", "get").lower()
             url = reverse(api_url_name, kwargs=resolved_url_kwargs)
@@ -428,7 +431,7 @@ urlpatterns = original_patterns + [
             # ── JSON ──────────────────────────────────────────────────────────
             if expected_response_type == "json":
                 assert (
-                    "application/json" in content_type
+                    json_key in content_type
                 ), f"[{api_url_name}] Expected JSON, got Content-Type={content_type}"
 
             # ── Binary ───────────────────────────────────────────────────────
@@ -438,7 +441,7 @@ urlpatterns = original_patterns + [
                 ), f"[{api_url_name}] Binary response missing Content-Type"
                 assert not any(
                     content_type.startswith(t)
-                    for t in ("text/", "application/json", "application/xml")
+                    for t in ("text/", json_key, "application/xml")
                 ), f"[{api_url_name}] Binary response has unexpected text Content-Type: {content_type}"
                 assert isinstance(
                     response.content, (bytes, bytearray)
@@ -456,10 +459,6 @@ urlpatterns = original_patterns + [
                     "text/plain" in content_type
                 ), f"[{api_url_name}] Expected plain text, got Content-Type={content_type}"
 
-            # ── Others — no content-type assertion ────────────────────────────
-            elif expected_response_type == "others":
-                pass
-
         return __assert
 
     @pytest.fixture
@@ -470,18 +469,18 @@ urlpatterns = original_patterns + [
         """
 
         def __create(username=None, password="password123", **extra_fields):
-            User = get_user_model()
+            user_model = get_user_model()
 
             # If a specific username is requested, check if it exists
             if username:
-                existing = User.objects.filter(username=username).first()
+                existing = user_model.objects.filter(username=username).first()
                 if existing:
                     return existing
                 extra_fields["username"] = username
 
             # Use baker to create the user with default password logic
-            # This handles any other required fields your User model might have
-            user = baker.make(User, **extra_fields)
+            # This handles any other required fields your user_model model might have
+            user = baker.make(user_model, **extra_fields)
 
             if password:
                 user.set_password(password)
@@ -518,7 +517,7 @@ class MindoffRouterTestCase:
                 "as_view",
                 return_value=lambda req, **kw: MagicMock(status_code=200),
             ) as mock_as_view:
-                response = self.router(request, version=version)
+                _ = self.router(request, version=version)
                 assert mock_as_view.call_count == 1, (
                     f"Version {version} did not dispatch to {expected_class.__name__}. "
                     f"Expected as_view() to be called exactly once."

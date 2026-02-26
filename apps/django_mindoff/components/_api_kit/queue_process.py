@@ -43,7 +43,7 @@ class QueueRequest:
         files=None,
     ):
         # HTTP method
-        self.method = method.upper()
+        self.method = (method or "GET").upper()
 
         # Payload sources
         self.data = data or {}
@@ -61,29 +61,30 @@ class QueueRequest:
 
 def enqueue_process(*, request, api_instance, args, kwargs):
     # 1. Resolve user identity (stable + traceable)
-    user_id = getattr(request.user, "id", None)
-
-    if user_id is None:
-        user_id = getattr(request, "session", None)
-        user_id = getattr(user_id, "session_key", None)
+    if request.user.is_authenticated:
+        owner_id = str(request.user.id)
+        user_obj = request.user
+    else:
+        if not request.session.session_key:
+            request.session.create()
+        owner_id = str(request.session.session_key)
+        user_obj = None
 
     # 2. Build request snapshot (queue-safe)
     request_snapshot = {
         "method": request.method,
         "data": request.data if request.method in ("POST", "PUT") else {},
         "query_params": request.query_params,
-        "headers": dict(request.headers),
         "args": args,
         "kwargs": kwargs,
     }
 
     # 3. (Optional) idempotency handling
     idempotency_key = None
-
     if not getattr(api_instance, "allow_duplicate_queue", False):
         raw = json.dumps(
             {
-                "user_id": user_id,
+                "owner_id": owner_id,
                 "api_url_name": api_instance.api_url_name,
                 "request": request_snapshot,
             },
@@ -98,26 +99,24 @@ def enqueue_process(*, request, api_instance, args, kwargs):
         )
 
         if existing:
-            return str(existing.queue_task_uuid)
+            return str(existing.id)
 
     # 4. Create queue task (SQL)
     queue_task_uuid = uuid.uuid4()
-    created_at = timezone.now()
-
-    _ = MOQueue.objects.create(
-        queue_task_uuid=queue_task_uuid,
+    enqueue_obj = MOQueue.objects.create(
+        id=queue_task_uuid,
+        owner_id=owner_id,
+        user_ref=user_obj,
         idempotency_key=idempotency_key,
-        user_id=user_id,
         api_url_name=api_instance.api_url_name,
         status="queued",
-        request_snapshot=request_snapshot,
-        created_at=created_at,
+        request=request_snapshot,
     )
 
     # 5. Initialize Redis state
     init_queue(
         queue_task_uuid=str(queue_task_uuid),
-        created_at=created_at,
+        created_at=enqueue_obj.created_at,
     )
 
     # 6. Assign to worker
@@ -129,10 +128,10 @@ def enqueue_process(*, request, api_instance, args, kwargs):
 def execute_queue(queue_task_uuid: str):
     # 1. Load queue task (SQL is source of truth)
     try:
-        obj = MOQueue.objects.get(queue_task_uuid=queue_task_uuid)
+        obj = MOQueue.objects.get(id=queue_task_uuid)
     except MOQueue.DoesNotExist:
-        return  # Task vanished or was purged
-    snapshot = obj.request_snapshot or {}
+        return
+    snapshot = obj.request or {}
 
     # 2. Mark running
     obj.status = "running"
@@ -141,7 +140,7 @@ def execute_queue(queue_task_uuid: str):
 
     try:
         # 3. Resolve API class
-        api_cls = get_api_class_from_url_name(obj.api_url_name)
+        api_cls = get_api_class_from_url_name(api_url_name=obj.api_url_name)
         api = api_cls()
 
         # 4. Rehydrate request, args and kwargs
@@ -172,9 +171,8 @@ def execute_queue(queue_task_uuid: str):
     except Exception as exc:
         tb = traceback.format_exc()
         obj.status = "failed"
-        obj.error = str(exc)
-        obj.traceback = tb
-        obj.save(update_fields=["status", "error", "traceback"])
+        obj.error = {"message": str(exc), "traceback": tb}
+        obj.save(update_fields=["status", "error"])
         mark_failed(queue_task_uuid, error=str(exc))
 
 

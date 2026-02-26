@@ -61,10 +61,6 @@ class MindoffAPIMixin(APIView):
     max_payload_depth: int | None = None
     payload_validation: Literal["strict", "basic", None] = None
 
-    # 4. Response Rules
-    response_type: Literal["json", "plain", "html", "xml", "binary", "others"] = "json"
-    response_validation: bool = True
-
     # 5. Usage Limits Per User
     api_request_limit: str | None = "30/m"
     queue_status_polling_limit: str | None = "30/m"
