@@ -236,13 +236,6 @@ class MindoffAPIMixin(APIView):
             is_exception=True,
             code="API_CONFIG_ERR",
         )
-        mo_validation_kit.ensure_type(
-            self.response_validation,
-            bool,
-            msg="`response_validation` must be boolean",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
         for attr in ("api_request_limit", "queue_status_polling_limit"):
             value = getattr(self, attr)
             if value is not None:
