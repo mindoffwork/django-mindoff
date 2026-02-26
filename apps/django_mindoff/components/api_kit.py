@@ -27,14 +27,6 @@ from rest_framework.exceptions import (
 # ----------------
 ALLOWED_METHODS = ["get", "post", "put", "delete"]
 ALLOWED_PROCESS_MODES = ["direct", "queue"]
-ALLOWED_RESPONSE_TYPES = [
-    "json",
-    "plain",
-    "html",
-    "xml",
-    "binary",
-    "others",
-]
 
 
 # ----------------
@@ -132,7 +124,6 @@ class MindoffAPIMixin(APIView):
         #     "api_description",
         #     "method",
         #     "process_mode",
-        #     "response_type",
         # ]
         for attr_name in ("authentication_classes", "permission_classes"):
             classes = getattr(self, attr_name)
@@ -242,13 +233,6 @@ class MindoffAPIMixin(APIView):
             self.payload_validation,
             ("strict", "basic", None),
             msg="`payload_validation` must be 'strict', 'basic' or None",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        mo_validation_kit.ensure_in(
-            self.response_type,
-            ALLOWED_RESPONSE_TYPES,
-            msg=f"`response_type` must be one of {ALLOWED_RESPONSE_TYPES}",
             is_exception=True,
             code="API_CONFIG_ERR",
         )
