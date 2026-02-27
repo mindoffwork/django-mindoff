@@ -89,6 +89,20 @@ def mark_failed(queue_task_uuid: str, error: str):
     redis_client.expire(key, TTL_FAILED)
 
 
+def mark_cancelled(queue_task_uuid: str, message: str = "cancelled"):
+    key = f"moq:{queue_task_uuid}"
+
+    redis_client.hset(
+        key,
+        mapping={
+            "status": "cancelled",
+            "message": message,
+            "last_updated_at": _now(),
+        },
+    )
+    redis_client.expire(key, TTL_FAILED)
+
+
 def get_queue_status(queue_task_uuid: str) -> dict:
     key = f"moq:{queue_task_uuid}"
     data = redis_client.hgetall(key)

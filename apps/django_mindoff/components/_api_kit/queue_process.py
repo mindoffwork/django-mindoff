@@ -15,10 +15,19 @@ import traceback
 from django.apps import apps
 from django.utils.module_loading import import_string
 from ...models import MOQueue
-from .redis import init_queue, mark_running, mark_completed, mark_failed
+from .redis import (
+    init_queue,
+    mark_running,
+    mark_completed,
+    mark_failed,
+    mark_cancelled,
+    get_queue_status,
+)
 from dramatiq.brokers.redis import RedisBroker
 from dramatiq.middleware import Retries
 from django.conf import settings
+from rest_framework.response import Response as DRFResponse
+from django.http import JsonResponse
 
 redis_broker = RedisBroker(
     url=settings.REDIS_URL,
@@ -133,6 +142,10 @@ def execute_queue(queue_task_uuid: str):
         return
     snapshot = obj.request or {}
 
+    if obj.status == "cancelled":
+        mark_cancelled(queue_task_uuid)
+        return
+
     # 2. Mark running
     obj.status = "running"
     obj.save(update_fields=["status"])
@@ -153,13 +166,19 @@ def execute_queue(queue_task_uuid: str):
             auth=None,
             files={},
         )
+        request.queue_task_uuid = str(obj.id)
         args = snapshot.get("args", [])
         kwargs = snapshot.get("kwargs", {})
 
         # 5. Execute API logic (THIS IS THE CORE)
         result = api.run(request, *args, **kwargs)
+        result = _extract_result(result)
         result = _ensure_json_result(result)
         compressed_result = _compress_json_result(result)
+        obj.refresh_from_db(fields=["status"])
+        if obj.status == "cancelled":
+            mark_cancelled(queue_task_uuid)
+            return
 
         # 7. Mark completed
         obj.status = "completed"
@@ -176,8 +195,59 @@ def execute_queue(queue_task_uuid: str):
         mark_failed(queue_task_uuid, error=str(exc))
 
 
-# Implement rehydrate request for missing redis state
-# Implement cancel and retry request for failed sql state
+def rehydrate_queue_state(queue_task_uuid: str) -> dict:
+    redis_state = get_queue_status(queue_task_uuid)
+    if redis_state.get("status") != "unknown":
+        return redis_state
+
+    obj = MOQueue.objects.filter(id=queue_task_uuid).first()
+    if not obj:
+        return {"status": "unknown"}
+
+    if obj.status == "queued":
+        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
+    elif obj.status == "running":
+        mark_running(str(obj.id))
+    elif obj.status == "completed":
+        mark_completed(str(obj.id))
+    elif obj.status == "failed":
+        error_message = str((obj.error or {}).get("message", "failed"))
+        mark_failed(str(obj.id), error=error_message)
+    elif obj.status == "cancelled":
+        mark_cancelled(str(obj.id))
+
+    return get_queue_status(str(obj.id))
+
+
+def cancel_queue_task(queue_task_uuid: str) -> str:
+    obj = MOQueue.objects.filter(id=queue_task_uuid).first()
+    if not obj:
+        return "not_found"
+
+    if obj.status in ("completed", "failed", "cancelled"):
+        return "not_cancellable"
+
+    obj.status = "cancelled"
+    obj.save(update_fields=["status", "updated_at"])
+    mark_cancelled(str(obj.id))
+    return "cancelled"
+
+
+def retry_failed_queue_task(queue_task_uuid: str) -> str:
+    obj = MOQueue.objects.filter(id=queue_task_uuid).first()
+    if not obj:
+        return "not_found"
+
+    if obj.status != "failed":
+        return "not_retriable"
+
+    obj.status = "queued"
+    obj.error = None
+    obj.response = None
+    obj.save(update_fields=["status", "error", "response", "updated_at"])
+    init_queue(queue_task_uuid=str(obj.id), created_at=timezone.now())
+    execute_queue.send(str(obj.id))
+    return "queued"
 
 
 # ---------- Helper Functions ---------
@@ -198,3 +268,18 @@ def _compress_json_result(result):
         "codec": "gzip+base64",
         "data": b64,
     }
+
+
+def _extract_result(result):
+    """Normalize DRF Response or JsonResponse to a plain dict/list."""
+    if isinstance(result, DRFResponse):
+        return {
+            "status_code": result.status_code,
+            "data": result.data,
+        }
+    if isinstance(result, JsonResponse):
+        return {
+            "status_code": result.status_code,
+            "data": json.loads(result.content),
+        }
+    return result

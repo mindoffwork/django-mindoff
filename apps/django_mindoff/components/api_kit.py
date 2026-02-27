@@ -58,6 +58,24 @@ class MindoffAPIMixin(APIView):
     queue_status_polling_limit: str | None = "30/m"
     queue_status_streaming_limit: int | None = 3
 
+    def queue_progress(
+        self,
+        request,
+        *,
+        progress: int,
+        step: str | None = None,
+        message: str | None = None,
+    ):
+        queue_task_uuid = getattr(request, "queue_task_uuid", None)
+        if not queue_task_uuid:
+            return
+        update_progress(
+            queue_task_uuid,
+            progress=progress,
+            step=step,
+            message=message,
+        )
+
     def run(self, request, *args, **kwargs):
         raise NotImplementedError("You must implement run() in your API class")
 
@@ -102,7 +120,7 @@ class MindoffAPIMixin(APIView):
                 "status_streaming_url": status_streaming_url,
             }
             return mo_response_kit.json_response(
-                code="SUCCESS",
+                code="QUEUED",
                 category="success",
                 data=response_data,
             )

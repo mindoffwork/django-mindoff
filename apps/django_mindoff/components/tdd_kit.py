@@ -527,15 +527,15 @@ class MindoffRouterTestCase:
         """A version absent from VERSION_MAP must return HTTP 404 with detail and available_versions."""
         import json
         from django.test import RequestFactory
-        from django.http import JsonResponse
+        from rest_framework.response import Response
 
         request = RequestFactory().get("/")
         response = self.router(request, version=99999)
 
         assert response.status_code == 404
-        assert isinstance(response, JsonResponse)
+        assert isinstance(response, Response)
 
-        body = json.loads(response.content)
+        body = response.data
         assert body["message"]["code"] == "INVALID_API_VERSION"
         assert set(body["data"]["available_versions"]) == set(self.version_map.keys())
 

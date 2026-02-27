@@ -11,7 +11,7 @@ class SampleRouterClassName:
         view_class = self.VERSION_MAP.get(version)
 
         if view_class is None:
-            mo_response_kit.json_response(
+            return mo_response_kit.json_response(
                 code="INVALID_API_VERSION",
                 category="danger",
                 data={"available_versions": list(self.VERSION_MAP.keys())},
