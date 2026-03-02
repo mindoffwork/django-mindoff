@@ -21,6 +21,7 @@ from rest_framework.exceptions import (
     PermissionDenied,
     Throttled,
 )
+from ._api_kit.api_router import BaseVersionRouter
 
 
 ALLOWED_METHODS = ["get", "post", "put", "delete"]
@@ -309,7 +310,7 @@ class MindoffAPIMixin(APIView):
             )
 
             status_url = request.build_absolute_uri(
-                reverse("mo_queue_status", args=[queue_id])
+                reverse("mo_queue_detail", args=[queue_id])
             )
             status_stream_url = request.build_absolute_uri(
                 reverse("mo_queue_status_stream", args=[queue_id])
@@ -353,16 +354,6 @@ class MindoffAPIMixin(APIView):
             self._initial_validate_request_payload(request)
 
     def _initial_validate_request_method(self, request):
-        mo_validation_kit.ensure_in(
-            self.method.lower(),
-            ALLOWED_METHODS,
-            msg=(
-                f"`method` configured in API is not allowed. "
-                f"Allowed methods are {ALLOWED_METHODS}"
-            ),
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
         mo_validation_kit.ensure_equal(
             self.method.upper(),
             request.method,
@@ -390,16 +381,6 @@ class MindoffAPIMixin(APIView):
 
         # 1. Payload size check
         if self.max_payload_size is not None:
-            mo_validation_kit.ensure_greater(
-                self.max_payload_size,
-                0,
-                msg=(
-                    f"`max_payload_size` must be configured with a positive integer (> 0) "
-                    f"for the `{self.api_url_name}` API"
-                ),
-                is_exception=True,
-                code="API_CONFIG_ERR",
-            )
             content_length = request.META.get("CONTENT_LENGTH")
             if content_length:
                 size_mb = int(content_length) / (1024 * 1024)
@@ -411,18 +392,6 @@ class MindoffAPIMixin(APIView):
                 )
 
         # 2. Payload depth check
-        if self.max_payload_depth is not None:
-            mo_validation_kit.ensure_greater(
-                self.max_payload_depth,
-                0,
-                msg=(
-                    f"`max_payload_depth` must be configured with a positive integer (> 0) "
-                    f"for the `{self.api_url_name}` API"
-                ),
-                is_exception=True,
-                code="API_CONFIG_ERR",
-            )
-
         # 3. Payload schema check
         if self.payload_validation is not None:
             if self.payload_schema is None:
@@ -468,6 +437,16 @@ class MindoffAPIMixin(APIView):
         mo_validation_kit.ensure_truthy(
             self.method,
             msg=f"A valid method must be configured in `{self.api_url_name}` API",
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        mo_validation_kit.ensure_in(
+            self.method.lower(),
+            ALLOWED_METHODS,
+            msg=(
+                f"`method` configured in API is not allowed. "
+                f"Allowed methods are {ALLOWED_METHODS}"
+            ),
             is_exception=True,
             code="API_CONFIG_ERR",
         )
@@ -551,6 +530,16 @@ class MindoffAPIMixin(APIView):
                     value,
                     (int, float),
                     msg=f"`{attr}` must be int | float | None",
+                    is_exception=True,
+                    code="API_CONFIG_ERR",
+                )
+                mo_validation_kit.ensure_greater(
+                    value,
+                    0,
+                    msg=(
+                        f"`{attr}` must be configured with a positive integer (> 0) "
+                        f"for the `{self.api_url_name}` API"
+                    ),
                     is_exception=True,
                     code="API_CONFIG_ERR",
                 )
@@ -704,4 +693,5 @@ def api_guardian(func):
 mo_api_kit = SimpleNamespace(
     api_guardian=api_guardian,
     MindoffAPIMixin=MindoffAPIMixin,
+    BaseVersionRouter=BaseVersionRouter,
 )

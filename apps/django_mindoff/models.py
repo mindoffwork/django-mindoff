@@ -32,9 +32,18 @@ class MOQueue(TimeStampModel):
     )
     idempotency_key = models.CharField(max_length=64, null=True, blank=True)
     api_url_name = models.TextField()
-    status = models.CharField(max_length=20)
+
+    # Renamed from `status` → `job_status`
+    job_status = models.CharField(max_length=20, db_column="job_status")
+
     request = models.JSONField(null=True, blank=True)
+
+    # Stores only the raw response payload (no response_code embedded here)
     response = models.JSONField(null=True, blank=True)
+
+    # HTTP-style response code produced by the worker (e.g. "SUCCESS", "PARTIAL_RESULT")
+    response_code = models.CharField(max_length=64, null=True, blank=True)
+
     error = models.JSONField(null=True, blank=True)
 
     def get_user(self):
@@ -47,5 +56,5 @@ class MOQueue(TimeStampModel):
     class Meta:
         db_table = "tbl_mo_queue"
         indexes = [
-            models.Index(fields=["user_ref_id", "status"]),
+            models.Index(fields=["user_ref_id", "job_status"]),
         ]

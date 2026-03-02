@@ -165,6 +165,74 @@ class TestMoTestApi(MindoffTestCase):
         assert sent.get("Accept") == "application/json"
         assert sent.get("X-Custom") == "value"
 
+    def test_queue_mode_returns_final_detail_response_by_default(self):
+        """Queue mode defaults to returning mo_queue_detail response (not enqueue payload)."""
+        queue_id = str(uuid.uuid4())
+        queued = _make_raw_response(body={"data": {"queue_id": queue_id}})
+        detail = _make_raw_response(body={"message": {"code": "SUCCESS"}, "data": {"ok": 1}})
+
+        def _fake_reverse(name, kwargs=None, args=None):
+            if name == self.API_URL_NAME:
+                return "/enqueue/"
+            if name == "mo_queue_detail":
+                return f"/queue/{args[0]}/"
+            raise AssertionError(f"Unexpected reverse call: {name}")
+
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                return_value=_make_api_cls(method="get", process_mode="queue"),
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit.reverse",
+                side_effect=_fake_reverse,
+            ),
+            patch.object(self.client, "get", side_effect=[queued, detail]) as mock_get,
+            patch(
+                "apps.django_mindoff.components.tdd_kit._QueueTestRuntime.ensure_started",
+                return_value=None,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._wait_for_queue_terminal_state",
+                return_value="completed",
+            ) as mock_wait,
+        ):
+            response = self.mo_test_api(self.API_URL_NAME)
+
+        assert response is detail
+        mock_wait.assert_called_once_with(
+            queue_id,
+            timeout_s=30.0,
+            poll_interval_s=0.2,
+        )
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[1].args[0] == f"/queue/{queue_id}/"
+
+    def test_queue_mode_can_return_enqueue_response_when_flag_false(self):
+        """is_queue_response=False keeps the original enqueue response."""
+        queue_id = str(uuid.uuid4())
+        queued = _make_raw_response(body={"data": {"queue_id": queue_id}})
+
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                return_value=_make_api_cls(method="get", process_mode="queue"),
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit.reverse",
+                return_value="/enqueue/",
+            ),
+            patch.object(self.client, "get", return_value=queued) as mock_get,
+            patch(
+                "apps.django_mindoff.components.tdd_kit._wait_for_queue_terminal_state"
+            ) as mock_wait,
+        ):
+            response = self.mo_test_api(self.API_URL_NAME, is_queue_response=False)
+
+        assert response is queued
+        mock_wait.assert_not_called()
+        assert mock_get.call_count == 1
+
     # 🚫 REJECTION ────────────────────────────────────────────────────────
 
     @pytest.mark.parametrize(
@@ -307,11 +375,12 @@ class TestMoAssertApiResponse(MindoffTestCase):
             )
 
 
-def _make_api_cls(*, method="get"):
+def _make_api_cls(*, method="get", process_mode="direct"):
     class FakeAPI:
         pass
 
     FakeAPI.method = method
+    FakeAPI.process_mode = process_mode
     return FakeAPI
 
 

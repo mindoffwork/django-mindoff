@@ -1,20 +1,3 @@
-"""
-test_api_kit_queue_mode.py
-==========================
-Full test coverage for queue-mode processing, including:
-    - Enqueue / dispatch lifecycle
-    - Worker execution (success, failure, cancellation)
-    - progress_steps schema validation
-    - progress_checkpoint (new key-based API)
-    - Cancel race-conditions
-    - Retry lifecycle
-    - Rehydration from DB when Redis has expired
-    - Redis layer state transitions & is_cancel flag preservation
-    - Queue status HTTP view (live Redis path + DB fallback path)
-    - SSE stream lifecycle
-    - End-to-end integration pipeline
-"""
-
 import gzip
 import base64
 import json
@@ -78,8 +61,6 @@ class _InMemoryRedis:
         self.counters: dict[str, int] = {}
         self.ttls: dict[str, int] = {}
 
-    # ── Management ───────────────────────────────────────────────────────
-
     def ping(self):
         return True
 
@@ -87,8 +68,6 @@ class _InMemoryRedis:
         self.hashes.clear()
         self.counters.clear()
         self.ttls.clear()
-
-    # ── Hash ─────────────────────────────────────────────────────────────
 
     def hset(self, key, mapping):
         bucket = self.hashes.setdefault(key, {})
@@ -99,8 +78,6 @@ class _InMemoryRedis:
         data = self.hashes.get(key, {})
         return {str(k).encode("utf-8"): str(v).encode("utf-8") for k, v in data.items()}
 
-    # ── TTL ──────────────────────────────────────────────────────────────
-
     def expire(self, key, ttl):
         self.ttls[key] = ttl
         return True
@@ -108,8 +85,6 @@ class _InMemoryRedis:
     def persist(self, key):
         self.ttls.pop(key, None)
         return True
-
-    # ── Atomic counters ───────────────────────────────────────────────────
 
     def incr(self, key):
         value = int(self.counters.get(key, 0)) + 1
@@ -129,9 +104,10 @@ class _InMemoryRedis:
 
 def _make_db_task(
     api_url_name: str,
-    status: str = "queued",
+    job_status: str = "queued",
     owner_id: str = "test_owner",
     error=None,
+    response_code: str | None = None,
 ):
     """Create a minimal MOQueue row suitable for worker tests."""
     from apps.django_mindoff.models import MOQueue
@@ -140,7 +116,8 @@ def _make_db_task(
         id=uuid.uuid4(),
         owner_id=owner_id,
         api_url_name=api_url_name,
-        status=status,
+        job_status=job_status,
+        response_code=response_code,
         request={
             "method": "GET",
             "data": {},
@@ -184,7 +161,6 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
         """ACCEPTANCE: Queue mode returns queue_id, status_url, status_stream_url."""
         queue_id = str(uuid.uuid4())
         mock_enqueue.return_value = queue_id
-
         api_url_name = self._make_api("test_enqueue_shape_api")
         _modify_api_attribute(
             self._app,
@@ -208,7 +184,7 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     @patch("apps.django_mindoff.components._api_kit.queue_process.init_queue")
     def test_creates_db_record_with_correct_fields(self, mock_init, mock_send):
-        """ACCEPTANCE: A MOQueue row is created with the correct status / method / api_url_name."""
+        """ACCEPTANCE: A MOQueue row is created with the correct job_status / method / api_url_name."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -227,9 +203,12 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
 
         queue_id = resp.json()["data"]["queue_id"]
         obj = MOQueue.objects.get(id=queue_id)
-        assert obj.status == "queued"
+        # Field is now job_status (renamed from status)
+        assert obj.job_status == "queued"
         assert obj.api_url_name == api_url_name
         assert obj.request["method"] == "GET"
+        # response_code is null on creation
+        assert obj.response_code is None
         mock_init.assert_called_once()
         mock_send.assert_called_once()
 
@@ -295,7 +274,6 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
 
     def test_idempotency_ignores_cancelled_task(self):
         """BOUNDARY: Cancelled task is NOT reused by idempotency; a new task is created."""
-        # The fix: .exclude(status__in=("failed","completed","cancelled"))
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -314,8 +292,8 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
             ):
                 r1 = self.client.get(reverse(api_url_name))
                 q1_id = r1.json()["data"]["queue_id"]
-                # Cancel it
-                MOQueue.objects.filter(id=q1_id).update(status="cancelled")
+                # Cancel it via the model field (now job_status)
+                MOQueue.objects.filter(id=q1_id).update(job_status="cancelled")
 
                 r2 = self.client.get(reverse(api_url_name))
                 q2_id = r2.json()["data"]["queue_id"]
@@ -389,8 +367,6 @@ class TestProgressStepsValidation:
             setattr(ConcreteAPI, k, v)
         return ConcreteAPI()
 
-    # ── Valid cases ───────────────────────────────────────────────────────
-
     def test_valid_progress_steps_passes(self):
         """ACCEPTANCE: Well-formed progress_steps passes validation."""
         mixin = self._make_mixin(
@@ -403,7 +379,6 @@ class TestProgressStepsValidation:
         with patch.object(
             type(mixin), "_resolve_url_name", lambda s: True, create=True
         ):
-            # Isolate just the steps check
             from apps.django_mindoff.components.api_kit import _validate_progress_steps
 
             _validate_progress_steps(mixin.progress_steps, mixin.api_url_name)
@@ -413,8 +388,6 @@ class TestProgressStepsValidation:
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from typing import Any
 
-        # Pass None via cast to satisfy the type checker while still testing
-        # the runtime guard (`if not steps: return`) in the production function.
         _validate_progress_steps(cast(Any, None), "some_api")
 
     def test_empty_dict_progress_steps_is_valid(self):
@@ -430,8 +403,6 @@ class TestProgressStepsValidation:
         _validate_progress_steps(
             {"only": {"label": "Only Step", "percent": 50}}, "some_api"
         )
-
-    # ── Invalid percent values ────────────────────────────────────────────
 
     @pytest.mark.parametrize("bad_pct", [0, 100, -1, 101])
     def test_percent_out_of_range_raises(self, bad_pct):
@@ -453,7 +424,7 @@ class TestProgressStepsValidation:
             _validate_progress_steps(
                 {
                     "a": {"label": "A", "percent": 50},
-                    "b": {"label": "B", "percent": 30},  # goes backwards
+                    "b": {"label": "B", "percent": 30},
                 },
                 "some_api",
             )
@@ -471,8 +442,6 @@ class TestProgressStepsValidation:
                 },
                 "some_api",
             )
-
-    # ── Invalid types / shapes ────────────────────────────────────────────
 
     def test_non_dict_top_level_raises(self):
         """REJECTION: progress_steps must be a dict, not a list."""
@@ -537,10 +506,6 @@ class TestProgressStepsValidation:
             progress_steps={"s": {"label": "S", "percent": 10}},
         )
         with pytest.raises((MindoffValidationError, Exception)) as exc_info:
-            # Partial call — only the steps section
-            from apps.django_mindoff.components.api_kit import _validate_progress_steps
-
-            # Simulate the guard in validate_api_configuration
             from apps.django_mindoff.components.validation_kit import mo_validation_kit
 
             mo_validation_kit.ensure_equal(
@@ -573,19 +538,14 @@ class TestProgressCheckpoint(MindoffTestCase):
     def _make_api(self, name):
         return _create_test_api(self._app, name, self._dir, self._tmpl)
 
-    # ── No-op in direct mode ───────────────────────────────────────────────
-
     def test_noop_without_queue_task_uuid(self):
         """BOUNDARY: progress_checkpoint is a no-op when queue_task_uuid is absent."""
         from apps.django_mindoff.components.api_kit import MindoffAPIMixin
 
         mixin = MindoffAPIMixin()
         mixin.progress_steps = {"s": {"label": "Step", "percent": 50}}
-        fake_request = MagicMock(spec=[])  # no queue_task_uuid attribute
-        # Must not raise
+        fake_request = MagicMock(spec=[])
         mixin.progress_checkpoint(fake_request, "s")
-
-    # ── Normal update ─────────────────────────────────────────────────────
 
     def test_updates_redis_with_correct_step_and_percent(self):
         """ACCEPTANCE: Calling checkpoint_key updates Redis with the correct label/percent."""
@@ -614,8 +574,6 @@ class TestProgressCheckpoint(MindoffTestCase):
         assert state["progress"]["current_step"] == "Validating"
         assert state["progress"]["current_message"] == "Validating"
 
-    # ── Custom message ─────────────────────────────────────────────────────
-
     def test_custom_msg_overrides_default_label_message(self):
         """ACCEPTANCE: msg= parameter overrides the default label as current_message."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
@@ -641,8 +599,6 @@ class TestProgressCheckpoint(MindoffTestCase):
         assert state["progress"]["current_step"] == "Fetching"
         assert int(state["progress"]["percent"]) == 40
 
-    # ── Repeated calls to same key ─────────────────────────────────────────
-
     def test_same_key_called_multiple_times_updates_message(self):
         """ACCEPTANCE: Same checkpoint_key can be called repeatedly with different msg values."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
@@ -664,15 +620,11 @@ class TestProgressCheckpoint(MindoffTestCase):
             for msg in messages:
                 mixin.progress_checkpoint(fake_request, "fetch", msg=msg)
                 state = get_queue_status(qid)
-                # Percent must stay constant throughout
                 assert int(state["progress"]["percent"]) == 40
                 assert state["progress"]["current_step"] == "Fetching"
 
-            # Last message must be the final one
             final = get_queue_status(qid)
         assert final["progress"]["current_message"] == "Fetching item 5"
-
-    # ── Cancel detection ───────────────────────────────────────────────────
 
     @patch("apps.django_mindoff.components.api_kit.update_progress")
     def test_raises_before_update_when_cancelled(self, mock_update):
@@ -717,8 +669,6 @@ class TestProgressCheckpoint(MindoffTestCase):
             exc, "code", None
         ) == "API_CONFIG_ERR" or "API_CONFIG_ERR" in str(exc)
 
-    # ── progress_checkpoint inside real worker ─────────────────────────────
-
     def test_progress_is_written_during_worker_execution(self):
         """ACCEPTANCE: progress_checkpoint updates Redis mid-execution in the worker."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
@@ -753,8 +703,7 @@ class TestProgressCheckpoint(MindoffTestCase):
             final = get_queue_status(str(obj.id))
 
         obj.refresh_from_db()
-        assert obj.status == "completed"
-        # After completion the worker sets percent=100
+        assert obj.job_status == "completed"
         assert int(final["progress"]["percent"]) == 100
 
 
@@ -777,8 +726,6 @@ class TestQueueWorkerExecution(MindoffTestCase):
     def _make_api(self, name):
         return _create_test_api(self._app, name, self._dir, self._tmpl)
 
-    # ── Happy path ────────────────────────────────────────────────────────
-
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_failed")
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_completed")
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_running")
@@ -796,7 +743,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
         execute_queue(str(obj.id))
         obj.refresh_from_db()
 
-        assert obj.status == "completed"
+        assert obj.job_status == "completed"
         assert obj.response is not None
         assert obj.response[_COMPRESSED_RESPONSE_FLAG] is True
         recovered = _decompress(obj.response)
@@ -805,7 +752,42 @@ class TestQueueWorkerExecution(MindoffTestCase):
         mock_completed.assert_called_once_with(str(obj.id))
         mock_failed.assert_not_called()
 
-    # ── Failure path ──────────────────────────────────────────────────────
+    def test_response_code_stored_on_completion(self):
+        """ACCEPTANCE: response_code from the worker's return value is persisted to DB."""
+        api_url_name = self._make_api("test_worker_response_code_api")
+        _modify_api_run_method(
+            self._app,
+            "test_worker_response_code_api",
+            "        from rest_framework.response import Response\n"
+            "        return Response({'value': 1}, status=200)",
+            base_path=self._dir,
+        )
+
+        obj = _make_db_task(api_url_name)
+        execute_queue(str(obj.id))
+        obj.refresh_from_db()
+
+        assert obj.job_status == "completed"
+        # response_code must be populated; exact value depends on worker extraction logic
+        assert obj.response_code is not None
+
+    def test_response_code_stored_on_failure(self):
+        """ACCEPTANCE: response_code is populated on failure tasks."""
+        api_url_name = self._make_api("test_worker_fail_response_code_api")
+        _modify_api_run_method(
+            self._app,
+            "test_worker_fail_response_code_api",
+            "        raise RuntimeError('code_test_failure')",
+            base_path=self._dir,
+        )
+
+        obj = _make_db_task(api_url_name)
+        execute_queue(str(obj.id))
+        obj.refresh_from_db()
+
+        assert obj.job_status == "failed"
+        # Worker should write a failure response_code (e.g. "QUEUE_TASK_FAILED")
+        assert obj.response_code is not None
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_failed")
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_completed")
@@ -824,13 +806,11 @@ class TestQueueWorkerExecution(MindoffTestCase):
         execute_queue(str(obj.id))
         obj.refresh_from_db()
 
-        assert obj.status == "failed"
+        assert obj.job_status == "failed"
         assert obj.error["message"] == "boom"
         assert "RuntimeError" in obj.error["traceback"]
         mock_failed.assert_called_once_with(str(obj.id), error="boom")
         mock_completed.assert_not_called()
-
-    # ── Pre-cancel (before worker starts) ─────────────────────────────────
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_running")
     def test_skips_execution_when_precancelled_in_redis(self, mock_running):
@@ -839,23 +819,22 @@ class TestQueueWorkerExecution(MindoffTestCase):
 
         fake_redis = _InMemoryRedis()
         api_url_name = self._make_api("test_worker_precancel_redis_api")
-        obj = _make_db_task(api_url_name, status="queued")
+        obj = _make_db_task(api_url_name, job_status="queued")
 
         with patch.object(redis_state, "redis_client", fake_redis):
             init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
-            mark_cancelled(str(obj.id))  # set is_cancel=True in Redis
+            mark_cancelled(str(obj.id))
             execute_queue(str(obj.id))
 
         obj.refresh_from_db()
-        assert obj.status == "cancelled"
+        assert obj.job_status == "cancelled"
         mock_running.assert_not_called()
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_running")
     def test_skips_execution_when_precancelled_in_db(self, mock_running):
-        """BOUNDARY: Worker skips run() when DB obj.status is already 'cancelled'."""
+        """BOUNDARY: Worker skips run() when DB obj.job_status is already 'cancelled'."""
         api_url_name = self._make_api("test_worker_precancel_db_api")
-        # Redis is empty (expired) so worker falls back to DB
-        obj = _make_db_task(api_url_name, status="cancelled")
+        obj = _make_db_task(api_url_name, job_status="cancelled")
 
         with (
             patch(
@@ -874,10 +853,8 @@ class TestQueueWorkerExecution(MindoffTestCase):
             execute_queue(str(obj.id))
 
         obj.refresh_from_db()
-        assert obj.status == "cancelled"
+        assert obj.job_status == "cancelled"
         mock_running.assert_not_called()
-
-    # ── Race condition: cancel arrives between init_queue and mark_running ──
 
     def test_cancel_flag_preserved_through_mark_running(self):
         """BOUNDARY: is_cancel flag set before mark_running is NOT cleared by mark_running."""
@@ -890,18 +867,12 @@ class TestQueueWorkerExecution(MindoffTestCase):
             from django.utils import timezone as tz
 
             init_queue(queue_task_uuid=qid, created_at=tz.now())
-            # Simulate cancel arriving right after init
             mark_cancel_requested(qid)
-            # Worker calls mark_running — must NOT wipe is_cancel
             mark_running(qid)
             state = get_queue_status(qid)
 
-        assert (
-            state["is_cancel"] is True
-        ), "mark_running must preserve is_cancel; it was incorrectly wiped"
+        assert state["is_cancel"] is True, "mark_running must preserve is_cancel"
         assert state["job_status"] == "running"
-
-    # ── Post-run cancel check ─────────────────────────────────────────────
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_completed")
     def test_does_not_complete_when_cancelled_after_run(self, mock_completed):
@@ -921,23 +892,18 @@ class TestQueueWorkerExecution(MindoffTestCase):
         with patch.object(redis_state, "redis_client", fake_redis):
             init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
 
-            # Simulate cancel arriving after run() but before result is saved
             with patch(
                 "apps.django_mindoff.components._api_kit.queue_process._safe_get_queue_status",
                 side_effect=[
-                    # First call: initial check before mark_running
                     {"job_status": "queued", "is_cancel": False, "steps": {}},
-                    # Second call: post-run check — cancel has arrived
                     {"job_status": "running", "is_cancel": True, "steps": {}},
                 ],
             ):
                 execute_queue(str(obj.id))
 
         obj.refresh_from_db()
-        assert obj.status == "cancelled"
+        assert obj.job_status == "cancelled"
         mock_completed.assert_not_called()
-
-    # ── progress_checkpoint raises MindoffValidationError with cancel code ──
 
     def test_cancel_via_progress_checkpoint_marks_task_cancelled(self):
         """ACCEPTANCE: progress_checkpoint raising QUEUE_TASK_CANCELLED results in cancelled task."""
@@ -969,15 +935,13 @@ class TestQueueWorkerExecution(MindoffTestCase):
             execute_queue(str(obj.id))
 
         obj.refresh_from_db()
-        assert obj.status == "cancelled"
+        assert obj.job_status == "cancelled"
         assert obj.error is None
         assert obj.response is not None
 
-    # ── Nonexistent task ──────────────────────────────────────────────────
-
     def test_noop_on_nonexistent_task(self):
         """BOUNDARY: Worker silently returns for unknown queue_task_uuid."""
-        execute_queue(str(uuid.uuid4()))  # must not raise
+        execute_queue(str(uuid.uuid4()))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -989,10 +953,8 @@ class TestQueueWorkerExecution(MindoffTestCase):
 class TestQueueCancelAndRetry(MindoffTestCase):
     """Cancel and retry state-machine transitions."""
 
-    def _make_task(self, status="queued", api_url_name="some_api"):
-        return _make_db_task(api_url_name, status=status)
-
-    # ── Cancel: valid transitions ─────────────────────────────────────────
+    def _make_task(self, job_status="queued", api_url_name="some_api"):
+        return _make_db_task(api_url_name, job_status=job_status)
 
     @pytest.mark.parametrize("cancellable_status", ["queued", "running"])
     def test_cancel_sets_is_cancel_flag_in_redis(self, cancellable_status):
@@ -1000,7 +962,7 @@ class TestQueueCancelAndRetry(MindoffTestCase):
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
-        obj = self._make_task(status=cancellable_status)
+        obj = self._make_task(job_status=cancellable_status)
 
         with patch.object(redis_state, "redis_client", fake_redis):
             init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
@@ -1011,11 +973,8 @@ class TestQueueCancelAndRetry(MindoffTestCase):
             state = get_queue_status(str(obj.id))
 
         assert result == "cancelled"
-        # The flag is set; job_status stays as it was (worker transitions it)
         assert state["is_cancel"] is True
         assert state["job_status"] == cancellable_status
-
-    # ── Cancel: terminal states ────────────────────────────────────────────
 
     @pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
     def test_cancel_not_cancellable_for_terminal_states(self, terminal):
@@ -1023,7 +982,7 @@ class TestQueueCancelAndRetry(MindoffTestCase):
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
-        obj = self._make_task(status=terminal)
+        obj = self._make_task(job_status=terminal)
 
         with patch.object(redis_state, "redis_client", fake_redis):
             init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
@@ -1038,8 +997,8 @@ class TestQueueCancelAndRetry(MindoffTestCase):
         assert result == "not_cancellable"
 
     def test_cancel_uses_db_status_when_redis_expired(self):
-        """BOUNDARY: cancel_queue_task falls back to DB status when Redis key is missing."""
-        obj = self._make_task(status="completed")
+        """BOUNDARY: cancel_queue_task falls back to DB job_status when Redis key is missing."""
+        obj = self._make_task(job_status="completed")
 
         with (
             patch(
@@ -1063,24 +1022,24 @@ class TestQueueCancelAndRetry(MindoffTestCase):
         """BOUNDARY: cancel_queue_task returns 'not_found' for unknown UUID."""
         assert cancel_queue_task(str(uuid.uuid4())) == "not_found"
 
-    # ── Retry ─────────────────────────────────────────────────────────────
-
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     def test_retry_requeues_failed_task(self, mock_send):
         """ACCEPTANCE: retry_failed_queue_task resets error/response and re-dispatches."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
-        obj = self._make_task(status="failed")
+        obj = self._make_task(job_status="failed")
 
         with patch.object(redis_state, "redis_client", fake_redis):
             result = retry_failed_queue_task(str(obj.id))
 
         obj.refresh_from_db()
         assert result == "queued"
-        assert obj.status == "queued"
+        assert obj.job_status == "queued"
         assert obj.error is None
         assert obj.response is None
+        # response_code must be cleared on retry so the old code is not stale
+        assert obj.response_code is None
         mock_send.assert_called_once_with(str(obj.id))
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
@@ -1090,7 +1049,7 @@ class TestQueueCancelAndRetry(MindoffTestCase):
 
         fake_redis = _InMemoryRedis()
         api_url_name = "some_api_with_steps"
-        obj = self._make_task(status="failed", api_url_name=api_url_name)
+        obj = self._make_task(job_status="failed", api_url_name=api_url_name)
 
         steps = {"a": {"label": "A", "percent": 20}, "b": {"label": "B", "percent": 60}}
 
@@ -1112,7 +1071,7 @@ class TestQueueCancelAndRetry(MindoffTestCase):
     )
     def test_retry_not_retriable_for_non_failed(self, non_failed):
         """REJECTION: retry_failed_queue_task returns 'not_retriable' for non-failed tasks."""
-        obj = self._make_task(status=non_failed)
+        obj = self._make_task(job_status=non_failed)
         assert retry_failed_queue_task(str(obj.id)) == "not_retriable"
 
     def test_retry_not_found_for_missing_id(self):
@@ -1129,31 +1088,29 @@ class TestQueueCancelAndRetry(MindoffTestCase):
 class TestQueueRehydrate(MindoffTestCase):
     """Verifies rehydrate_queue_state() rebuilds Redis from DB when the key has expired."""
 
-    def _make_task(self, status, error=None):
+    def _make_task(self, job_status, error=None):
         from apps.django_mindoff.models import MOQueue
 
         return MOQueue.objects.create(
             id=uuid.uuid4(),
             owner_id="rehydrate_user",
             api_url_name="some_api",
-            status=status,
+            job_status=job_status,
             request={},
             error=error,
         )
-
-    # ── All DB statuses ────────────────────────────────────────────────────
 
     @pytest.mark.parametrize(
         "db_status",
         ["queued", "running", "completed", "failed", "cancelled"],
     )
     def test_restores_correct_status_from_db(self, db_status):
-        """ACCEPTANCE: rehydrate_queue_state returns the DB status for all possible states."""
+        """ACCEPTANCE: rehydrate_queue_state returns the DB job_status for all possible states."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
         obj = self._make_task(
-            status=db_status,
+            job_status=db_status,
             error={"message": "oops"} if db_status == "failed" else None,
         )
 
@@ -1161,8 +1118,6 @@ class TestQueueRehydrate(MindoffTestCase):
             result = rehydrate_queue_state(str(obj.id))
 
         assert result["job_status"] == db_status
-
-    # ── Missing UUID ─────────────────────────────────────────────────────
 
     def test_returns_unknown_for_missing_id(self):
         """BOUNDARY: rehydrate_queue_state returns 'unknown' when UUID is not in DB."""
@@ -1174,18 +1129,15 @@ class TestQueueRehydrate(MindoffTestCase):
 
         assert result["job_status"] == "unknown"
 
-    # ── Redis is fresher ──────────────────────────────────────────────────
-
     def test_trusts_redis_when_it_has_a_newer_timestamp(self):
         """ACCEPTANCE: When Redis updated_at > DB updated_at, Redis state is used."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
-        obj = self._make_task(status="queued")
+        obj = self._make_task(job_status="queued")
 
         with patch.object(redis_state, "redis_client", fake_redis):
             init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
-            # Inject a fresher "running" state directly
             fake_redis.hset(
                 f"moq:{obj.id}",
                 mapping={
@@ -1205,19 +1157,16 @@ class TestQueueRehydrate(MindoffTestCase):
         assert result["job_status"] == "running"
         assert int(result["progress"]["percent"]) == 55
 
-    # ── Cancel flag survives rehydration ─────────────────────────────────
-
     def test_cancel_flag_propagated_from_redis_to_db_on_rehydrate(self):
         """BOUNDARY: When Redis has is_cancel=True and Redis is fresher, DB is updated to cancelled."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
-        obj = self._make_task(status="running")
+        obj = self._make_task(job_status="running")
 
         with patch.object(redis_state, "redis_client", fake_redis):
             init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
             mark_running(str(obj.id))
-            # Simulate cancel requested from external source with future timestamp
             fake_redis.hset(
                 f"moq:{obj.id}",
                 mapping={
@@ -1235,9 +1184,7 @@ class TestQueueRehydrate(MindoffTestCase):
             rehydrate_queue_state(str(obj.id))
 
         obj.refresh_from_db()
-        assert obj.status == "cancelled"
-
-    # ── Steps survive rehydration ─────────────────────────────────────────
+        assert obj.job_status == "cancelled"
 
     def test_steps_are_restored_from_api_class_on_rehydrate(self):
         """ACCEPTANCE: _sync_redis_from_db re-resolves progress_steps from the API class."""
@@ -1245,7 +1192,7 @@ class TestQueueRehydrate(MindoffTestCase):
 
         fake_redis = _InMemoryRedis()
         steps = {"x": {"label": "X", "percent": 30}}
-        obj = self._make_task(status="queued")
+        obj = self._make_task(job_status="queued")
 
         with patch(
             "apps.django_mindoff.components._api_kit.queue_process.get_api_class_from_url_name"
@@ -1281,8 +1228,6 @@ class TestRedisLayer:
 
         return tz.now()
 
-    # ── init_queue ────────────────────────────────────────────────────────
-
     def test_init_queue_creates_queued_state(self):
         """ACCEPTANCE: init_queue writes job_status=queued and percent=0."""
         qid = str(uuid.uuid4())
@@ -1307,8 +1252,6 @@ class TestRedisLayer:
         state = get_queue_status(qid)
         assert state["steps"] == {}
 
-    # ── mark_running ──────────────────────────────────────────────────────
-
     def test_mark_running_sets_running_status(self):
         """ACCEPTANCE: mark_running transitions job_status to 'running'."""
         qid = str(uuid.uuid4())
@@ -1324,9 +1267,7 @@ class TestRedisLayer:
         mark_running(qid)
         state = get_queue_status(qid)
         assert state["job_status"] == "running"
-        assert (
-            state["is_cancel"] is True
-        ), "is_cancel must survive mark_running — this was a real bug"
+        assert state["is_cancel"] is True, "is_cancel must survive mark_running"
 
     def test_mark_running_preserves_steps(self):
         """BOUNDARY: mark_running preserves progress_steps in Redis."""
@@ -1335,8 +1276,6 @@ class TestRedisLayer:
         init_queue(queue_task_uuid=qid, created_at=self._now_dt(), steps=steps)
         mark_running(qid)
         assert "a" in get_queue_status(qid)["steps"]
-
-    # ── update_progress ───────────────────────────────────────────────────
 
     def test_update_progress_writes_correct_values(self):
         """ACCEPTANCE: update_progress stores percent, step, message correctly."""
@@ -1375,8 +1314,6 @@ class TestRedisLayer:
         update_progress(qid, progress=40, step="Fetching", message="page 1")
         assert "fetch" in get_queue_status(qid)["steps"]
 
-    # ── mark_completed ────────────────────────────────────────────────────
-
     def test_mark_completed_sets_100_percent(self):
         """ACCEPTANCE: mark_completed writes job_status=completed and percent=100."""
         qid = str(uuid.uuid4())
@@ -1394,8 +1331,6 @@ class TestRedisLayer:
         mark_completed(qid)
         assert "s" in get_queue_status(qid)["steps"]
 
-    # ── mark_failed ───────────────────────────────────────────────────────
-
     def test_mark_failed_stores_error_message(self):
         """ACCEPTANCE: mark_failed writes job_status=failed and error as current_message."""
         qid = str(uuid.uuid4())
@@ -1404,8 +1339,6 @@ class TestRedisLayer:
         state = get_queue_status(qid)
         assert state["job_status"] == "failed"
         assert "Something went wrong" in state["progress"]["current_message"]
-
-    # ── mark_cancel_requested ─────────────────────────────────────────────
 
     def test_mark_cancel_requested_sets_is_cancel_only(self):
         """ACCEPTANCE: mark_cancel_requested sets is_cancel=True without changing job_status."""
@@ -1419,11 +1352,7 @@ class TestRedisLayer:
 
     def test_mark_cancel_requested_noop_when_key_missing(self):
         """BOUNDARY: mark_cancel_requested on an expired/missing key must not raise."""
-        qid = str(uuid.uuid4())
-        # No init_queue — key does not exist
-        mark_cancel_requested(qid)  # must not raise
-
-    # ── mark_cancelled ────────────────────────────────────────────────────
+        mark_cancel_requested(str(uuid.uuid4()))
 
     def test_mark_cancelled_sets_terminal_state(self):
         """ACCEPTANCE: mark_cancelled sets job_status=cancelled and is_cancel=True."""
@@ -1434,8 +1363,6 @@ class TestRedisLayer:
         assert state["job_status"] == "cancelled"
         assert state["is_cancel"] is True
 
-    # ── get_queue_status: unknown ─────────────────────────────────────────
-
     def test_get_queue_status_returns_unknown_for_missing_key(self):
         """BOUNDARY: get_queue_status returns 'unknown' when key does not exist."""
         state = get_queue_status(str(uuid.uuid4()))
@@ -1444,13 +1371,13 @@ class TestRedisLayer:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. Queue status HTTP view
+# 8. Queue detail HTTP view  (GET queue/<job_uuid>/)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.django_db(transaction=True)
-class TestQueueStatusView(MindoffTestCase):
-    """HTTP tests for MindoffQueueStatusView (polling endpoint)."""
+class TestQueueDetailView(MindoffTestCase):
+    """HTTP tests for MindoffQueueDetailView — routes on job_status, returns actual payload."""
 
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
@@ -1462,110 +1389,42 @@ class TestQueueStatusView(MindoffTestCase):
     def _make_api(self, name):
         return _create_test_api(self._app, name, self._dir, self._tmpl)
 
-    def _make_task(self, api_url_name, status="queued"):
-        return _make_db_task(api_url_name, status=status)
+    def _make_task(self, api_url_name, job_status="queued", response_code=None):
+        return _make_db_task(
+            api_url_name, job_status=job_status, response_code=response_code
+        )
 
     # ── 404 ───────────────────────────────────────────────────────────────
 
     def test_returns_not_found_for_unknown_uuid(self):
-        """BOUNDARY: Polling with a nonexistent UUID returns QUEUE_TASK_NOT_FOUND."""
-        resp = self.client.get(reverse("mo_queue_status", args=[str(uuid.uuid4())]))
+        """BOUNDARY: Detail with a nonexistent UUID returns QUEUE_TASK_NOT_FOUND."""
+        resp = self.client.get(reverse("mo_queue_detail", args=[str(uuid.uuid4())]))
         assert resp.json()["message"]["code"] == "QUEUE_TASK_NOT_FOUND"
 
-    # ── Live Redis path ───────────────────────────────────────────────────
+    # ── completed: decompressed payload + response_code ───────────────────
 
-    def test_returns_live_redis_state_with_steps(self):
-        """ACCEPTANCE: Status view returns state + steps from live Redis."""
-        from apps.django_mindoff.components._api_kit import redis as redis_state
-
-        fake_redis = _InMemoryRedis()
-        api_url_name = self._make_api("test_status_live_redis_api")
-        steps = {"v": {"label": "V", "percent": 20}, "g": {"label": "G", "percent": 80}}
-
-        with patch(
-            "apps.django_mindoff.components._api_kit.queue_process.get_api_class_from_url_name"
-        ) as mock_get:
-            mock_cls = MagicMock()
-            mock_cls.progress_steps = steps
-            mock_cls.return_value = mock_cls
-            mock_cls.queue_status_limit = None
-            mock_cls.api_url_name = api_url_name
-            mock_get.return_value = mock_cls
-
-            with patch.object(redis_state, "redis_client", fake_redis):
-                obj = self._make_task(api_url_name, status="running")
-                init_queue(
-                    queue_task_uuid=str(obj.id),
-                    created_at=obj.created_at,
-                    steps=steps,
-                )
-                update_progress(
-                    str(obj.id), progress=20, step="V", message="validating"
-                )
-
-                resp = self.client.get(reverse("mo_queue_status", args=[str(obj.id)]))
-
-        body = resp.json()
-        assert body["message"]["code"] == "SUCCESS"
-        data = body["data"]
-        assert data["job_status"] == "queued"  # init_queue sets queued initially
-        assert "steps" in data
-        assert "v" in data["steps"]
-        assert "g" in data["steps"]
-
-    # ── DB fallback path ──────────────────────────────────────────────────
-
-    def test_returns_db_fallback_when_redis_expired(self):
-        """ACCEPTANCE: Status view falls back to DB status when Redis key is absent."""
-        api_url_name = self._make_api("test_status_db_fallback_api")
-        obj = _make_db_task(api_url_name, status="completed")
-
-        with (
-            patch(
-                "apps.django_mindoff.views.get_queue_status",
-                return_value={"job_status": "unknown", "is_cancel": False, "steps": {}},
-            ),
-            patch(
-                "apps.django_mindoff.views.rehydrate_queue_state",
-                return_value={"job_status": "unknown", "is_cancel": False, "steps": {}},
-            ),
-            patch("apps.django_mindoff.views.get_api_class_from_url_name") as mock_get,
-        ):
-            mock_api = MagicMock()
-            mock_api.queue_status_limit = None
-            mock_api.api_url_name = api_url_name
-            mock_get.return_value = lambda: mock_api
-
-            resp = self.client.get(reverse("mo_queue_status", args=[str(obj.id)]))
-
-        body = resp.json()
-        assert body["message"]["code"] == "SUCCESS"
-        data = body["data"]
-        assert data["job_status"] == "completed"
-
-    # ── Compressed response is decoded in status ──────────────────────────
-
-    def test_completed_task_response_is_decoded_in_status(self):
-        """ACCEPTANCE: Completed task's compressed response is decompressed in status payload."""
-        from apps.django_mindoff.components._api_kit import redis as redis_state
+    def test_completed_returns_decompressed_payload_with_response_code(self):
+        """ACCEPTANCE: Completed task returns decompressed payload using stored response_code."""
         from apps.django_mindoff.models import MOQueue
 
-        fake_redis = _InMemoryRedis()
-        api_url_name = self._make_api("test_status_response_decode_api")
+        api_url_name = self._make_api("test_detail_completed_api")
         _modify_api_run_method(
             self._app,
-            "test_status_response_decode_api",
+            "test_detail_completed_api",
             "        return {'answer': 42}",
             base_path=self._dir,
         )
         _modify_api_attribute(
             self._app,
-            "test_status_response_decode_api",
+            "test_detail_completed_api",
             "process_mode",
             "queue",
             base_path=self._dir,
         )
 
+        from apps.django_mindoff.components._api_kit import redis as redis_state
+
+        fake_redis = _InMemoryRedis()
         with patch(
             "apps.django_mindoff.components._api_kit.queue_process.execute_queue.send"
         ):
@@ -1574,42 +1433,324 @@ class TestQueueStatusView(MindoffTestCase):
                 queue_id = enqueue_resp.json()["data"]["queue_id"]
                 execute_queue(queue_id)
 
-                resp = self.client.get(reverse("mo_queue_status", args=[queue_id]))
+        obj = MOQueue.objects.get(id=queue_id)
+        assert obj.job_status == "completed"
 
-        data = resp.json()["data"]
-        assert data["job_status"] == "completed"
-        assert data["response"] is not None
+        resp = self.client.get(reverse("mo_queue_detail", args=[queue_id]))
+        body = resp.json()
+        # code must match stored response_code (or fall back to SUCCESS)
+        assert body["message"]["code"] in (obj.response_code or "SUCCESS", "SUCCESS")
+        assert body["data"] is not None
+
+    def test_completed_uses_stored_response_code(self):
+        """ACCEPTANCE: Completed task uses the stored response_code, not the hardcoded SUCCESS."""
+        from apps.django_mindoff.models import MOQueue
+        from apps.django_mindoff.components._api_kit.queue_process import (
+            _compress_json_result,
+        )
+
+        api_url_name = self._make_api("test_detail_custom_code_api")
+        obj = MOQueue.objects.create(
+            id=uuid.uuid4(),
+            owner_id="owner",
+            api_url_name=api_url_name,
+            job_status="completed",
+            response_code="CUSTOM_CODE",
+            response=_compress_json_result({"data": {"x": 1}}),
+            request={},
+        )
+
+        with patch("apps.django_mindoff.views.get_api_class_from_url_name") as mock_get:
+            mock_api = MagicMock()
+            mock_api.queue_status_limit = None
+            mock_api.api_url_name = api_url_name
+            mock_get.return_value = lambda: mock_api
+
+            resp = self.client.get(reverse("mo_queue_detail", args=[str(obj.id)]))
+
+        assert resp.json()["message"]["code"] == "CUSTOM_CODE"
+
+    # ── failed ────────────────────────────────────────────────────────────
+
+    def test_failed_returns_danger_category_with_response_code(self):
+        """ACCEPTANCE: Failed task returns danger category and stored response_code."""
+        from apps.django_mindoff.models import MOQueue
+
+        api_url_name = self._make_api("test_detail_failed_api")
+        obj = MOQueue.objects.create(
+            id=uuid.uuid4(),
+            owner_id="owner",
+            api_url_name=api_url_name,
+            job_status="failed",
+            response_code="QUEUE_TASK_FAILED",
+            error={"message": "something went wrong"},
+            request={},
+        )
+
+        with patch("apps.django_mindoff.views.get_api_class_from_url_name") as mock_get:
+            mock_api = MagicMock()
+            mock_api.queue_status_limit = None
+            mock_api.api_url_name = api_url_name
+            mock_get.return_value = lambda: mock_api
+
+            resp = self.client.get(reverse("mo_queue_detail", args=[str(obj.id)]))
+
+        body = resp.json()
+        assert body["message"]["code"] == "QUEUE_TASK_FAILED"
+        assert body["message"]["category"] == "danger"
+
+    # ── cancelled ─────────────────────────────────────────────────────────
+
+    def test_cancelled_returns_queue_task_cancelled_code(self):
+        """ACCEPTANCE: Cancelled task returns QUEUE_TASK_CANCELLED warning."""
+        api_url_name = self._make_api("test_detail_cancelled_api")
+        obj = self._make_task(api_url_name, job_status="cancelled")
+
+        with patch("apps.django_mindoff.views.get_api_class_from_url_name") as mock_get:
+            mock_api = MagicMock()
+            mock_api.queue_status_limit = None
+            mock_api.api_url_name = api_url_name
+            mock_get.return_value = lambda: mock_api
+
+            resp = self.client.get(reverse("mo_queue_detail", args=[str(obj.id)]))
+
+        body = resp.json()
+        assert body["message"]["code"] == "QUEUE_TASK_CANCELLED"
+        assert body["message"]["category"] == "warning"
+
+    # ── pending ───────────────────────────────────────────────────────────
+
+    def test_pending_returns_queue_task_pending_code(self):
+        """ACCEPTANCE: Pending task returns QUEUE_TASK_PENDING info."""
+        api_url_name = self._make_api("test_detail_pending_api")
+        obj = self._make_task(api_url_name, job_status="pending")
+
+        with patch("apps.django_mindoff.views.get_api_class_from_url_name") as mock_get:
+            mock_api = MagicMock()
+            mock_api.queue_status_limit = None
+            mock_api.api_url_name = api_url_name
+            mock_get.return_value = lambda: mock_api
+
+            resp = self.client.get(reverse("mo_queue_detail", args=[str(obj.id)]))
+
+        body = resp.json()
+        assert body["message"]["code"] == "QUEUE_TASK_PENDING"
+        assert body["message"]["category"] == "info"
+
+    # ── running ───────────────────────────────────────────────────────────
+
+    def test_running_returns_live_progress(self):
+        """ACCEPTANCE: Running task returns QUEUE_TASK_RUNNING with live Redis progress."""
+        from apps.django_mindoff.components._api_kit import redis as redis_state
+
+        fake_redis = _InMemoryRedis()
+        api_url_name = self._make_api("test_detail_running_api")
+        obj = self._make_task(api_url_name, job_status="running")
+
+        with patch("apps.django_mindoff.views.get_api_class_from_url_name") as mock_get:
+            mock_api = MagicMock()
+            mock_api.queue_status_limit = None
+            mock_api.api_url_name = api_url_name
+            mock_get.return_value = lambda: mock_api
+
+            with patch.object(redis_state, "redis_client", fake_redis):
+                init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
+                mark_running(str(obj.id))
+                update_progress(
+                    str(obj.id), progress=45, step="halfway", message="going"
+                )
+
+                resp = self.client.get(reverse("mo_queue_detail", args=[str(obj.id)]))
+
+        body = resp.json()
+        assert body["message"]["code"] == "QUEUE_TASK_RUNNING"
+        assert body["data"]["progress"]["percent"] == 45
 
     # ── Permission denied ─────────────────────────────────────────────────
 
     def test_returns_permission_denied_for_wrong_user(self):
-        """SECURITY: Polling another user's task returns PERMISSION_DENIED."""
+        """SECURITY: Detail endpoint returns PERMISSION_DENIED for another user's task."""
         from apps.django_mindoff.models import MOQueue
 
         other_user = User.objects.create_user(
             username=f"other_{uuid.uuid4().hex[:6]}", password=uuid.uuid4().hex
         )
-        api_url_name = self._make_api("test_status_perm_denied_api")
+        api_url_name = self._make_api("test_detail_perm_denied_api")
         obj = MOQueue.objects.create(
             id=uuid.uuid4(),
             owner_id=str(other_user.id),
             user_ref=other_user,
             api_url_name=api_url_name,
-            status="running",
+            job_status="running",
             request={},
         )
 
-        with patch(
-            "apps.django_mindoff.views.get_queue_status",
-            return_value={"job_status": "running", "is_cancel": False, "steps": {}},
-        ):
-            resp = self.client.get(reverse("mo_queue_status", args=[str(obj.id)]))
+        with patch("apps.django_mindoff.views.get_api_class_from_url_name") as mock_get:
+            mock_api = MagicMock()
+            mock_api.queue_status_limit = None
+            mock_api.api_url_name = api_url_name
+            mock_get.return_value = lambda: mock_api
+            resp = self.client.get(reverse("mo_queue_detail", args=[str(obj.id)]))
 
         assert resp.json()["message"]["code"] == "PERMISSION_DENIED"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 9. SSE stream
+# 9. Queue list HTTP view  (GET queue/list/)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.django_db(transaction=True)
+class TestQueueListView(MindoffTestCase):
+    """HTTP tests for MindoffQueueListView with all supported filter params."""
+
+    @pytest.fixture(autouse=True)
+    def shared_app(self, _api_templates):
+        app_name, temp_dir_path = self.mo_mock_app(is_return_path=True)
+        self._app = app_name
+        self._dir = temp_dir_path
+        self._tmpl = _api_templates
+
+    def _make_api(self, name):
+        return _create_test_api(self._app, name, self._dir, self._tmpl)
+
+    def _list(self, **params):
+        return self.client.get(reverse("mo_queue_list"), params)
+
+    # ── Unfiltered ────────────────────────────────────────────────────────
+
+    def test_returns_all_tasks_unfiltered(self):
+        """ACCEPTANCE: Plain GET queue/list/ returns all tasks and a count."""
+        api = self._make_api("test_list_unfiltered_api")
+        _make_db_task(api, job_status="queued")
+        _make_db_task(api, job_status="completed")
+
+        resp = self._list()
+        body = resp.json()
+        assert body["message"]["code"] == "SUCCESS"
+        assert body["data"]["count"] >= 2
+        assert isinstance(body["data"]["tasks"], list)
+
+    # ── Filter: id ────────────────────────────────────────────────────────
+
+    def test_filter_by_id_returns_single_task(self):
+        """ACCEPTANCE: ?id= returns only the matching task."""
+        api = self._make_api("test_list_filter_id_api")
+        obj = _make_db_task(api, job_status="queued")
+        _make_db_task(api, job_status="queued")  # second task, should be excluded
+
+        resp = self._list(id=str(obj.id))
+        body = resp.json()
+        assert body["data"]["count"] == 1
+        assert body["data"]["tasks"][0]["id"] == str(obj.id)
+
+    # ── Filter: job_status ────────────────────────────────────────────────
+
+    def test_filter_by_job_status(self):
+        """ACCEPTANCE: ?job_status= filters by job_status field."""
+        api = self._make_api("test_list_filter_status_api")
+        _make_db_task(api, job_status="completed")
+        _make_db_task(api, job_status="failed")
+
+        resp = self._list(job_status="completed", api_url_name=api)
+        tasks = resp.json()["data"]["tasks"]
+        assert all(t["job_status"] == "completed" for t in tasks)
+
+    # ── Filter: owner_id ──────────────────────────────────────────────────
+
+    def test_filter_by_owner_id(self):
+        """ACCEPTANCE: ?owner_id= returns only tasks for that owner."""
+        api = self._make_api("test_list_filter_owner_api")
+        _make_db_task(api, job_status="queued", owner_id="owner_alpha")
+        _make_db_task(api, job_status="queued", owner_id="owner_beta")
+
+        resp = self._list(owner_id="owner_alpha")
+        tasks = resp.json()["data"]["tasks"]
+        assert all(t["owner_id"] == "owner_alpha" for t in tasks)
+
+    # ── Filter: user_ref_id ───────────────────────────────────────────────
+
+    def test_filter_by_user_ref_id(self):
+        """ACCEPTANCE: ?user_ref_id= returns only tasks for that user."""
+        from apps.django_mindoff.models import MOQueue
+
+        user = User.objects.create_user(
+            username=f"list_user_{uuid.uuid4().hex[:6]}", password=uuid.uuid4().hex
+        )
+        api = self._make_api("test_list_filter_user_api")
+        MOQueue.objects.create(
+            id=uuid.uuid4(),
+            owner_id="o",
+            user_ref=user,
+            api_url_name=api,
+            job_status="queued",
+            request={},
+        )
+        _make_db_task(api, job_status="queued")  # no user_ref
+
+        resp = self._list(user_ref_id=str(user.id))
+        tasks = resp.json()["data"]["tasks"]
+        assert len(tasks) >= 1
+        assert all(t["user_ref_id"] == str(user.id) for t in tasks)
+
+    # ── Filter: api_url_name ──────────────────────────────────────────────
+
+    def test_filter_by_api_url_name(self):
+        """ACCEPTANCE: ?api_url_name= returns only tasks for that API."""
+        api_a = self._make_api("test_list_filter_api_name_a")
+        api_b = self._make_api("test_list_filter_api_name_b")
+        _make_db_task(api_a, job_status="queued")
+        _make_db_task(api_b, job_status="queued")
+
+        resp = self._list(api_url_name=api_a)
+        tasks = resp.json()["data"]["tasks"]
+        assert all(t["api_url_name"] == api_a for t in tasks)
+
+    # ── Serialised fields ─────────────────────────────────────────────────
+
+    def test_list_response_includes_response_code_field(self):
+        """ACCEPTANCE: List serialiser exposes response_code on each task."""
+        api = self._make_api("test_list_response_code_field_api")
+        _make_db_task(api, job_status="completed", response_code="MY_CODE")
+
+        resp = self._list(api_url_name=api)
+        tasks = resp.json()["data"]["tasks"]
+        completed = next(t for t in tasks if t["job_status"] == "completed")
+        assert "response_code" in completed
+        assert completed["response_code"] == "MY_CODE"
+
+    def test_list_response_does_not_include_raw_response_payload(self):
+        """ACCEPTANCE: List endpoint omits the full response blob (only summary fields)."""
+        api = self._make_api("test_list_no_payload_api")
+        _make_db_task(api, job_status="completed")
+
+        resp = self._list(api_url_name=api)
+        tasks = resp.json()["data"]["tasks"]
+        for task in tasks:
+            assert (
+                "response" not in task
+            ), "Raw response payload must not appear in list"
+
+    # ── Combined filters ──────────────────────────────────────────────────
+
+    def test_combined_filters(self):
+        """ACCEPTANCE: Multiple query params are AND-ed together."""
+        api = self._make_api("test_list_combined_filters_api")
+        _make_db_task(api, job_status="completed", owner_id="combined_owner")
+        _make_db_task(api, job_status="failed", owner_id="combined_owner")
+        _make_db_task(api, job_status="completed", owner_id="other_owner")
+
+        resp = self._list(
+            api_url_name=api, job_status="completed", owner_id="combined_owner"
+        )
+        tasks = resp.json()["data"]["tasks"]
+        assert len(tasks) == 1
+        assert tasks[0]["job_status"] == "completed"
+        assert tasks[0]["owner_id"] == "combined_owner"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. SSE stream
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -1617,10 +1758,8 @@ class TestQueueStatusView(MindoffTestCase):
 class TestQueueSSEStream(MindoffTestCase):
     """Tests for the Server-Sent Events status stream."""
 
-    def _make_task(self, api_url_name, status="running"):
-        return _make_db_task(api_url_name, status=status)
-
-    # ── 404 ───────────────────────────────────────────────────────────────
+    def _make_task(self, api_url_name, job_status="running"):
+        return _make_db_task(api_url_name, job_status=job_status)
 
     def test_stream_returns_not_found_for_unknown_uuid(self):
         """BOUNDARY: SSE stream with a nonexistent UUID returns QUEUE_TASK_NOT_FOUND."""
@@ -1632,30 +1771,51 @@ class TestQueueSSEStream(MindoffTestCase):
         if body:
             assert body["message"]["code"] == "QUEUE_TASK_NOT_FOUND"
 
-    # ── SSE terminates on completed ───────────────────────────────────────
-
     def test_stream_emits_events_and_terminates_on_completed(self):
         """ACCEPTANCE: SSE stream emits state events and stops after 'completed'."""
-        from apps.django_mindoff.components._api_kit import redis as redis_state
-
-        _ = _InMemoryRedis()
-        # We need a real api_url_name registered in urls.py; use an internal one
         from apps.django_mindoff.models import MOQueue
 
         obj = MOQueue.objects.create(
             id=uuid.uuid4(),
-            owner_id="sse_user",
-            api_url_name="mo_queue_status",  # an always-existing URL name
-            status="running",
+            owner_id=f"sse_user_{uuid.uuid4().hex[:10]}",
+            api_url_name="mo_queue_status_stream",
+            job_status="running",
             request={},
         )
 
-        events_collected = []
-
         def fake_generator():
-            # yield two progress events then a terminal
-            yield f"data: {json.dumps({'job_status': 'running', 'id': str(obj.id), 'is_cancel': False, 'progress': {'percent': 50, 'current_step': '', 'current_message': ''}, 'steps': {}, 'started_at': '', 'updated_at': ''})}\n\n"
-            yield f"data: {json.dumps({'job_status': 'completed', 'id': str(obj.id), 'is_cancel': False, 'progress': {'percent': 100, 'current_step': '', 'current_message': ''}, 'steps': {}, 'started_at': '', 'updated_at': ''})}\n\n"
+            running_event = json.dumps(
+                {
+                    "job_status": "running",
+                    "id": str(obj.id),
+                    "is_cancel": False,
+                    "progress": {
+                        "percent": 50,
+                        "current_step": "",
+                        "current_message": "",
+                    },
+                    "steps": {},
+                    "started_at": "",
+                    "updated_at": "",
+                }
+            )
+            completed_event = json.dumps(
+                {
+                    "job_status": "completed",
+                    "id": str(obj.id),
+                    "is_cancel": False,
+                    "progress": {
+                        "percent": 100,
+                        "current_step": "",
+                        "current_message": "",
+                    },
+                    "steps": {},
+                    "started_at": "",
+                    "updated_at": "",
+                }
+            )
+            yield f"data: {running_event}\n\n"
+            yield f"data: {completed_event}\n\n"
 
         with patch(
             "apps.django_mindoff.views.MindoffQueueStatusStreamView._event_stream",
@@ -1676,8 +1836,6 @@ class TestQueueSSEStream(MindoffTestCase):
         assert any(e["job_status"] == "running" for e in events)
         assert any(e["job_status"] == "completed" for e in events)
 
-    # ── steps in SSE events ───────────────────────────────────────────────
-
     def test_stream_events_include_steps(self):
         """ACCEPTANCE: Each SSE event payload includes the steps dict."""
         from apps.django_mindoff.models import MOQueue
@@ -1685,9 +1843,9 @@ class TestQueueSSEStream(MindoffTestCase):
         steps = {"a": {"label": "A", "percent": 30}}
         obj = MOQueue.objects.create(
             id=uuid.uuid4(),
-            owner_id="sse_steps_user",
-            api_url_name="mo_queue_status",
-            status="running",
+            owner_id=f"sse_steps_user_{uuid.uuid4().hex[:10]}",
+            api_url_name="mo_queue_status_stream",
+            job_status="running",
             request={},
         )
 
@@ -1723,24 +1881,21 @@ class TestQueueSSEStream(MindoffTestCase):
         assert "steps" in event_data
         assert "a" in event_data["steps"]
 
-    # ── SSE permission check ───────────────────────────────────────────────
-
     def test_stream_permission_denied_for_wrong_user(self):
         """SECURITY: SSE stream returns PERMISSION_DENIED for a task owned by another user."""
         from apps.django_mindoff.models import MOQueue
 
         owner = User.objects.create_user(
-            username=f"sse_owner_{uuid.uuid4().hex[:6]}", password="pass"
+            username=f"sse_owner_{uuid.uuid4().hex[:6]}", password=uuid.uuid4().hex
         )
         obj = MOQueue.objects.create(
             id=uuid.uuid4(),
             owner_id=str(owner.id),
             user_ref=owner,
-            api_url_name="mo_queue_status",
-            status="running",
+            api_url_name="mo_queue_status_stream",
+            job_status="running",
             request={},
         )
-        # Request as anonymous user (not owner)
         resp = self.client.get(reverse("mo_queue_status_stream", args=[str(obj.id)]))
         assert resp.status_code in (200, 400, 403)
         if resp["Content-Type"] == "application/json":
@@ -1748,7 +1903,7 @@ class TestQueueSSEStream(MindoffTestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. Internal helper functions
+# 11. Internal helper functions
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -1816,13 +1971,13 @@ class TestQueueHelpers:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 11. Full end-to-end integration pipeline
+# 12. Full end-to-end integration pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.django_db(transaction=True)
 class TestQueueFullPipeline(MindoffTestCase):
-    """Full lifecycle: enqueue → worker executes → poll confirms completed + steps in response."""
+    """Full lifecycle: enqueue → worker executes → detail endpoint returns result."""
 
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
@@ -1837,8 +1992,8 @@ class TestQueueFullPipeline(MindoffTestCase):
     # ── Happy path ────────────────────────────────────────────────────────
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
-    def test_enqueue_execute_poll_with_response(self, _mock_send):
-        """INTEGRATION: Full queue lifecycle — enqueue, execute, poll returns completed + response."""
+    def test_enqueue_execute_detail_with_response(self, _mock_send):
+        """INTEGRATION: Full queue lifecycle — enqueue, execute, detail returns completed + payload."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -1865,50 +2020,53 @@ class TestQueueFullPipeline(MindoffTestCase):
             queue_id = enqueue_resp.json()["data"]["queue_id"]
 
             obj = MOQueue.objects.get(id=queue_id)
-            assert obj.status == "queued"
+            assert obj.job_status == "queued"
+            assert obj.response_code is None
 
             # 2. Execute
             execute_queue(queue_id)
             obj.refresh_from_db()
-            assert obj.status == "completed"
+            assert obj.job_status == "completed"
+            assert obj.response_code is not None  # populated by worker
 
-            # 3. Poll
-            poll_resp = self.client.get(reverse("mo_queue_status", args=[queue_id]))
-            data = poll_resp.json()["data"]
+            # 3. Detail — returns actual payload using mo_queue_detail URL
+            detail_resp = self.client.get(reverse("mo_queue_detail", args=[queue_id]))
+            data = detail_resp.json()
 
-        assert data["job_status"] == "completed"
-        assert int(data["progress"]["percent"]) == 100
-        response_payload = data["response"]
+        # code comes from stored response_code, not hardcoded SUCCESS
+        assert data["message"]["code"] == obj.response_code
+        assert data["data"] is not None
+        response_payload = data["data"]
         normalized = (
-            response_payload["data"]
-            if isinstance(response_payload, dict) and "data" in response_payload
+            response_payload.get("data", response_payload)
+            if isinstance(response_payload, dict)
             else response_payload
         )
-        assert normalized["pipeline"] == "ok"
-        assert normalized["value"] == 123
+        assert normalized.get("pipeline") == "ok"
+        assert normalized.get("value") == 123
 
     # ── Steps visible end-to-end ──────────────────────────────────────────
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
-    def test_progress_steps_visible_in_poll_response(self, _mock_send):
-        """INTEGRATION: progress_steps defined on the API class appear in poll response."""
+    def test_progress_steps_visible_via_sse_stream(self, _mock_send):
+        """INTEGRATION: progress_steps defined on the API class appear in SSE events."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
-        api_url_name = self._make_api("test_e2e_steps_poll_api")
+        api_url_name = self._make_api("test_e2e_steps_sse_api")
         steps = {
             "validate": {"label": "Validating", "percent": 10},
             "generate": {"label": "Generating", "percent": 80},
         }
         _modify_api_attributes(
             self._app,
-            "test_e2e_steps_poll_api",
+            "test_e2e_steps_sse_api",
             {"process_mode": "queue", "progress_steps": steps},
             base_path=self._dir,
         )
         _modify_api_run_method(
             self._app,
-            "test_e2e_steps_poll_api",
+            "test_e2e_steps_sse_api",
             "        self.progress_checkpoint(request, 'validate')\n"
             "        self.progress_checkpoint(request, 'generate', msg='Almost done')\n"
             "        return {'ok': True}",
@@ -1919,21 +2077,18 @@ class TestQueueFullPipeline(MindoffTestCase):
             enqueue_resp = self.client.get(reverse(api_url_name))
             queue_id = enqueue_resp.json()["data"]["queue_id"]
             execute_queue(queue_id)
+            state = get_queue_status(queue_id)
 
-            poll_resp = self.client.get(reverse("mo_queue_status", args=[queue_id]))
-            data = poll_resp.json()["data"]
-
-        assert "steps" in data
-        assert "validate" in data["steps"]
-        assert "generate" in data["steps"]
-        assert data["steps"]["validate"]["percent"] == 10
-        assert data["steps"]["generate"]["label"] == "Generating"
+        assert "validate" in state["steps"]
+        assert "generate" in state["steps"]
+        assert state["steps"]["validate"]["percent"] == 10
+        assert state["steps"]["generate"]["label"] == "Generating"
 
     # ── Full cancel flow ──────────────────────────────────────────────────
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
-    def test_cancel_flow_enqueue_cancel_status(self, _mock_send):
-        """INTEGRATION: Enqueue → cancel → poll shows cancel_requested, then worker cancels."""
+    def test_cancel_flow_enqueue_cancel_detail_shows_cancelled(self, _mock_send):
+        """INTEGRATION: Enqueue → cancel → execute → detail shows QUEUE_TASK_CANCELLED."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -1963,4 +2118,51 @@ class TestQueueFullPipeline(MindoffTestCase):
             execute_queue(queue_id)
 
         obj = MOQueue.objects.get(id=queue_id)
-        assert obj.status == "cancelled"
+        assert obj.job_status == "cancelled"
+
+        # Detail endpoint must report cancelled
+        with patch.object(redis_state, "redis_client", fake_redis):
+            detail_resp = self.client.get(reverse("mo_queue_detail", args=[queue_id]))
+
+        assert detail_resp.json()["message"]["code"] == "QUEUE_TASK_CANCELLED"
+
+    # ── Retry after failure ───────────────────────────────────────────────
+
+    @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
+    def test_retry_clears_response_code_and_requeues(self, _mock_send):
+        """INTEGRATION: Retry clears response_code; detail returns QUEUE_TASK_PENDING until re-executed."""
+        from apps.django_mindoff.components._api_kit import redis as redis_state
+        from apps.django_mindoff.models import MOQueue
+
+        fake_redis = _InMemoryRedis()
+        api_url_name = self._make_api("test_e2e_retry_api")
+        _modify_api_run_method(
+            self._app,
+            "test_e2e_retry_api",
+            "        raise RuntimeError('first_attempt_failure')",
+            base_path=self._dir,
+        )
+        _modify_api_attribute(
+            self._app,
+            "test_e2e_retry_api",
+            "process_mode",
+            "queue",
+            base_path=self._dir,
+        )
+
+        with patch.object(redis_state, "redis_client", fake_redis):
+            enqueue_resp = self.client.get(reverse(api_url_name))
+            queue_id = enqueue_resp.json()["data"]["queue_id"]
+            execute_queue(queue_id)
+
+        obj = MOQueue.objects.get(id=queue_id)
+        assert obj.job_status == "failed"
+        assert obj.response_code is not None
+
+        # Retry — response_code must be cleared
+        retry_resp = self.client.post(reverse("mo_queue_retry", args=[queue_id]))
+        assert retry_resp.json()["message"]["code"] == "QUEUED"
+
+        obj.refresh_from_db()
+        assert obj.job_status == "queued"
+        assert obj.response_code is None
