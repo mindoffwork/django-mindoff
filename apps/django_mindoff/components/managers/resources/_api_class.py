@@ -29,8 +29,12 @@ class MindOffSampleAPI(MindoffAPIMixin):
 
     # 5. Usage Limits Per User
     api_request_limit: str | None = "30/m"
-    queue_status_polling_limit: str | None = "30/m"
-    queue_status_streaming_limit: int | None = 3
+    queue_status_limit: str | None = "30/m"
+    queue_status_stream_limit: int | None = 3
+
+
+    # 6. Queue Progress Steps
+    progress_steps: dict | None = None
 
     def run(self, request, *args, **kwargs):
         # === Standard Mindoff request access guide ===

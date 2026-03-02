@@ -1,36 +1,53 @@
-# views.py
-import argparse
-import importlib
 import json
 import time
+import gzip
+import base64
 
-from .components import managers
 from django.http import JsonResponse, StreamingHttpResponse
 from django.views import View
-from django.shortcuts import get_object_or_404
 from django.urls import reverse
+from typing import Literal
 
 from .models import MOQueue
-from .components._api_kit.redis import get_queue_status
+from .components._api_kit.redis import (
+    get_queue_status,
+    sse_event,
+    acquire_sse_slot,
+    release_sse_slot,
+)
 from .components._api_kit.queue_process import (
     rehydrate_queue_state,
     cancel_queue_task,
     retry_failed_queue_task,
 )
 from django_ratelimit.core import is_ratelimited
+from rest_framework.renderers import BaseRenderer
 from .components.validation_kit import mo_validation_kit
 from .components.helper_kit import get_api_class_from_url_name
-from .components._api_kit.redis import sse_event, acquire_sse_slot, release_sse_slot
 from .components.api_kit import MindoffAPIMixin
-from typing import Any, Dict, List, Union, Optional, Literal, Callable
 from .components.response_kit import mo_response_kit
 
 access_denied_message = "User not allowed to access this queue task"
 
 
-class MindoffQueuePollingView(MindoffAPIMixin):
-    api_url_name: str = "mo_queue_status_polling"
-    api_name: str = "Mindoff Queue Status Polling"
+class SSEEventStreamRenderer(BaseRenderer):
+    media_type = "text/event-stream"
+    format = "event-stream"
+    charset = None
+    render_style = "binary"
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return data
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Queue status (polling)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class MindoffQueueStatusView(MindoffAPIMixin):
+    api_url_name: str = "mo_queue_status"
+    api_name: str = "Mindoff Queue Status"
     api_description: str = "Get the status of a specific queue task"
     authentication_classes: list = []
     permission_classes: list = []
@@ -40,7 +57,7 @@ class MindoffQueuePollingView(MindoffAPIMixin):
 
     def run(self, request, queue_task_uuid):
 
-        # 1. Load task from SQL (ownership + existence)
+        # 1. Load task (SQL is the authoritative store)
         try:
             obj = MOQueue.objects.get(id=queue_task_uuid)
         except MOQueue.DoesNotExist:
@@ -50,22 +67,24 @@ class MindoffQueuePollingView(MindoffAPIMixin):
                 data={"queue_task_uuid": queue_task_uuid},
             )
 
-        # 2. Rate Limit API
+        # 2. Per-task rate limiting (uses the originating API's configured limit)
         api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
-        if api.queue_status_polling_limit:
+        queue_status_limit = getattr(api, "queue_status_limit", None)
+        if queue_status_limit:
             limited = is_ratelimited(
                 request,
-                group=str(api.api_url_name) + "_" + str(queue_task_uuid),
+                group=f"{api.api_url_name}_{queue_task_uuid}",
                 key="user_or_ip",
-                rate=api.queue_status_polling_limit,
+                rate=queue_status_limit,
                 increment=True,
             )
             mo_validation_kit.ensure_falsey(
                 limited,
-                msg="API Rate limit exceeded. Please try again after sometime.",
+                msg="Rate limit exceeded. Please try again later.",
+                code="API_RATE_LIMITED",
             )
 
-        # 2. Permission check (same as SSE)
+        # 3. Ownership check
         if obj.user_ref_id:
             request_user_id = getattr(request.user, "id", None)
             if str(obj.user_ref_id) != str(request_user_id):
@@ -73,44 +92,56 @@ class MindoffQueuePollingView(MindoffAPIMixin):
                     code="PERMISSION_DENIED", category="danger"
                 )
 
-        # 3. Try Redis first (live state)
+        # 4. Fetch live Redis state (rehydrate if expired)
         redis_state = get_queue_status(queue_task_uuid)
-        if redis_state.get("status") == "unknown":
+        if _state_status(redis_state) == "unknown":
             redis_state = rehydrate_queue_state(str(queue_task_uuid))
-        if redis_state.get("status") != "unknown":
+
+        if _state_status(redis_state) != "unknown":
             data = {
                 "queue_id": str(queue_task_uuid),
-                **redis_state,
+                **_status_payload(redis_state),
+                "response": _get_queue_response(obj),
             }
             return mo_response_kit.json_response(
                 code="SUCCESS", category="success", data=data
             )
 
-        # 4. Redis expired → fallback to SQL
+        # 5. Fallback: Redis fully expired and rehydration failed → use DB
         data = {
             "queue_id": str(queue_task_uuid),
-            "status": obj.status,
-            "progress": 100 if obj.status == "completed" else 0,
-            "current_step": "",
-            "message": obj.error or "",
-            "last_updated_at": obj.updated_at.isoformat(),
+            "job_status": obj.status,
+            "is_cancel": obj.status == "cancelled",
+            "progress": {
+                "percent": 100 if obj.status == "completed" else 0,
+                "current_step": "",
+                "current_message": str(obj.error or ""),
+            },
+            "steps": _resolve_steps_from_api(obj.api_url_name),
+            "started_at": obj.created_at.isoformat(),
+            "updated_at": obj.updated_at.isoformat(),
+            "response": _get_queue_response(obj),
         }
         return mo_response_kit.json_response(
             code="SUCCESS", category="success", data=data
         )
 
 
-class MindoffQueueStreamingView(MindoffAPIMixin):
-    api_url_name: str = "mo_queue_status_streaming"
-    api_name: str = "Mindoff Queue Status Streaming"
-    api_description: str = (
-        "Get the status of a specific queue task in real-time using Server-Sent Events"
-    )
+# ─────────────────────────────────────────────────────────────────────────────
+# Queue status stream (SSE)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class MindoffQueueStatusStreamView(MindoffAPIMixin):
+    api_url_name: str = "mo_queue_status_stream"
+    api_name: str = "Mindoff Queue Status Stream"
+    api_description: str = "Real-time queue task status via Server-Sent Events"
     authentication_classes: list = []
     permission_classes: list = []
     method: Literal["get", "post", "put", "delete"] = "get"
     process_mode: Literal["direct", "queue"] = "direct"
     api_request_limit: str | None = "60/m"
+    renderer_classes = [SSEEventStreamRenderer]
 
     def run(self, request, queue_task_uuid):
         try:
@@ -122,7 +153,6 @@ class MindoffQueueStreamingView(MindoffAPIMixin):
                 data={"queue_task_uuid": queue_task_uuid},
             )
 
-        # validation + rate limit
         self._validate_user(request, obj)
         self._acquire_sse_limit(obj)
 
@@ -132,13 +162,11 @@ class MindoffQueueStreamingView(MindoffAPIMixin):
         )
         response["Cache-Control"] = "no-cache"
         response["X-Accel-Buffering"] = "no"
-
         return response
 
     def _validate_user(self, request, obj):
         if not obj.user_ref_id:
             return
-
         request_user_id = getattr(request.user, "id", None)
         mo_validation_kit.ensure_equal(
             str(obj.user_ref_id),
@@ -149,11 +177,9 @@ class MindoffQueueStreamingView(MindoffAPIMixin):
 
     def _acquire_sse_limit(self, obj):
         api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
-        max_streams = api.queue_status_streaming_limit
-
+        max_streams = getattr(api, "queue_status_stream_limit", None)
         if max_streams is None:
             return
-
         mo_validation_kit.ensure_truthy(
             acquire_sse_slot(obj.owner_id, limit=max_streams),
             msg="Too many active streams",
@@ -166,46 +192,57 @@ class MindoffQueueStreamingView(MindoffAPIMixin):
             try:
                 while True:
                     state = get_queue_status(queue_task_uuid)
-                    if self.__is_unknown_state(state):
+                    if _state_status(state) == "unknown":
                         state = rehydrate_queue_state(str(queue_task_uuid))
-                        if self.__is_unknown_state(state):
-                            yield sse_event(self.__fallback_state(obj))
+                        if _state_status(state) == "unknown":
+                            yield sse_event(self._fallback_state(obj))
                             return
-                    event = self.__maybe_sse_event(state, last_state)
+
+                    event = self._maybe_sse_event(state, last_state)
                     if event is not None:
                         yield event
-                        last_state = state
-                    if self.__is_terminal_state(state):
+                        last_state = _stream_state_payload(state)
+
+                    if _state_status(state) in ("completed", "failed", "cancelled"):
                         return
+
                     time.sleep(1)
             finally:
                 release_sse_slot(obj.owner_id)
 
         return generator()
 
-    def __is_unknown_state(self, state):
-        return state.get("status") == "unknown"
-
-    def __is_terminal_state(self, state):
-        return state.get("status") in ("completed", "failed", "cancelled")
-
-    def __fallback_state(self, obj):
+    def _fallback_state(self, obj):
         return {
-            "status": obj.status,
-            "progress": 100 if obj.status == "completed" else 0,
-            "message": obj.error or "",
+            "id": str(obj.id),
+            "job_status": obj.status,
+            "is_cancel": obj.status == "cancelled",
+            "progress": {
+                "percent": 100 if obj.status == "completed" else 0,
+                "current_step": "",
+                "current_message": str(obj.error or ""),
+            },
+            "steps": _resolve_steps_from_api(obj.api_url_name),
+            "started_at": obj.created_at.isoformat(),
+            "updated_at": obj.updated_at.isoformat(),
         }
 
-    def __maybe_sse_event(self, state, last_state):
-        if state == last_state:
+    def _maybe_sse_event(self, state, last_state):
+        event_state = _stream_state_payload(state)
+        if event_state == last_state:
             return None
-        return sse_event(state)
+        return sse_event(event_state)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Queue cancel
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class MindoffQueueCancelView(MindoffAPIMixin):
     api_url_name: str = "mo_queue_cancel"
     api_name: str = "Mindoff Queue Cancel"
-    api_description: str = "Cancel a running queue task"
+    api_description: str = "Cancel a running or queued task"
     authentication_classes: list = []
     permission_classes: list = []
     method: Literal["get", "post", "put", "delete"] = "post"
@@ -224,12 +261,12 @@ class MindoffQueueCancelView(MindoffAPIMixin):
 
         self._validate_user(request, obj)
 
-        status = cancel_queue_task(str(queue_task_uuid))
-        if status == "cancelled":
+        result = cancel_queue_task(str(queue_task_uuid))
+        if result == "cancelled":
             return mo_response_kit.json_response(
                 code="SUCCESS",
                 category="success",
-                data={"queue_id": str(queue_task_uuid), "status": "cancelled"},
+                data={"queue_id": str(queue_task_uuid), "status": "cancel_requested"},
             )
 
         return mo_response_kit.json_response(
@@ -250,10 +287,15 @@ class MindoffQueueCancelView(MindoffAPIMixin):
         )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Queue retry
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 class MindoffQueueRetryView(MindoffAPIMixin):
     api_url_name: str = "mo_queue_retry"
     api_name: str = "Mindoff Queue Retry"
-    api_description: str = "API Description"
+    api_description: str = "Retry a previously failed queue task"
     authentication_classes: list = []
     permission_classes: list = []
     method: Literal["get", "post", "put", "delete"] = "post"
@@ -272,21 +314,21 @@ class MindoffQueueRetryView(MindoffAPIMixin):
 
         self._validate_user(request, obj)
 
-        status = retry_failed_queue_task(str(queue_task_uuid))
-        if status == "queued":
-            status_polling_url = request.build_absolute_uri(
-                reverse("mo_queue_status_polling", args=[queue_task_uuid])
+        result = retry_failed_queue_task(str(queue_task_uuid))
+        if result == "queued":
+            status_url = request.build_absolute_uri(
+                reverse("mo_queue_status", args=[queue_task_uuid])
             )
-            status_streaming_url = request.build_absolute_uri(
-                reverse("mo_queue_status_streaming", args=[queue_task_uuid])
+            status_stream_url = request.build_absolute_uri(
+                reverse("mo_queue_status_stream", args=[queue_task_uuid])
             )
             return mo_response_kit.json_response(
                 code="QUEUED",
                 category="success",
                 data={
                     "queue_id": str(queue_task_uuid),
-                    "status_polling_url": status_polling_url,
-                    "status_streaming_url": status_streaming_url,
+                    "status_url": status_url,
+                    "status_stream_url": status_stream_url,
                 },
             )
 
@@ -308,4 +350,69 @@ class MindoffQueueRetryView(MindoffAPIMixin):
         )
 
 
-# ---------- Helper Functions ----------
+# ─────────────────────────────────────────────────────────────────────────────
+# Private helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _get_queue_response(obj: MOQueue) -> dict:
+    """Decompress and return the stored response payload, or ``{}``."""
+    payload = obj.response or {}
+    if not isinstance(payload, dict):
+        return {}
+
+    if payload.get("__compressed__") and payload.get("codec") == "gzip+base64":
+        raw_b64 = payload.get("data")
+        if not raw_b64:
+            return {}
+        try:
+            compressed = base64.b64decode(raw_b64)
+            raw = gzip.decompress(compressed).decode("utf-8")
+            decoded = json.loads(raw)
+            return decoded if isinstance(decoded, dict) else {"result": decoded}
+        except Exception:
+            return {}
+
+    return payload
+
+
+def _state_status(state: dict) -> str:
+    return state.get("job_status") or "unknown"
+
+
+def _status_payload(state: dict) -> dict:
+    """
+    Build the status dict that is embedded in the polling response.
+    Includes ``steps`` so the client can render a progress timeline.
+    """
+    progress = state.get("progress") if isinstance(state.get("progress"), dict) else {}
+    return {
+        "id": str(state.get("id", "")),
+        "job_status": _state_status(state),
+        "is_cancel": bool(state.get("is_cancel", False)),
+        "progress": {
+            "percent": max(0, min(100, int(progress.get("percent", 0)))),
+            "current_step": str(progress.get("current_step", "")),
+            "current_message": str(progress.get("current_message", "")),
+        },
+        "steps": state.get("steps") or {},
+        "started_at": state.get("started_at"),
+        "updated_at": state.get("updated_at"),
+    }
+
+
+def _stream_state_payload(state: dict) -> dict:
+    """Identical to ``_status_payload`` but also used for SSE deduplication."""
+    return _status_payload(state)
+
+
+def _resolve_steps_from_api(api_url_name: str) -> dict:
+    """
+    Look up ``progress_steps`` from the API class when Redis has expired and
+    we need to include steps in a fallback response.
+    """
+    try:
+        api_cls = get_api_class_from_url_name(api_url_name=api_url_name)
+        return getattr(api_cls, "progress_steps", None) or {}
+    except Exception:
+        return {}

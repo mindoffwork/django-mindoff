@@ -30,7 +30,7 @@ class MOQueue(TimeStampModel):
         related_name="mo_queue_ref_rev",
         db_column="user_ref_id",
     )
-    idempotency_key = models.CharField(max_length=64, blank=True)
+    idempotency_key = models.CharField(max_length=64, null=True, blank=True)
     api_url_name = models.TextField()
     status = models.CharField(max_length=20)
     request = models.JSONField(null=True, blank=True)

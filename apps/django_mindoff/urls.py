@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
-    MindoffQueuePollingView,
-    MindoffQueueStreamingView,
+    MindoffQueueStatusView,
+    MindoffQueueStatusStreamView,
     MindoffQueueCancelView,
     MindoffQueueRetryView,
 )
@@ -9,13 +9,13 @@ from .views import (
 urlpatterns = [
     path(
         "queue/<uuid:queue_task_uuid>/",
-        MindoffQueuePollingView.as_view(),
-        name="mo_queue_status_polling",
+        MindoffQueueStatusView.as_view(),
+        name="mo_queue_status",
     ),
     path(
         "queue/<uuid:queue_task_uuid>/stream/",
-        MindoffQueueStreamingView.as_view(),
-        name="mo_queue_status_streaming",
+        MindoffQueueStatusStreamView.as_view(),
+        name="mo_queue_status_stream",
     ),
     path(
         "queue/<uuid:queue_task_uuid>/cancel/",

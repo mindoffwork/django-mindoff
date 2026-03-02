@@ -17,3 +17,4 @@ CREATED,Successfully Created,Information have been saved successfully.,200
 UPDATED,Successfully Updated,Information have been updated successfully.,200
 QUEUED,Queued,Operation added to queue.,200
 QUEUE_TASK_NOT_FOUND,Queued Task Not Found,The requested queued task does not exist or has expired.,404
+QUEUE_TASK_CANCELLED,Queue Task Cancelled,The queue task was cancelled before completion.,200
