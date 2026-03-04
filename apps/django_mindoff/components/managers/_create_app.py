@@ -4,6 +4,8 @@ from pathlib import Path
 
 from ..helper_kit import mo_helper_kit
 
+init_file_name = "__init__.py"
+
 
 # ======== CLASSES =======
 # Add Classes here
@@ -39,7 +41,7 @@ class DjangoAppCreator:
         parts = self.dotted_path.replace(".", "/").split("/")
         for i in range(1, len(parts)):
             init_dir = os.path.join(self.project_root, *parts[:i])
-            open(os.path.join(init_dir, "__init__.py"), "a").close()
+            open(os.path.join(init_dir, init_file_name), "a").close()
 
     def _run_startapp(self):
         print(f"[ACTION] Creating App at: {self.app_dir}.")
@@ -109,13 +111,13 @@ class DjangoAppCreator:
             os.remove(admin_py)
         tests_folder = os.path.join(self.app_dir, "tests")
         os.makedirs(tests_folder, exist_ok=True)
-        open(os.path.join(tests_folder, "__init__.py"), "w").close()
+        open(os.path.join(tests_folder, init_file_name), "w").close()
         components_folder = os.path.join(self.app_dir, "components")
         os.makedirs(components_folder, exist_ok=True)
-        open(os.path.join(components_folder, "__init__.py"), "w").close()
+        open(os.path.join(components_folder, init_file_name), "w").close()
         apis_folder = os.path.join(self.app_dir, "apis")
         os.makedirs(apis_folder, exist_ok=True)
-        open(os.path.join(apis_folder, "__init__.py"), "w").close()
+        open(os.path.join(apis_folder, init_file_name), "w").close()
 
     def _update_settings(self):
         with open(self.settings_path, "r+") as f:
