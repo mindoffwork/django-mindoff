@@ -16,6 +16,7 @@ SUCCESS,Success,Operation completed successfully.,200
 CREATED,Successfully Created,Information have been saved successfully.,200
 UPDATED,Successfully Updated,Information have been updated successfully.,200
 QUEUED,Queued,Operation added to queue.,200
+QUEUE_SERVICE_UNAVAILABLE,Queue Service Unavailable,Queuing service is currently unavailable. Please try again later.,503
 QUEUE_TASK_NOT_FOUND,Queued Task Not Found,The requested queued task does not exist or has expired.,404
 QUEUE_TASK_CANCELLED,Queue Task Cancelled,The queue task was cancelled before completion.,200
 QUEUE_TASK_PENDING,Queue Task Pending,The queue task has not started yet.,200

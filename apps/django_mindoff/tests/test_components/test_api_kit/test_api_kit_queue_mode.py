@@ -3,6 +3,8 @@ import base64
 import json
 import time
 import uuid
+import shutil
+from urllib.parse import urlparse
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +16,8 @@ from ....components.tdd_kit import MindoffTestCase
 from ....components._api_kit.queue_process import (
     _COMPRESSED_RESPONSE_FLAG,
     _compress_json_result,
+    _compress_json_result_if_large,
+    _decode_json_blob,
     _ensure_json_result,
     _extract_result,
     cancel_queue_task,
@@ -107,7 +111,7 @@ def _make_db_task(
     job_status: str = "queued",
     owner_id: str = "test_owner",
     error=None,
-    response_code: str | None = None,
+    response_code: int | None = None,
 ):
     """Create a minimal MOQueue row suitable for worker tests."""
     from apps.django_mindoff.models import MOQueue
@@ -180,6 +184,24 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
         assert queue_id in data["status_stream_url"]
 
     # ── DB record ─────────────────────────────────────────────────────────
+
+    @patch("apps.django_mindoff.components.api_kit.enqueue_process")
+    def test_returns_queue_service_unavailable_when_backend_is_down(self, mock_enqueue):
+        """REJECTION: Queue mode returns 503 when queue infra is unavailable."""
+        mock_enqueue.side_effect = ConnectionError("Connection refused")
+        api_url_name = self._make_api("test_enqueue_queue_unavailable_api")
+        _modify_api_attribute(
+            self._app,
+            "test_enqueue_queue_unavailable_api",
+            "process_mode",
+            "queue",
+            base_path=self._dir,
+        )
+
+        resp = self.client.get(reverse(api_url_name))
+        body = resp.json()
+        assert resp.status_code == 503
+        assert body["message"]["code"] == "QUEUE_SERVICE_UNAVAILABLE"
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     @patch("apps.django_mindoff.components._api_kit.queue_process.init_queue")
@@ -753,7 +775,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
         mock_failed.assert_not_called()
 
     def test_response_code_stored_on_completion(self):
-        """ACCEPTANCE: response_code from the worker's return value is persisted to DB."""
+        """ACCEPTANCE: worker stores HTTP status code in response_code on completion."""
         api_url_name = self._make_api("test_worker_response_code_api")
         _modify_api_run_method(
             self._app,
@@ -768,11 +790,10 @@ class TestQueueWorkerExecution(MindoffTestCase):
         obj.refresh_from_db()
 
         assert obj.job_status == "completed"
-        # response_code must be populated; exact value depends on worker extraction logic
-        assert obj.response_code is not None
+        assert obj.response_code == 200
 
     def test_response_code_stored_on_failure(self):
-        """ACCEPTANCE: response_code is populated on failure tasks."""
+        """ACCEPTANCE: worker stores HTTP status code in response_code on failure."""
         api_url_name = self._make_api("test_worker_fail_response_code_api")
         _modify_api_run_method(
             self._app,
@@ -786,8 +807,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
         obj.refresh_from_db()
 
         assert obj.job_status == "failed"
-        # Worker should write a failure response_code (e.g. "QUEUE_TASK_FAILED")
-        assert obj.response_code is not None
+        assert obj.response_code == 500
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_failed")
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_completed")
@@ -1404,14 +1424,19 @@ class TestQueueDetailView(MindoffTestCase):
     # ── completed: decompressed payload + response_code ───────────────────
 
     def test_completed_returns_decompressed_payload_with_response_code(self):
-        """ACCEPTANCE: Completed task returns decompressed payload using stored response_code."""
+        """ACCEPTANCE: Completed task returns the stored queued API response as-is."""
         from apps.django_mindoff.models import MOQueue
 
         api_url_name = self._make_api("test_detail_completed_api")
         _modify_api_run_method(
             self._app,
             "test_detail_completed_api",
-            "        return {'answer': 42}",
+            "        from apps.django_mindoff.components.response_kit import mo_response_kit\n"
+            "        return mo_response_kit.json_response(\n"
+            "            code='SUCCESS',\n"
+            "            category='success',\n"
+            "            data=[{'answer': 42}],\n"
+            "        )",
             base_path=self._dir,
         )
         _modify_api_attribute(
@@ -1435,28 +1460,40 @@ class TestQueueDetailView(MindoffTestCase):
 
         obj = MOQueue.objects.get(id=queue_id)
         assert obj.job_status == "completed"
+        assert obj.response_code == 200
 
         resp = self.client.get(reverse("mo_queue_detail", args=[queue_id]))
         body = resp.json()
-        # code must match stored response_code (or fall back to SUCCESS)
-        assert body["message"]["code"] in (obj.response_code or "SUCCESS", "SUCCESS")
-        assert body["data"] is not None
+        assert resp.status_code == 200
+        assert body["status"] == "ok"
+        assert body["message"]["code"] == "SUCCESS"
+        assert body["data"] == [{"answer": 42}]
 
     def test_completed_uses_stored_response_code(self):
-        """ACCEPTANCE: Completed task uses the stored response_code, not the hardcoded SUCCESS."""
+        """ACCEPTANCE: Completed task HTTP status comes from stored response_code."""
         from apps.django_mindoff.models import MOQueue
         from apps.django_mindoff.components._api_kit.queue_process import (
             _compress_json_result,
         )
 
         api_url_name = self._make_api("test_detail_custom_code_api")
+        stored_response = {
+            "status": "ok",
+            "message": {
+                "code": "SUCCESS",
+                "title": "Success",
+                "description": "Operation completed successfully.",
+                "category": "success",
+            },
+            "data": [{"x": 1}],
+        }
         obj = MOQueue.objects.create(
             id=uuid.uuid4(),
             owner_id="owner",
             api_url_name=api_url_name,
             job_status="completed",
-            response_code="CUSTOM_CODE",
-            response=_compress_json_result({"data": {"x": 1}}),
+            response_code=201,
+            response=_compress_json_result(stored_response),
             request={},
         )
 
@@ -1468,7 +1505,49 @@ class TestQueueDetailView(MindoffTestCase):
 
             resp = self.client.get(reverse("mo_queue_detail", args=[str(obj.id)]))
 
-        assert resp.json()["message"]["code"] == "CUSTOM_CODE"
+        assert resp.status_code == 201
+        assert resp.json() == stored_response
+
+    def test_completed_unwraps_legacy_status_code_data_shape(self):
+        """ACCEPTANCE: Detail unwraps legacy {'status_code', 'data'} payload to inner response."""
+        from apps.django_mindoff.models import MOQueue
+        from apps.django_mindoff.components._api_kit.queue_process import (
+            _compress_json_result,
+        )
+
+        api_url_name = self._make_api("test_detail_legacy_shape_api")
+        inner_response = {
+            "status": "ok",
+            "message": {
+                "code": "SUCCESS",
+                "title": "Success",
+                "description": "Operation completed successfully.",
+                "category": "success",
+            },
+            "data": [{"id": "x1"}],
+        }
+        obj = MOQueue.objects.create(
+            id=uuid.uuid4(),
+            owner_id="owner",
+            api_url_name=api_url_name,
+            job_status="completed",
+            response_code=200,
+            response=_compress_json_result(
+                {"status_code": 200, "data": inner_response}
+            ),
+            request={},
+        )
+
+        with patch("apps.django_mindoff.views.get_api_class_from_url_name") as mock_get:
+            mock_api = MagicMock()
+            mock_api.queue_status_limit = None
+            mock_api.api_url_name = api_url_name
+            mock_get.return_value = lambda: mock_api
+
+            resp = self.client.get(reverse("mo_queue_detail", args=[str(obj.id)]))
+
+        assert resp.status_code == 200
+        assert resp.json() == inner_response
 
     # ── failed ────────────────────────────────────────────────────────────
 
@@ -1482,7 +1561,7 @@ class TestQueueDetailView(MindoffTestCase):
             owner_id="owner",
             api_url_name=api_url_name,
             job_status="failed",
-            response_code="QUEUE_TASK_FAILED",
+            response_code=500,
             error={"message": "something went wrong"},
             request={},
         )
@@ -1711,25 +1790,62 @@ class TestQueueListView(MindoffTestCase):
     def test_list_response_includes_response_code_field(self):
         """ACCEPTANCE: List serialiser exposes response_code on each task."""
         api = self._make_api("test_list_response_code_field_api")
-        _make_db_task(api, job_status="completed", response_code="MY_CODE")
+        _make_db_task(api, job_status="completed", response_code=200)
 
         resp = self._list(api_url_name=api)
         tasks = resp.json()["data"]["tasks"]
         completed = next(t for t in tasks if t["job_status"] == "completed")
         assert "response_code" in completed
-        assert completed["response_code"] == "MY_CODE"
+        assert completed["response_code"] == 200
 
-    def test_list_response_does_not_include_raw_response_payload(self):
-        """ACCEPTANCE: List endpoint omits the full response blob (only summary fields)."""
-        api = self._make_api("test_list_no_payload_api")
-        _make_db_task(api, job_status="completed")
+    def test_list_response_includes_all_columns(self):
+        """ACCEPTANCE: List endpoint returns full MOQueue columns."""
+        api = self._make_api("test_list_all_columns_api")
+        _make_db_task(api, job_status="completed", response_code=200)
 
         resp = self._list(api_url_name=api)
-        tasks = resp.json()["data"]["tasks"]
-        for task in tasks:
-            assert (
-                "response" not in task
-            ), "Raw response payload must not appear in list"
+        task = resp.json()["data"]["tasks"][0]
+        assert "id" in task
+        assert "owner_id" in task
+        assert "user_ref_id" in task
+        assert "idempotency_key" in task
+        assert "api_url_name" in task
+        assert "job_status" in task
+        assert "request" in task
+        assert "response" in task
+        assert "response_code" in task
+        assert "error" in task
+        assert "created_at" in task
+        assert "updated_at" in task
+
+    def test_list_response_decompresses_compressed_json_payload(self):
+        """ACCEPTANCE: Compressed response JSON is expanded in queue/list output."""
+        api = self._make_api("test_list_decompress_response_api")
+        obj = _make_db_task(api, job_status="completed", response_code=200)
+        obj.response = _compress_json_result({"status_code": 200, "data": {"ok": True}})
+        obj.save(update_fields=["response", "updated_at"])
+
+        resp = self._list(api_url_name=api, id=str(obj.id))
+        task = resp.json()["data"]["tasks"][0]
+        assert isinstance(task["response"], dict)
+        assert task["response"] == {"status_code": 200, "data": {"ok": True}}
+
+    def test_list_is_paginated_for_large_result_sets(self):
+        """ACCEPTANCE: queue/list returns paginated data with paging metadata."""
+        api = self._make_api("test_list_pagination_api")
+        _make_db_task(api, job_status="queued")
+        _make_db_task(api, job_status="running")
+        _make_db_task(api, job_status="completed")
+
+        resp = self._list(api_url_name=api, page=2, page_size=2)
+        body = resp.json()["data"]
+        assert body["count"] == 3
+        assert body["page"] == 2
+        assert body["page_size"] == 2
+        assert body["total_pages"] == 2
+        assert body["has_previous"] is True
+        assert body["has_next"] is False
+        assert len(body["tasks"]) == 1
 
     # ── Combined filters ──────────────────────────────────────────────────
 
@@ -1911,22 +2027,20 @@ class TestQueueHelpers:
     """Unit tests for _extract_result, _ensure_json_result, _compress_json_result."""
 
     def test_extract_drf_response(self):
-        """ACCEPTANCE: DRF Response is normalised to {status_code, data}."""
+        """ACCEPTANCE: DRF Response is normalised to its response JSON body."""
         from rest_framework.response import Response as DRFResponse
 
         r = DRFResponse(data={"hello": "world"}, status=201)
         result = _extract_result(r)
-        assert result["status_code"] == 201
-        assert result["data"] == {"hello": "world"}
+        assert result == {"hello": "world"}
 
     def test_extract_json_response(self):
-        """ACCEPTANCE: Django JsonResponse is normalised to {status_code, data}."""
+        """ACCEPTANCE: Django JsonResponse is normalised to its response JSON body."""
         from django.http import JsonResponse
 
         r = JsonResponse({"foo": "bar"}, status=200)
         result = _extract_result(r)
-        assert result["status_code"] == 200
-        assert result["data"]["foo"] == "bar"
+        assert result["foo"] == "bar"
 
     def test_extract_plain_dict_passthrough(self):
         """BOUNDARY: Plain dict passes through _extract_result unchanged."""
@@ -1969,6 +2083,19 @@ class TestQueueHelpers:
         recovered = _decompress(compressed)
         assert recovered == large
 
+    def test_threshold_compression_skips_small_payload(self):
+        """BOUNDARY: Small payload remains plain when below min-bytes threshold."""
+        payload = {"a": 1}
+        saved = _compress_json_result_if_large(payload, min_bytes=4096)
+        assert saved == payload
+
+    def test_threshold_compression_compresses_large_payload(self):
+        """ACCEPTANCE: Large payload is compressed once threshold is exceeded."""
+        payload = {"items": ["x" * 100 for _ in range(500)]}
+        saved = _compress_json_result_if_large(payload, min_bytes=200)
+        assert saved[_COMPRESSED_RESPONSE_FLAG] is True
+        assert _decode_json_blob(saved) == payload
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 12. Full end-to-end integration pipeline
@@ -1990,6 +2117,43 @@ class TestQueueFullPipeline(MindoffTestCase):
         return _create_test_api(self._app, name, self._dir, self._tmpl)
 
     # ── Happy path ────────────────────────────────────────────────────────
+
+    def test_mo_test_api_returns_final_detail_response_in_queue_mode(self):
+        """INTEGRATION: mo_test_api returns final mo_queue_detail payload for queue-mode APIs."""
+        from apps.django_mindoff.components import tdd_kit as tdd_kit_module
+
+        get_api_cls = tdd_kit_module._get_api_cls_attributes
+        api_url_name = self._make_api("test_mo_test_api_queue_detail_api")
+        _modify_api_attribute(
+            self._app,
+            "test_mo_test_api_queue_detail_api",
+            "process_mode",
+            "queue",
+            base_path=self._dir,
+        )
+        _modify_api_run_method(
+            self._app,
+            "test_mo_test_api_queue_detail_api",
+            "        return {'from': 'worker', 'ok': True}",
+            base_path=self._dir,
+        )
+
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                side_effect=lambda api_name, version=None: get_api_cls(
+                    api_name, version=1
+                ),
+            ),
+        ):
+            response = self.mo_test_api(api_url_name)
+
+        assert response.status_code == 200
+        assert response.json() == {"from": "worker", "ok": True}
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     def test_enqueue_execute_detail_with_response(self, _mock_send):
@@ -2033,17 +2197,8 @@ class TestQueueFullPipeline(MindoffTestCase):
             detail_resp = self.client.get(reverse("mo_queue_detail", args=[queue_id]))
             data = detail_resp.json()
 
-        # code comes from stored response_code, not hardcoded SUCCESS
-        assert data["message"]["code"] == obj.response_code
-        assert data["data"] is not None
-        response_payload = data["data"]
-        normalized = (
-            response_payload.get("data", response_payload)
-            if isinstance(response_payload, dict)
-            else response_payload
-        )
-        assert normalized.get("pipeline") == "ok"
-        assert normalized.get("value") == 123
+        assert detail_resp.status_code == int(obj.response_code or 200)
+        assert data == {"pipeline": "ok", "value": 123}
 
     # ── Steps visible end-to-end ──────────────────────────────────────────
 

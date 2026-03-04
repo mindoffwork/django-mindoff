@@ -598,7 +598,7 @@ class TestAPIMixinAcceptance(MindoffTestCase):
         ("attribute", "value"),
         [
             ("api_request_limit", None),
-            ("queue_status_stream_limit", None),
+            ("queue_status_stream_api_limit", None),
         ],
     )
     def test_api_success_optional_attribute_overrides(self, attribute, value):

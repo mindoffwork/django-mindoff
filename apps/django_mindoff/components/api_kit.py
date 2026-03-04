@@ -4,6 +4,7 @@ from django.http import JsonResponse
 from rest_framework.views import APIView
 from types import SimpleNamespace
 from functools import wraps
+from redis.exceptions import RedisError
 from .response_kit import mo_response_kit
 from .validation_kit import mo_validation_kit, MindoffValidationError
 from typing import Any, Dict
@@ -30,6 +31,21 @@ ALLOWED_PROCESS_MODES = ["direct", "queue"]
 # Expected shape of a single progress-step entry:
 #   { "label": <str>, "percent": <int 0-100> }
 _PROGRESS_STEP_REQUIRED_KEYS = {"label", "percent"}
+
+
+def _is_queue_service_unavailable_error(exc: Exception) -> bool:
+    if isinstance(exc, (RedisError, ConnectionError, TimeoutError)):
+        return True
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in (
+            "connection refused",
+            "cannot connect",
+            "connection error",
+            "connection reset",
+        )
+    )
 
 
 def _is_cancel_requested(redis_state: dict) -> bool:
@@ -176,8 +192,10 @@ class MindoffAPIMixin(APIView):
 
     # 5. Usage Limits Per User
     api_request_limit: str | None = "30/m"
-    queue_status_limit: str | None = "30/m"
-    queue_status_stream_limit: int | None = 3
+    queue_detail_api_limit: str | None = "30/m"
+    queue_status_stream_api_limit: int | None = 3
+    queue_cancel_api_limit: str | None = "30/m"
+    queue_retry_api_limit: str | None = "30/m"
 
     # 6. Queue Progress Steps  ← NEW
     #
@@ -298,12 +316,24 @@ class MindoffAPIMixin(APIView):
                 bool(request.FILES),
                 msg="Asynchronous API does not support multipart or file uploads.",
             )
-            queue_id = enqueue_process(
-                request=request,
-                api_instance=self,
-                args=args,
-                kwargs=kwargs,
-            )
+            try:
+                queue_id = enqueue_process(
+                    request=request,
+                    api_instance=self,
+                    args=args,
+                    kwargs=kwargs,
+                )
+            except Exception as exc:
+                if _is_queue_service_unavailable_error(exc):
+                    raise MindoffValidationError(
+                        message=(
+                            "Queuing service is currently unavailable. Please try again later."
+                        ),
+                        code="QUEUE_SERVICE_UNAVAILABLE",
+                        category="danger",
+                        data={"process_mode": "queue"},
+                    )
+                raise
             mo_validation_kit.ensure_truthy(
                 queue_id,
                 msg="Failed to start the process. Please try again.",
@@ -550,7 +580,12 @@ class MindoffAPIMixin(APIView):
             is_exception=True,
             code="API_CONFIG_ERR",
         )
-        for attr in ("api_request_limit", "queue_status_limit"):
+        for attr in (
+            "api_request_limit",
+            "queue_detail_api_limit",
+            "queue_cancel_api_limit",
+            "queue_retry_api_limit",
+        ):
             value = getattr(self, attr)
             if value is not None:
                 mo_validation_kit.ensure_type(
@@ -567,18 +602,18 @@ class MindoffAPIMixin(APIView):
                     is_exception=True,
                     code="API_CONFIG_ERR",
                 )
-        if self.queue_status_stream_limit is not None:
+        if self.queue_status_stream_api_limit is not None:
             mo_validation_kit.ensure_type(
-                self.queue_status_stream_limit,
+                self.queue_status_stream_api_limit,
                 int,
-                msg="`queue_status_stream_limit` must be int | None",
+                msg="`queue_status_stream_api_limit` must be int | None",
                 is_exception=True,
                 code="API_CONFIG_ERR",
             )
             mo_validation_kit.ensure_greater_equal(
-                self.queue_status_stream_limit,
+                self.queue_status_stream_api_limit,
                 0,
-                msg="`queue_status_stream_limit` must be >= 0",
+                msg="`queue_status_stream_api_limit` must be >= 0",
                 is_exception=True,
                 code="API_CONFIG_ERR",
             )

@@ -24,6 +24,7 @@ from .redis import (
     mark_cancelled,
     mark_cancel_requested,
     get_queue_status,
+    redis_client,
 )
 from dramatiq.brokers.redis import RedisBroker
 from dramatiq.middleware import Retries
@@ -31,7 +32,7 @@ from django.conf import settings
 from rest_framework.response import Response as DRFResponse
 from django.http import JsonResponse
 from ..validation_kit import MindoffValidationError
-from ..response_kit import mo_response_kit
+from ..response_kit import mo_response_kit, MINDOFF_RESPONSES
 
 redis_broker = RedisBroker(
     url=settings.REDIS_URL,
@@ -134,7 +135,10 @@ def enqueue_process(*, request, api_instance, args, kwargs):
         idempotency_key=idempotency_key,
         api_url_name=api_instance.api_url_name,
         job_status="queued",
-        request=request_snapshot,
+        request=_compress_json_result_if_large(
+            request_snapshot,
+            _get_json_compression_min_bytes("request", default=4096),
+        ),
     )
 
     # 5. Initialise Redis state (including progress_steps for the status endpoint)
@@ -170,7 +174,9 @@ def execute_queue(queue_task_uuid: str):
     except MOQueue.DoesNotExist:
         return
 
-    snapshot = obj.request or {}
+    snapshot = _decode_json_blob(obj.request) or {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
 
     # ── 2. Reconcile Redis state ──────────────────────────────────────────
     redis_state = _safe_get_queue_status(queue_task_uuid)
@@ -222,7 +228,10 @@ def execute_queue(queue_task_uuid: str):
         # ── 10. Normalise, compress, and persist the result ───────────────
         result = _extract_result(result)
         result = _ensure_json_result(result)
-        compressed_result = _compress_json_result(result)
+        compressed_result = _compress_json_result_if_large(
+            result,
+            _get_json_compression_min_bytes("response", default=0),
+        )
 
         obj.job_status = "completed"
         obj.response = compressed_result
@@ -237,18 +246,40 @@ def execute_queue(queue_task_uuid: str):
 
         tb = traceback.format_exc()
         obj.job_status = "failed"
-        obj.error = {"message": str(exc), "traceback": tb, "code": exc.code}
-        obj.response_code = exc.code
+        obj.error = _compress_json_result_if_large(
+            {"message": str(exc), "traceback": tb, "code": exc.code},
+            _get_json_compression_min_bytes("error", default=4096),
+        )
+        obj.response_code = int(
+            MINDOFF_RESPONSES.get(exc.code, {}).get("http_status") or 400
+        )
         obj.save(update_fields=["job_status", "error", "response_code"])
         mark_failed(queue_task_uuid, error=str(exc))
 
     except Exception as exc:
         tb = traceback.format_exc()
         obj.job_status = "failed"
-        obj.error = {"message": str(exc), "traceback": tb}
-        obj.response_code = "QUEUE_TASK_FAILED"
+        obj.error = _compress_json_result_if_large(
+            {"message": str(exc), "traceback": tb},
+            _get_json_compression_min_bytes("error", default=4096),
+        )
+        obj.response_code = 500
         obj.save(update_fields=["job_status", "error", "response_code"])
         mark_failed(queue_task_uuid, error=str(exc))
+
+
+@dramatiq.actor
+def dramatiq_healthcheck(probe_id: str):
+    key = f"moq:health:{probe_id}"
+    redis_client.hset(
+        key,
+        mapping={
+            "status": "ok",
+            "updated_at": timezone.now().isoformat(),
+        },
+    )
+    redis_client.expire(key, 30)
+    return "ok"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -375,52 +406,23 @@ def retry_failed_queue_task(queue_task_uuid: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _extract_response_code(result) -> str:
+def _extract_response_code(result) -> int:
     """
-    Derive a response_code string from the raw result returned by ``api.run()``.
-
-    Priority order:
-    1. DRF Response  → use the HTTP status code mapped to a string
-                       (e.g. 200 → "SUCCESS", 4xx/5xx → "ERROR_<code>")
-    2. Django JsonResponse → same mapping
-    3. Plain dict with a ``"code"`` key → use that value directly
-    4. Anything else → "SUCCESS"
+    Derive an HTTP status code string from the raw result returned by ``api.run()``.
     """
     if isinstance(result, DRFResponse):
-        return _http_status_to_code(result.status_code)
+        return int(result.status_code)
     if isinstance(result, JsonResponse):
-        return _http_status_to_code(result.status_code)
+        return int(result.status_code)
     if isinstance(result, dict):
-        # Support explicit {"code": "MY_CODE", ...} return values
-        code = result.get("code")
-        if code and isinstance(code, str):
-            return code
-    return "SUCCESS"
-
-
-def _http_status_to_code(status_code: int) -> str:
-    """Map an HTTP status integer to a short response_code string."""
-    mapping = {
-        200: "SUCCESS",
-        201: "CREATED",
-        202: "ACCEPTED",
-        204: "NO_CONTENT",
-        400: "BAD_REQUEST",
-        401: "UNAUTHORIZED",
-        403: "FORBIDDEN",
-        404: "NOT_FOUND",
-        409: "CONFLICT",
-        422: "UNPROCESSABLE",
-        429: "RATE_LIMITED",
-        500: "SERVER_ERROR",
-    }
-    if status_code in mapping:
-        return mapping[status_code]
-    if 200 <= status_code < 300:
-        return "SUCCESS"
-    if 400 <= status_code < 500:
-        return f"CLIENT_ERROR_{status_code}"
-    return f"SERVER_ERROR_{status_code}"
+        message = result.get("message")
+        if isinstance(message, dict):
+            code = message.get("code")
+            if isinstance(code, str):
+                mapped = MINDOFF_RESPONSES.get(code, {}).get("http_status")
+                if isinstance(mapped, int):
+                    return mapped
+    return 200
 
 
 def _ensure_json_result(result):
@@ -442,12 +444,66 @@ def _compress_json_result(result):
     }
 
 
+def _compress_json_result_if_large(result, min_bytes: int):
+    if result is None:
+        return None
+    if _is_compressed_json_blob(result):
+        return result
+
+    payload = json.dumps(result, separators=(",", ":"), ensure_ascii=True, default=str)
+    try:
+        threshold = max(0, int(min_bytes))
+    except (TypeError, ValueError):
+        threshold = 0
+
+    if len(payload.encode("utf-8")) < threshold:
+        return result
+
+    compressed = gzip.compress(payload.encode("utf-8"))
+    b64 = base64.b64encode(compressed).decode("ascii")
+    return {
+        _COMPRESSED_RESPONSE_FLAG: True,
+        "codec": "gzip+base64",
+        "data": b64,
+    }
+
+
+def _decode_json_blob(payload):
+    if not _is_compressed_json_blob(payload):
+        return payload
+    raw_b64 = payload.get("data")
+    if not raw_b64:
+        return payload
+    try:
+        raw = gzip.decompress(base64.b64decode(raw_b64)).decode("utf-8")
+        return json.loads(raw)
+    except Exception:
+        return payload
+
+
+def _is_compressed_json_blob(payload) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload.get(_COMPRESSED_RESPONSE_FLAG) is True
+        and payload.get("codec") == "gzip+base64"
+    )
+
+
+def _get_json_compression_min_bytes(field_name: str, default: int) -> int:
+    setting_name = f"MINDOFF_QUEUE_{str(field_name).upper()}_COMPRESS_MIN_BYTES"
+    raw = getattr(settings, setting_name, default)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return max(0, int(default))
+
+
 def _extract_result(result):
-    """Normalise a DRF ``Response`` or Django ``JsonResponse`` to a plain dict."""
+    """Normalise HTTP responses to the raw payload stored in ``MOQueue.response``."""
     if isinstance(result, DRFResponse):
-        return {"status_code": result.status_code, "data": result.data}
+        return result.data
     if isinstance(result, JsonResponse):
-        return {"status_code": result.status_code, "data": json.loads(result.content)}
+        return json.loads(result.content)
     return result
 
 
@@ -465,8 +521,13 @@ def _mark_db_cancelled(obj: MOQueue, queue_task_uuid: str):
         )
     )
     obj.job_status = "cancelled"
-    obj.response = _compress_json_result(cancelled_result)
-    obj.response_code = "QUEUE_TASK_CANCELLED"
+    obj.response = _compress_json_result_if_large(
+        cancelled_result,
+        _get_json_compression_min_bytes("response", default=0),
+    )
+    obj.response_code = int(
+        MINDOFF_RESPONSES.get("QUEUE_TASK_CANCELLED", {}).get("http_status") or 200
+    )
     obj.error = None
     obj.save(update_fields=["job_status", "response", "response_code", "error"])
     mark_cancelled(str(queue_task_uuid))
@@ -513,7 +574,10 @@ def _sync_redis_from_db(obj: MOQueue):
         init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at, steps=steps)
         mark_completed(str(obj.id))
     elif status == "failed":
-        error_message = str((obj.error or {}).get("message", "failed"))
+        decoded_error = _decode_json_blob(obj.error) or {}
+        if not isinstance(decoded_error, dict):
+            decoded_error = {}
+        error_message = str(decoded_error.get("message", "failed"))
         init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at, steps=steps)
         mark_failed(str(obj.id), error=error_message)
     elif status == "cancelled":
@@ -541,5 +605,8 @@ def _sync_db_from_redis(obj: MOQueue, redis_state: dict):
         obj.error = None
     if status == "failed":
         message = str(redis_state.get("progress", {}).get("current_message", "failed"))
-        obj.error = {"message": message}
+        obj.error = _compress_json_result_if_large(
+            {"message": message},
+            _get_json_compression_min_bytes("error", default=4096),
+        )
     obj.save(update_fields=["job_status", "error", "updated_at"])

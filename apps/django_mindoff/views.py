@@ -5,6 +5,9 @@ import base64
 
 from django.http import StreamingHttpResponse
 from django.urls import reverse
+from django.conf import settings
+from django.core.paginator import EmptyPage, Paginator
+from django.db import models
 from typing import Literal
 
 from rest_framework.response import Response
@@ -26,9 +29,10 @@ from django_ratelimit.core import is_ratelimited
 from .components.validation_kit import mo_validation_kit
 from .components.helper_kit import get_api_class_from_url_name
 from .components.api_kit import MindoffAPIMixin
-from .components.response_kit import mo_response_kit, MINDOFF_RESPONSES
+from .components.response_kit import mo_response_kit
 
 access_denied_message = "User not allowed to access this queue task"
+rate_limit_exceeded_message = "Rate limit exceeded. Please try again later."
 api_request_limit_120 = "120/m"
 
 
@@ -69,7 +73,9 @@ class MindoffQueueDetailView(MindoffAPIMixin):
 
     def _apply_rate_limit(self, request, obj, queue_task_uuid):
         api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
-        limit = getattr(api, "queue_status_limit", None)
+        if not _is_queue_mode_api(api):
+            return
+        limit = getattr(api, "queue_detail_api_limit", None)
         if not limit:
             return
         limited = is_ratelimited(
@@ -81,7 +87,7 @@ class MindoffQueueDetailView(MindoffAPIMixin):
         )
         mo_validation_kit.ensure_falsey(
             limited,
-            msg="Rate limit exceeded. Please try again later.",
+            msg=rate_limit_exceeded_message,
             code="API_RATE_LIMITED",
         )
 
@@ -98,20 +104,29 @@ class MindoffQueueDetailView(MindoffAPIMixin):
         return handler(obj, queue_id)
 
     def _completed_response(self, obj, queue_id):
-        return _queue_json_response(
-            code=obj.response_code or "SUCCESS",
-            default_code="SUCCESS",
-            category="success",
-            data=_get_queue_response(obj),
+        response_json = _get_queue_response(obj)
+        response_json, embedded_status = _normalize_completed_response(response_json)
+        if not response_json:
+            return mo_response_kit.json_response(
+                code="QUEUE_TASK_UNKNOWN_STATUS",
+                category="warning",
+                data={"queue_id": queue_id, "job_status": obj.job_status},
+            )
+        return Response(
+            response_json,
+            status=_response_code_to_http_status(
+                obj.response_code,
+                default=embedded_status or 200,
+            ),
         )
 
     def _failed_response(self, obj, queue_id):
         payload = _get_queue_response(obj)
-        return _queue_json_response(
-            code=obj.response_code or "QUEUE_TASK_FAILED",
-            default_code="QUEUE_TASK_FAILED",
+        decoded_error = _maybe_decode_compressed_json(obj.error)
+        return mo_response_kit.json_response(
+            code="QUEUE_TASK_FAILED",
             category="danger",
-            data=payload or {"error": obj.error},
+            data=payload or {"error": decoded_error},
         )
 
     def _cancelled_response(self, obj, queue_id):
@@ -158,6 +173,8 @@ class MindoffQueueListView(MindoffAPIMixin):
       ?user_ref_id=<uuid>
       ?owner_id=<str>
       ?api_url_name=<str>
+      ?page=<int>
+      ?page_size=<int>
     """
 
     api_url_name: str = "mo_queue_list"
@@ -167,7 +184,13 @@ class MindoffQueueListView(MindoffAPIMixin):
     permission_classes: list = []
     method: Literal["get", "post", "put", "delete"] = "get"
     process_mode: Literal["direct", "queue"] = "direct"
-    api_request_limit: str | None = api_request_limit_120
+    api_request_limit: str | None = None
+
+    def _initial_validate_api_rate_limit(self, request):
+        self.api_request_limit = getattr(
+            settings, "MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT", api_request_limit_120
+        )
+        super()._initial_validate_api_rate_limit(request)
 
     def run(self, request):
         qs = MOQueue.objects.all().order_by("-created_at")
@@ -190,12 +213,39 @@ class MindoffQueueListView(MindoffAPIMixin):
         if api_url_name:
             qs = qs.filter(api_url_name=api_url_name)
 
-        tasks = [_serialize_queue_obj(obj) for obj in qs]
+        page = _safe_int(request.GET.get("page"), default=1, minimum=1)
+        page_size = _safe_int(request.GET.get("page_size"), default=50, minimum=1)
+        page_size = min(page_size, 200)
+        paginator = Paginator(qs, page_size)
+        total_count = paginator.count
+        total_pages = paginator.num_pages
+
+        try:
+            page_obj = paginator.page(page)
+        except EmptyPage:
+            page = total_pages if total_pages > 0 else 1
+            page_obj = paginator.page(page) if total_pages > 0 else []
+
+        tasks = (
+            [_serialize_queue_obj(obj) for obj in page_obj.object_list]
+            if total_pages > 0
+            else []
+        )
 
         return mo_response_kit.json_response(
             code="SUCCESS",
             category="success",
-            data={"tasks": tasks, "count": len(tasks)},
+            data={
+                "tasks": tasks,
+                "count": total_count,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "has_next": bool(getattr(page_obj, "has_next", lambda: False)()),
+                "has_previous": bool(
+                    getattr(page_obj, "has_previous", lambda: False)()
+                ),
+            },
         )
 
 
@@ -238,7 +288,9 @@ class MindoffQueueStatusStreamView(MindoffAPIMixin):
 
     def _acquire_sse_limit(self, obj):
         api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
-        max_streams = getattr(api, "queue_status_stream_limit", None)
+        if not _is_queue_mode_api(api):
+            return
+        max_streams = getattr(api, "queue_status_stream_api_limit", None)
         if max_streams is None:
             return
         mo_validation_kit.ensure_truthy(
@@ -321,6 +373,7 @@ class MindoffQueueCancelView(MindoffAPIMixin):
             )
 
         _check_ownership(request, obj)
+        self._apply_cancel_rate_limit(request, obj, queue_task_uuid)
 
         result = cancel_queue_task(str(queue_task_uuid))
         if result == "cancelled":
@@ -340,6 +393,26 @@ class MindoffQueueCancelView(MindoffAPIMixin):
                 "queue_id": str(queue_task_uuid),
                 "job_status": obj.job_status,
             },
+        )
+
+    def _apply_cancel_rate_limit(self, request, obj, queue_task_uuid):
+        api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
+        if not _is_queue_mode_api(api):
+            return
+        limit = getattr(api, "queue_cancel_api_limit", None)
+        if not limit:
+            return
+        limited = is_ratelimited(
+            request,
+            group=f"{api.api_url_name}_{queue_task_uuid}_cancel",
+            key="user_or_ip",
+            rate=limit,
+            increment=True,
+        )
+        mo_validation_kit.ensure_falsey(
+            limited,
+            msg=rate_limit_exceeded_message,
+            code="API_RATE_LIMITED",
         )
 
 
@@ -369,6 +442,7 @@ class MindoffQueueRetryView(MindoffAPIMixin):
             )
 
         _check_ownership(request, obj)
+        self._apply_retry_rate_limit(request, obj, queue_task_uuid)
 
         result = retry_failed_queue_task(str(queue_task_uuid))
         if result == "queued":
@@ -395,6 +469,26 @@ class MindoffQueueRetryView(MindoffAPIMixin):
                 "queue_id": str(queue_task_uuid),
                 "job_status": obj.job_status,
             },
+        )
+
+    def _apply_retry_rate_limit(self, request, obj, queue_task_uuid):
+        api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
+        if not _is_queue_mode_api(api):
+            return
+        limit = getattr(api, "queue_retry_api_limit", None)
+        if not limit:
+            return
+        limited = is_ratelimited(
+            request,
+            group=f"{api.api_url_name}_{queue_task_uuid}_retry",
+            key="user_or_ip",
+            rate=limit,
+            increment=True,
+        )
+        mo_validation_kit.ensure_falsey(
+            limited,
+            msg=rate_limit_exceeded_message,
+            code="API_RATE_LIMITED",
         )
 
 
@@ -456,26 +550,35 @@ def _state_status(state: dict) -> str:
     return state.get("job_status") or "unknown"
 
 
-def _queue_json_response(
-    *,
-    code: str,
-    default_code: str,
-    category: Literal["danger", "warning", "info", "success"],
-    data,
-):
-    """
-    Return a queue response while preserving unknown stored ``response_code`` values.
-    """
-    if code in MINDOFF_RESPONSES:
-        return mo_response_kit.json_response(code=code, category=category, data=data)
+def _response_code_to_http_status(response_code: int | None, default: int = 200) -> int:
+    try:
+        status = int(str(response_code))
+        if 100 <= status <= 599:
+            return status
+    except Exception:
+        pass
+    return int(default)
 
-    response = mo_response_kit.json_response(
-        code=default_code,
-        category=category,
-        data=data,
-    )
-    response.data["message"]["code"] = code
-    return response
+
+def _normalize_completed_response(response_json):
+    """
+    Normalize legacy wrapped queue payload:
+    {"status_code": <int>, "data": <response_json>}
+    """
+    if (
+        isinstance(response_json, dict)
+        and "data" in response_json
+        and "status_code" in response_json
+    ):
+        embedded_status = response_json.get("status_code")
+        inner = response_json.get("data")
+        if isinstance(embedded_status, int) and isinstance(inner, dict):
+            return inner, embedded_status
+    return response_json, None
+
+
+def _is_queue_mode_api(api_instance) -> bool:
+    return getattr(api_instance, "process_mode", "direct") == "queue"
 
 
 def _status_payload(state: dict) -> dict:
@@ -517,15 +620,43 @@ def _resolve_steps_from_api(api_url_name: str) -> dict:
 
 
 def _serialize_queue_obj(obj: MOQueue) -> dict:
-    """Lightweight serialiser for the list endpoint (no response decompression)."""
-    return {
-        "id": str(obj.id),
-        "owner_id": obj.owner_id,
-        "user_ref_id": str(obj.user_ref_id) if obj.user_ref_id else None,
-        "api_url_name": obj.api_url_name,
-        "job_status": obj.job_status,
-        "response_code": obj.response_code,
-        "idempotency_key": obj.idempotency_key,
-        "created_at": obj.created_at.isoformat(),
-        "updated_at": obj.updated_at.isoformat(),
-    }
+    """Serialize all model columns and decode compressed JSON fields when present."""
+    data = {}
+    for field in obj._meta.concrete_fields:
+        key = field.attname if getattr(field, "attname", None) else field.name
+        value = getattr(obj, key)
+
+        if isinstance(field, models.JSONField):
+            value = _maybe_decode_compressed_json(value)
+        elif hasattr(value, "isoformat"):
+            value = value.isoformat()
+        elif key.endswith("_id") and value is not None:
+            value = str(value)
+
+        data[key] = value
+
+    return data
+
+
+def _maybe_decode_compressed_json(payload):
+    if not isinstance(payload, dict):
+        return payload
+    if not (payload.get("__compressed__") and payload.get("codec") == "gzip+base64"):
+        return payload
+    raw_b64 = payload.get("data")
+    if not raw_b64:
+        return payload
+    try:
+        compressed = base64.b64decode(raw_b64)
+        raw = gzip.decompress(compressed).decode("utf-8")
+        return json.loads(raw)
+    except Exception:
+        return payload
+
+
+def _safe_int(raw, default: int, minimum: int) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, value)

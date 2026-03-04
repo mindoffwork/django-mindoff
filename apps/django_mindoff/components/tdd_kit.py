@@ -9,6 +9,7 @@ import os
 import subprocess
 import threading
 import time
+import importlib.util
 from collections import namedtuple
 from pathlib import Path
 from typing import List, Tuple, Type, get_args, get_origin, Literal
@@ -34,6 +35,63 @@ from http import HTTPStatus
 from ..components.managers.create_app import DjangoAppCreator
 from django.urls import clear_url_caches
 from django.contrib.auth import get_user_model
+from ._api_kit.queue_process import execute_queue as _execute_queue_sync
+
+
+# ----------------
+# Internal Redis stub for queue tests
+# ----------------
+class _InMemoryRedis:
+    """
+    Minimal in-process Redis stub used by mo_test_api in queue mode.
+    Avoids any real Redis dependency when running tests.
+    """
+
+    def __init__(self):
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.counters: dict[str, int] = {}
+        self.ttls: dict[str, int] = {}
+
+    def ping(self):
+        return True
+
+    def flushdb(self):
+        self.hashes.clear()
+        self.counters.clear()
+        self.ttls.clear()
+
+    def hset(self, key, mapping):
+        bucket = self.hashes.setdefault(key, {})
+        for k, v in mapping.items():
+            bucket[str(k)] = str(v)
+
+    def hgetall(self, key):
+        data = self.hashes.get(key, {})
+        return {str(k).encode("utf-8"): str(v).encode("utf-8") for k, v in data.items()}
+
+    def expire(self, key, ttl):
+        self.ttls[key] = ttl
+        return True
+
+    def persist(self, key):
+        self.ttls.pop(key, None)
+        return True
+
+    def incr(self, key):
+        value = int(self.counters.get(key, 0)) + 1
+        self.counters[key] = value
+        return value
+
+    def decr(self, key):
+        value = int(self.counters.get(key, 0)) - 1
+        self.counters[key] = value
+        return value
+
+    def delete(self, key):
+        self.hashes.pop(key, None)
+        self.counters.pop(key, None)
+        self.ttls.pop(key, None)
+        return True
 
 
 # ----------------
@@ -131,27 +189,83 @@ class _QueueTestRuntime:
             "DJANGO_SETTINGS_MODULE",
             os.environ.get("DJANGO_SETTINGS_MODULE", "config.settings"),
         )
+        # Prevent invalid shell values (e.g. DEBUG=release) from breaking
+        # settings import in the worker subprocess.
+        env["DEBUG"] = "true" if bool(getattr(settings, "DEBUG", True)) else "false"
+        module_name = self._resolve_queue_process_module()
         cmd = [
             sys.executable,
             "-m",
             "dramatiq",
-            "--path",
-            ".",
-            "apps.django_mindoff.components._api_kit.queue_process",
+            module_name,
             "--processes",
             "1",
             "--threads",
             "2",
+            "--path",
+            ".",
         ]
         self._worker_process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env=env,
+            text=True,
         )
-        time.sleep(0.8)
-        if self._worker_process.poll() is not None:
-            raise RuntimeError("Failed to start Dramatiq worker for queue tests.")
+        timeout = 10
+        sleep = 0.02
+        start = time.time()
+
+        from redis import Redis
+        from ._api_kit.queue_process import dramatiq_healthcheck
+
+        redis_client = Redis.from_url(settings.REDIS_URL)
+        probe_id = uuid.uuid4().hex
+        probe_key = f"moq:health:{probe_id}"
+        try:
+            redis_client.delete(probe_key)
+        except Exception:
+            pass
+
+        while time.time() - start < timeout:
+            if self._worker_process.poll() is not None:
+                stderr_output = ""
+                if self._worker_process.stderr is not None:
+                    try:
+                        stderr_output = self._worker_process.stderr.read().strip()
+                    except Exception:
+                        stderr_output = ""
+                if stderr_output:
+                    raise RuntimeError(
+                        "Failed to start Dramatiq worker for queue tests. "
+                        f"stderr: {stderr_output}"
+                    )
+                raise RuntimeError("Failed to start Dramatiq worker for queue tests.")
+            try:
+                dramatiq_healthcheck.send(probe_id)
+                if redis_client.hgetall(probe_key):
+                    return
+            except Exception:
+                pass
+
+            time.sleep(sleep)
+
+        raise RuntimeError("Dramatiq worker did not become ready.")
+
+    def _resolve_queue_process_module(self) -> str:
+        suffix = ".components.tdd_kit"
+        if __name__.endswith(suffix):
+            base_pkg = __name__[: -len(suffix)]
+            return f"{base_pkg}.components._api_kit.dramatiq_worker"
+
+        candidates = (
+            "apps.django_mindoff.components._api_kit.dramatiq_worker",
+            "django_mindoff.components._api_kit.dramatiq_worker",
+        )
+        for candidate in candidates:
+            if importlib.util.find_spec(candidate) is not None:
+                return candidate
+        return "django_mindoff.components._api_kit.dramatiq_worker"
 
     def _terminate_process(self, proc):
         if proc is None:
@@ -502,9 +616,6 @@ urlpatterns = original_patterns + [
             method = getattr(api_cls_attr, "method", "get").lower()
             is_queue_mode = getattr(api_cls_attr, "process_mode", "direct") == "queue"
 
-            if is_queue_mode and is_queue_response:
-                _mo_queue_test_runtime.ensure_started()
-
             url = reverse(api_url_name, kwargs=resolved_url_kwargs)
             if query_params:
                 url = f"{url}?{urlencode(query_params)}"
@@ -551,11 +662,14 @@ urlpatterns = original_patterns + [
             if not queue_id:
                 return response
 
-            _wait_for_queue_terminal_state(
-                queue_id,
-                timeout_s=queue_timeout_s,
-                poll_interval_s=queue_poll_interval_s,
-            )
+            # Execute the worker synchronously with an in-process Redis stub
+            # so users never need to set up real Redis infrastructure in tests.
+            from unittest.mock import patch as _patch
+            from ._api_kit import redis as _redis_state
+
+            with _patch.object(_redis_state, "redis_client", _InMemoryRedis()):
+                _execute_queue_sync(queue_id)
+
             detail_url = reverse("mo_queue_detail", args=[queue_id])
             return self.client.get(detail_url, headers={"Accept": JSON_CT})
 
@@ -701,8 +815,16 @@ def _extract_queue_id_from_response(response) -> str | None:
         body = response.json()
     except Exception:
         return None
-    data = body.get("data", {}) if isinstance(body, dict) else {}
-    queue_id = data.get("queue_id")
+    if not isinstance(body, dict):
+        return None
+
+    data = body.get("data")
+    if isinstance(data, dict):
+        queue_id = data.get("queue_id")
+        return str(queue_id) if queue_id else None
+
+    # Backward-compatible fallback when response uses top-level queue_id.
+    queue_id = body.get("queue_id")
     return str(queue_id) if queue_id else None
 
 
@@ -717,7 +839,9 @@ def _wait_for_queue_terminal_state(
 
     while time.monotonic() < deadline:
         status = (
-            MOQueue.objects.filter(id=queue_id).values_list("job_status", flat=True).first()
+            MOQueue.objects.filter(id=queue_id)
+            .values_list("job_status", flat=True)
+            .first()
         )
         if status:
             last_status = status
@@ -1031,29 +1155,38 @@ def _get_api_cls_attributes(api_url_name: str, version: int | None = None):
             stack.extend(pattern.url_patterns)
             continue
         if isinstance(pattern, URLPattern) and pattern.name == api_url_name:
-            callback = pattern.callback
-            while hasattr(callback, "__wrapped__"):
-                callback = callback.__wrapped__
-            view_class = getattr(callback, "view_class", None)
-            if view_class:
-                return view_class
-            version_map = getattr(callback, "VERSION_MAP", None)
-            if version_map is not None:
-                if not version_map:
-                    raise ImproperlyConfigured(
-                        f"Router for '{api_url_name}' has an empty VERSION_MAP."
-                    )
-                if version not in version_map:
-                    raise KeyError(
-                        f"Version {version} is not registered for '{api_url_name}'. "
-                        f"Available versions: {sorted(version_map.keys())}"
-                    )
-                return version_map[version]
-
-            raise ImproperlyConfigured(
-                f"URL '{api_url_name}' is not a class-based view or a "
-                f"version-router instance. The callback has neither a "
-                f"'view_class' nor a 'VERSION_MAP' attribute."
+            return __resolve_api_cls_from_callback(
+                callback=pattern.callback,
+                api_url_name=api_url_name,
+                version=version,
             )
 
     raise LookupError(f"No URL found with name '{api_url_name}'")
+
+
+def __resolve_api_cls_from_callback(callback, api_url_name: str, version: int | None):
+    while hasattr(callback, "__wrapped__"):
+        callback = callback.__wrapped__
+
+    view_class = getattr(callback, "view_class", None)
+    if view_class:
+        return view_class
+
+    version_map = getattr(callback, "VERSION_MAP", None)
+    if version_map is not None:
+        if not version_map:
+            raise ImproperlyConfigured(
+                f"Router for '{api_url_name}' has an empty VERSION_MAP."
+            )
+        if version not in version_map:
+            raise KeyError(
+                f"Version {version} is not registered for '{api_url_name}'. "
+                f"Available versions: {sorted(version_map.keys())}"
+            )
+        return version_map[version]
+
+    raise ImproperlyConfigured(
+        f"URL '{api_url_name}' is not a class-based view or a "
+        f"version-router instance. The callback has neither a "
+        f"'view_class' nor a 'VERSION_MAP' attribute."
+    )

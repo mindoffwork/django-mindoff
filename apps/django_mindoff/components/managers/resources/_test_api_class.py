@@ -41,6 +41,9 @@ class TestSampleAPIView(MindoffTestCase):
         # Queue mode note:
         # If your API class uses process_mode = "queue", mo_test_api waits for
         # completion by default and returns the final mo_queue_detail response.
+        # Progress updates are emitted only in queue mode via:
+        # self.progress_checkpoint(request, "<step_key>", msg="optional text")
+        # where <step_key> exists in progress_steps on your API class.
         #
         # To assert the initial enqueue payload instead, call with:
         # queue_response = self.mo_test_api(..., is_queue_response=False)

@@ -41,8 +41,9 @@ class MOQueue(TimeStampModel):
     # Stores only the raw response payload (no response_code embedded here)
     response = models.JSONField(null=True, blank=True)
 
-    # HTTP-style response code produced by the worker (e.g. "SUCCESS", "PARTIAL_RESULT")
-    response_code = models.CharField(max_length=64, null=True, blank=True)
+    # HTTP status code from the queued API response
+    # (e.g. 200, 400, 404, 500).
+    response_code = models.PositiveSmallIntegerField(null=True, blank=True)
 
     error = models.JSONField(null=True, blank=True)
 

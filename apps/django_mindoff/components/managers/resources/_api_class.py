@@ -20,6 +20,9 @@ class MindOffSampleAPI(MindoffAPIMixin):
     # 3. Execution Rules
     process_mode: Literal["direct", "queue"] = "direct"
     allow_duplicate_queue: bool = False
+    # Queue mode only: define checkpoints used by self.progress_checkpoint(...)
+    # Direct mode skips progress tracking entirely.
+    progress_steps: dict | None = None
 
     # 4. Request Rules
     payload_schema: list | dict | None = None
@@ -29,12 +32,11 @@ class MindOffSampleAPI(MindoffAPIMixin):
 
     # 5. Usage Limits Per User
     api_request_limit: str | None = "30/m"
-    queue_status_limit: str | None = "30/m"
-    queue_status_stream_limit: int | None = 3
-
-
-    # 6. Queue Progress Steps
-    progress_steps: dict | None = None
+    # Queue-mode-only limits (ignored for direct-mode APIs)
+    queue_detail_api_limit: str | None = "30/m"
+    queue_status_stream_api_limit: int | None = 3
+    queue_cancel_api_limit: str | None = "30/m"
+    queue_retry_api_limit: str | None = "30/m"
 
     def run(self, request, *args, **kwargs):
         # === Standard Mindoff request access guide ===

@@ -166,10 +166,12 @@ class TestMoTestApi(MindoffTestCase):
         assert sent.get("X-Custom") == "value"
 
     def test_queue_mode_returns_final_detail_response_by_default(self):
-        """Queue mode defaults to returning mo_queue_detail response (not enqueue payload)."""
+        """Queue mode defaults to executing synchronously and returning mo_queue_detail response."""
         queue_id = str(uuid.uuid4())
         queued = _make_raw_response(body={"data": {"queue_id": queue_id}})
-        detail = _make_raw_response(body={"message": {"code": "SUCCESS"}, "data": {"ok": 1}})
+        detail = _make_raw_response(
+            body={"message": {"code": "SUCCESS"}, "data": {"ok": 1}}
+        )
 
         def _fake_reverse(name, kwargs=None, args=None):
             if name == self.API_URL_NAME:
@@ -189,22 +191,13 @@ class TestMoTestApi(MindoffTestCase):
             ),
             patch.object(self.client, "get", side_effect=[queued, detail]) as mock_get,
             patch(
-                "apps.django_mindoff.components.tdd_kit._QueueTestRuntime.ensure_started",
-                return_value=None,
-            ),
-            patch(
-                "apps.django_mindoff.components.tdd_kit._wait_for_queue_terminal_state",
-                return_value="completed",
-            ) as mock_wait,
+                "apps.django_mindoff.components.tdd_kit._execute_queue_sync",
+            ) as mock_execute,
         ):
             response = self.mo_test_api(self.API_URL_NAME)
 
         assert response is detail
-        mock_wait.assert_called_once_with(
-            queue_id,
-            timeout_s=30.0,
-            poll_interval_s=0.2,
-        )
+        mock_execute.assert_called_once_with(queue_id)
         assert mock_get.call_count == 2
         assert mock_get.call_args_list[1].args[0] == f"/queue/{queue_id}/"
 
@@ -224,13 +217,13 @@ class TestMoTestApi(MindoffTestCase):
             ),
             patch.object(self.client, "get", return_value=queued) as mock_get,
             patch(
-                "apps.django_mindoff.components.tdd_kit._wait_for_queue_terminal_state"
-            ) as mock_wait,
+                "apps.django_mindoff.components.tdd_kit._execute_queue_sync"
+            ) as mock_execute,
         ):
             response = self.mo_test_api(self.API_URL_NAME, is_queue_response=False)
 
         assert response is queued
-        mock_wait.assert_not_called()
+        mock_execute.assert_not_called()
         assert mock_get.call_count == 1
 
     # 🚫 REJECTION ────────────────────────────────────────────────────────
