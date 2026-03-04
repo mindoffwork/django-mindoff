@@ -32,66 +32,12 @@ from ._tdd_kit import field_value_generator
 from django.urls import reverse, resolve, Resolver404
 from rest_framework.test import APIClient
 from http import HTTPStatus
-from ..components.managers.create_app import DjangoAppCreator
+from .managers._create_app import DjangoAppCreator
 from django.urls import clear_url_caches
 from django.contrib.auth import get_user_model
-from ._api_kit.queue_process import execute_queue as _execute_queue_sync
 
-
-# ----------------
-# Internal Redis stub for queue tests
-# ----------------
-class _InMemoryRedis:
-    """
-    Minimal in-process Redis stub used by mo_test_api in queue mode.
-    Avoids any real Redis dependency when running tests.
-    """
-
-    def __init__(self):
-        self.hashes: dict[str, dict[str, str]] = {}
-        self.counters: dict[str, int] = {}
-        self.ttls: dict[str, int] = {}
-
-    def ping(self):
-        return True
-
-    def flushdb(self):
-        self.hashes.clear()
-        self.counters.clear()
-        self.ttls.clear()
-
-    def hset(self, key, mapping):
-        bucket = self.hashes.setdefault(key, {})
-        for k, v in mapping.items():
-            bucket[str(k)] = str(v)
-
-    def hgetall(self, key):
-        data = self.hashes.get(key, {})
-        return {str(k).encode("utf-8"): str(v).encode("utf-8") for k, v in data.items()}
-
-    def expire(self, key, ttl):
-        self.ttls[key] = ttl
-        return True
-
-    def persist(self, key):
-        self.ttls.pop(key, None)
-        return True
-
-    def incr(self, key):
-        value = int(self.counters.get(key, 0)) + 1
-        self.counters[key] = value
-        return value
-
-    def decr(self, key):
-        value = int(self.counters.get(key, 0)) - 1
-        self.counters[key] = value
-        return value
-
-    def delete(self, key):
-        self.hashes.pop(key, None)
-        self.counters.pop(key, None)
-        self.ttls.pop(key, None)
-        return True
+# Import the thread-local flag used to bypass queue mode during tests.
+from .api_kit import _test_force_direct
 
 
 # ----------------
@@ -101,183 +47,6 @@ PASCAL_CASE_REGEX = r"^[A-Z][a-zA-Z0-9]+$"
 SNAKE_CASE_REGEX = r"^[a-z0-9_]+$"
 test_case = SimpleTestCase()
 json_key = "application/json"
-
-
-class _QueueTestRuntime:
-    """
-    Session-scoped queue infrastructure used by ``mo_test_api`` in queue mode.
-    Starts Redis + Dramatiq worker once and reuses them for all tests.
-    """
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._started = False
-        self._redis_process = None
-        self._worker_process = None
-        self._owns_redis = False
-
-    def ensure_started(self):
-        with self._lock:
-            if self._started:
-                return
-            self._start_redis_if_needed()
-            self._start_dramatiq_worker()
-            self._started = True
-
-    def shutdown(self):
-        with self._lock:
-            self._terminate_process(self._worker_process)
-            self._worker_process = None
-            if self._owns_redis:
-                self._terminate_process(self._redis_process)
-                self._redis_process = None
-                self._owns_redis = False
-            self._started = False
-
-    def _start_redis_if_needed(self):
-        from redis import Redis
-
-        redis_url = settings.REDIS_URL
-        parsed = urlparse(redis_url)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 6379
-
-        client = Redis.from_url(redis_url)
-        try:
-            client.ping()
-            return
-        except Exception:
-            pass
-
-        if host not in {"127.0.0.1", "localhost"}:
-            raise RuntimeError(
-                f"Cannot auto-start Redis for non-local host '{host}'. "
-                f"Set REDIS_URL to localhost or start Redis manually."
-            )
-
-        cmd = [
-            "redis-server",
-            "--save",
-            "",
-            "--appendonly",
-            "no",
-            "--port",
-            str(port),
-        ]
-        self._redis_process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=os.environ.copy(),
-        )
-        self._owns_redis = True
-        self._wait_for_redis(client, timeout=10.0)
-
-    def _wait_for_redis(self, client, timeout=10.0):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                client.ping()
-                return
-            except Exception:
-                time.sleep(0.1)
-        raise TimeoutError("Timed out waiting for Redis to become available.")
-
-    def _start_dramatiq_worker(self):
-        env = os.environ.copy()
-        env.setdefault(
-            "DJANGO_SETTINGS_MODULE",
-            os.environ.get("DJANGO_SETTINGS_MODULE", "config.settings"),
-        )
-        # Prevent invalid shell values (e.g. DEBUG=release) from breaking
-        # settings import in the worker subprocess.
-        env["DEBUG"] = "true" if bool(getattr(settings, "DEBUG", True)) else "false"
-        module_name = self._resolve_queue_process_module()
-        cmd = [
-            sys.executable,
-            "-m",
-            "dramatiq",
-            module_name,
-            "--processes",
-            "1",
-            "--threads",
-            "2",
-            "--path",
-            ".",
-        ]
-        self._worker_process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            env=env,
-            text=True,
-        )
-        timeout = 10
-        sleep = 0.02
-        start = time.time()
-
-        from redis import Redis
-        from ._api_kit.queue_process import dramatiq_healthcheck
-
-        redis_client = Redis.from_url(settings.REDIS_URL)
-        probe_id = uuid.uuid4().hex
-        probe_key = f"moq:health:{probe_id}"
-        try:
-            redis_client.delete(probe_key)
-        except Exception:
-            pass
-
-        while time.time() - start < timeout:
-            if self._worker_process.poll() is not None:
-                stderr_output = ""
-                if self._worker_process.stderr is not None:
-                    try:
-                        stderr_output = self._worker_process.stderr.read().strip()
-                    except Exception:
-                        stderr_output = ""
-                if stderr_output:
-                    raise RuntimeError(
-                        "Failed to start Dramatiq worker for queue tests. "
-                        f"stderr: {stderr_output}"
-                    )
-                raise RuntimeError("Failed to start Dramatiq worker for queue tests.")
-            try:
-                dramatiq_healthcheck.send(probe_id)
-                if redis_client.hgetall(probe_key):
-                    return
-            except Exception:
-                pass
-
-            time.sleep(sleep)
-
-        raise RuntimeError("Dramatiq worker did not become ready.")
-
-    def _resolve_queue_process_module(self) -> str:
-        suffix = ".components.tdd_kit"
-        if __name__.endswith(suffix):
-            base_pkg = __name__[: -len(suffix)]
-            return f"{base_pkg}.components._api_kit.dramatiq_worker"
-
-        candidates = (
-            "apps.django_mindoff.components._api_kit.dramatiq_worker",
-            "django_mindoff.components._api_kit.dramatiq_worker",
-        )
-        for candidate in candidates:
-            if importlib.util.find_spec(candidate) is not None:
-                return candidate
-        return "django_mindoff.components._api_kit.dramatiq_worker"
-
-    def _terminate_process(self, proc):
-        if proc is None:
-            return
-        if proc.poll() is not None:
-            return
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
 
 
 # ----------------
@@ -304,12 +73,6 @@ class MindoffTestCase:
     @pytest.fixture(scope="session")
     def _asserts(self):
         return SimpleTestCase()
-
-    @pytest.fixture(scope="session")
-    def _mo_queue_test_runtime(self):
-        runtime = _QueueTestRuntime()
-        yield runtime
-        runtime.shutdown()
 
     @pytest.fixture
     def _mo_mock_app(self, request):
@@ -579,7 +342,7 @@ urlpatterns = original_patterns + [
         return __update_model_frm_dict
 
     @pytest.fixture
-    def _mo_test_api(self, request, _mo_queue_test_runtime):
+    def _mo_test_api(self, request):
         @typechecked
         def __call(
             api_url_name: str,
@@ -589,9 +352,6 @@ urlpatterns = original_patterns + [
             payload: list | dict | None = None,
             url_kwargs: dict | None = None,
             query_params: dict | None = None,
-            is_queue_response: bool = True,
-            queue_timeout_s: float = 30.0,
-            queue_poll_interval_s: float = 0.2,
             **extra,
         ):
             from urllib.parse import urlencode
@@ -614,7 +374,6 @@ urlpatterns = original_patterns + [
             JSON_CT = json_key
 
             method = getattr(api_cls_attr, "method", "get").lower()
-            is_queue_mode = getattr(api_cls_attr, "process_mode", "direct") == "queue"
 
             url = reverse(api_url_name, kwargs=resolved_url_kwargs)
             if query_params:
@@ -642,36 +401,24 @@ urlpatterns = original_patterns + [
                     is_exception=True,
                 )
 
-            # ── Dispatch ──────────────────────────────────────────────────────
-            client_method = getattr(self.client, method)
-            if method in {"get", "delete"}:
-                response = client_method(url, headers=final_headers, **extra)
-            else:
-                response = client_method(
-                    url,
-                    data=payload or {},
-                    format="json",
-                    headers=final_headers,
-                    **extra,
-                )
+            # ── Dispatch (queue-mode APIs run synchronously via direct-mode override) ──
+            _test_force_direct.active = True
+            try:
+                client_method = getattr(self.client, method)
+                if method in {"get", "delete"}:
+                    response = client_method(url, headers=final_headers, **extra)
+                else:
+                    response = client_method(
+                        url,
+                        data=payload or {},
+                        format="json",
+                        headers=final_headers,
+                        **extra,
+                    )
+            finally:
+                _test_force_direct.active = False
 
-            if not (is_queue_mode and is_queue_response):
-                return response
-
-            queue_id = _extract_queue_id_from_response(response)
-            if not queue_id:
-                return response
-
-            # Execute the worker synchronously with an in-process Redis stub
-            # so users never need to set up real Redis infrastructure in tests.
-            from unittest.mock import patch as _patch
-            from ._api_kit import redis as _redis_state
-
-            with _patch.object(_redis_state, "redis_client", _InMemoryRedis()):
-                _execute_queue_sync(queue_id)
-
-            detail_url = reverse("mo_queue_detail", args=[queue_id])
-            return self.client.get(detail_url, headers={"Accept": JSON_CT})
+            return response
 
         return __call
 
@@ -810,51 +557,6 @@ class MindoffRouterTestCase:
 # ----------------
 # Helper Functions
 # ----------------
-def _extract_queue_id_from_response(response) -> str | None:
-    try:
-        body = response.json()
-    except Exception:
-        return None
-    if not isinstance(body, dict):
-        return None
-
-    data = body.get("data")
-    if isinstance(data, dict):
-        queue_id = data.get("queue_id")
-        return str(queue_id) if queue_id else None
-
-    # Backward-compatible fallback when response uses top-level queue_id.
-    queue_id = body.get("queue_id")
-    return str(queue_id) if queue_id else None
-
-
-def _wait_for_queue_terminal_state(
-    queue_id: str, *, timeout_s: float = 30.0, poll_interval_s: float = 0.2
-) -> str:
-    from ..models import MOQueue
-
-    terminal_states = {"completed", "failed", "cancelled"}
-    deadline = time.monotonic() + timeout_s
-    last_status = "queued"
-
-    while time.monotonic() < deadline:
-        status = (
-            MOQueue.objects.filter(id=queue_id)
-            .values_list("job_status", flat=True)
-            .first()
-        )
-        if status:
-            last_status = status
-        if status in terminal_states:
-            return str(status)
-        time.sleep(poll_interval_s)
-
-    raise TimeoutError(
-        f"Queue task '{queue_id}' did not reach a terminal state "
-        f"within {timeout_s:.1f}s (last_status='{last_status}')."
-    )
-
-
 def _normalize_fk_and_validate_mockmodel_params(model_name, table_name, foreign_keys):
     if model_name:
         test_case.assertRegex(model_name, PASCAL_CASE_REGEX, msg="Invalid Model Name")

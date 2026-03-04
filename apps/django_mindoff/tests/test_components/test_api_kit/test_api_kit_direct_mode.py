@@ -63,8 +63,8 @@ def _api_templates(tmp_path_factory):
     from django.test import override_settings
     from django.urls import clear_url_caches as _clear
 
-    from ....components.managers.create_api import DjangoApiCreator
-    from ....components.managers.create_app import DjangoAppCreator
+    from ....components.managers._create_api import DjangoApiCreator
+    from ....components.managers._create_app import DjangoAppCreator
 
     tmp_root = Path(tmp_path_factory.mktemp("canonical_bootstrap"))
     sys.path.insert(0, str(tmp_root))

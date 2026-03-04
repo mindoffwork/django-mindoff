@@ -165,19 +165,15 @@ class TestMoTestApi(MindoffTestCase):
         assert sent.get("Accept") == "application/json"
         assert sent.get("X-Custom") == "value"
 
-    def test_queue_mode_returns_final_detail_response_by_default(self):
-        """Queue mode defaults to executing synchronously and returning mo_queue_detail response."""
-        queue_id = str(uuid.uuid4())
-        queued = _make_raw_response(body={"data": {"queue_id": queue_id}})
-        detail = _make_raw_response(
+    def test_queue_mode_api_returns_direct_response(self):
+        """Queue-mode APIs are forced into direct mode during tests and return run() output directly."""
+        direct_response = _make_raw_response(
             body={"message": {"code": "SUCCESS"}, "data": {"ok": 1}}
         )
 
         def _fake_reverse(name, kwargs=None, args=None):
             if name == self.API_URL_NAME:
                 return "/enqueue/"
-            if name == "mo_queue_detail":
-                return f"/queue/{args[0]}/"
             raise AssertionError(f"Unexpected reverse call: {name}")
 
         with (
@@ -189,22 +185,26 @@ class TestMoTestApi(MindoffTestCase):
                 "apps.django_mindoff.components.tdd_kit.reverse",
                 side_effect=_fake_reverse,
             ),
-            patch.object(self.client, "get", side_effect=[queued, detail]) as mock_get,
-            patch(
-                "apps.django_mindoff.components.tdd_kit._execute_queue_sync",
-            ) as mock_execute,
+            patch.object(self.client, "get", return_value=direct_response) as mock_get,
         ):
             response = self.mo_test_api(self.API_URL_NAME)
 
-        assert response is detail
-        mock_execute.assert_called_once_with(queue_id)
-        assert mock_get.call_count == 2
-        assert mock_get.call_args_list[1].args[0] == f"/queue/{queue_id}/"
+        assert response is direct_response
+        # Only one GET — no queue polling, no detail URL fetch
+        assert mock_get.call_count == 1
 
-    def test_queue_mode_can_return_enqueue_response_when_flag_false(self):
-        """is_queue_response=False keeps the original enqueue response."""
-        queue_id = str(uuid.uuid4())
-        queued = _make_raw_response(body={"data": {"queue_id": queue_id}})
+    def test_queue_mode_api_sets_and_clears_force_direct_flag(self):
+        """_test_force_direct.active is True during dispatch and always cleaned up after."""
+        from apps.django_mindoff.components.api_kit import _test_force_direct
+
+        observed_during: list[bool] = []
+        direct_response = _make_raw_response(
+            body={"message": {"code": "SUCCESS"}, "data": {}}
+        )
+
+        def _capture_flag(*args, **kwargs):
+            observed_during.append(getattr(_test_force_direct, "active", False))
+            return direct_response
 
         with (
             patch(
@@ -215,16 +215,14 @@ class TestMoTestApi(MindoffTestCase):
                 "apps.django_mindoff.components.tdd_kit.reverse",
                 return_value="/enqueue/",
             ),
-            patch.object(self.client, "get", return_value=queued) as mock_get,
-            patch(
-                "apps.django_mindoff.components.tdd_kit._execute_queue_sync"
-            ) as mock_execute,
+            patch.object(self.client, "get", side_effect=_capture_flag),
         ):
-            response = self.mo_test_api(self.API_URL_NAME, is_queue_response=False)
+            self.mo_test_api(self.API_URL_NAME)
 
-        assert response is queued
-        mock_execute.assert_not_called()
-        assert mock_get.call_count == 1
+        # Flag was active during the request
+        assert observed_during == [True]
+        # Flag is cleaned up after
+        assert getattr(_test_force_direct, "active", False) is False
 
     # 🚫 REJECTION ────────────────────────────────────────────────────────
 

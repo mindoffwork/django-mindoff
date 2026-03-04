@@ -110,7 +110,10 @@ class MindoffQueueDetailView(MindoffAPIMixin):
             return mo_response_kit.json_response(
                 code="QUEUE_TASK_UNKNOWN_STATUS",
                 category="warning",
-                data={"queue_id": queue_id, "job_status": obj.job_status},
+                data={
+                    "queue_id": queue_id,
+                    "job_status": obj.job_status,
+                },
             )
         return Response(
             response_json,
@@ -123,38 +126,56 @@ class MindoffQueueDetailView(MindoffAPIMixin):
     def _failed_response(self, obj, queue_id):
         payload = _get_queue_response(obj)
         decoded_error = _maybe_decode_compressed_json(obj.error)
+        payload_data = payload or {"error": decoded_error}
+        if not isinstance(payload_data, dict):
+            payload_data = {"result": payload_data}
+        payload_data.setdefault("queue_id", queue_id)
+        payload_data.setdefault("job_status", obj.job_status)
         return mo_response_kit.json_response(
             code="QUEUE_TASK_FAILED",
             category="danger",
-            data=payload or {"error": decoded_error},
+            data=payload_data,
         )
 
     def _cancelled_response(self, obj, queue_id):
         return mo_response_kit.json_response(
             code="QUEUE_TASK_CANCELLED",
             category="warning",
-            data={"queue_id": queue_id},
+            data={
+                "queue_id": queue_id,
+                "job_status": obj.job_status,
+            },
         )
 
     def _pending_response(self, obj, queue_id):
         return mo_response_kit.json_response(
             code="QUEUE_TASK_PENDING",
             category="info",
-            data={"queue_id": queue_id},
+            data={
+                "queue_id": queue_id,
+                "job_status": obj.job_status,
+            },
         )
 
     def _running_response(self, obj, queue_id):
         return mo_response_kit.json_response(
             code="QUEUE_TASK_RUNNING",
             category="info",
-            data={"queue_id": queue_id, "progress": _get_live_progress(queue_id)},
+            data={
+                "queue_id": queue_id,
+                "job_status": obj.job_status,
+                "progress": _get_live_progress(queue_id),
+            },
         )
 
     def _unknown_response(self, obj, queue_id):
         return mo_response_kit.json_response(
             code="QUEUE_TASK_UNKNOWN_STATUS",
             category="warning",
-            data={"queue_id": queue_id, "job_status": obj.job_status},
+            data={
+                "queue_id": queue_id,
+                "job_status": obj.job_status,
+            },
         )
 
 
@@ -335,7 +356,6 @@ class MindoffQueueStatusStreamView(MindoffAPIMixin):
                 "current_step": "",
                 "current_message": str(obj.error or ""),
             },
-            "steps": _resolve_steps_from_api(obj.api_url_name),
             "started_at": obj.created_at.isoformat(),
             "updated_at": obj.updated_at.isoformat(),
         }
@@ -446,19 +466,27 @@ class MindoffQueueRetryView(MindoffAPIMixin):
 
         result = retry_failed_queue_task(str(queue_task_uuid))
         if result == "queued":
-            status_url = request.build_absolute_uri(
+            response_url = request.build_absolute_uri(
                 reverse("mo_queue_detail", args=[queue_task_uuid])
             )
             status_stream_url = request.build_absolute_uri(
                 reverse("mo_queue_status_stream", args=[queue_task_uuid])
+            )
+            cancel_url = request.build_absolute_uri(
+                reverse("mo_queue_cancel", args=[queue_task_uuid])
+            )
+            retry_url = request.build_absolute_uri(
+                reverse("mo_queue_retry", args=[queue_task_uuid])
             )
             return mo_response_kit.json_response(
                 code="QUEUED",
                 category="success",
                 data={
                     "queue_id": str(queue_task_uuid),
-                    "status_url": status_url,
+                    "response_url": response_url,
                     "status_stream_url": status_stream_url,
+                    "cancel_url": cancel_url,
+                    "retry_url": retry_url,
                 },
             )
 
@@ -596,7 +624,6 @@ def _status_payload(state: dict) -> dict:
             "current_step": str(progress.get("current_step", "")),
             "current_message": str(progress.get("current_message", "")),
         },
-        "steps": state.get("steps") or {},
         "started_at": state.get("started_at"),
         "updated_at": state.get("updated_at"),
     }
@@ -605,18 +632,6 @@ def _status_payload(state: dict) -> dict:
 def _stream_state_payload(state: dict) -> dict:
     """Identical to ``_status_payload``; also used for SSE deduplication."""
     return _status_payload(state)
-
-
-def _resolve_steps_from_api(api_url_name: str) -> dict:
-    """
-    Look up ``progress_steps`` from the API class when Redis has expired and
-    we need to include steps in a fallback response.
-    """
-    try:
-        api_cls = get_api_class_from_url_name(api_url_name=api_url_name)
-        return getattr(api_cls, "progress_steps", None) or {}
-    except Exception:
-        return {}
 
 
 def _serialize_queue_obj(obj: MOQueue) -> dict:

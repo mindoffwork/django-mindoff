@@ -64,18 +64,7 @@ def _normalize_state(state: dict) -> dict:
     updated_at = state.get("updated_at") or _now()
     started_at = state.get("started_at") or updated_at
 
-    # Steps may already be a dict (after pre-decoding) or a JSON string
-    steps_raw = state.get("steps", "")
-    steps = {}
-    if isinstance(steps_raw, dict):
-        steps = steps_raw
-    elif steps_raw:
-        try:
-            steps = json.loads(steps_raw)
-        except (TypeError, ValueError):
-            steps = {}
-
-    return {
+    normalized = {
         "id": str(state.get("id", "")),
         "job_status": status,
         "is_cancel": _is_cancel_of(state),
@@ -84,10 +73,11 @@ def _normalize_state(state: dict) -> dict:
             "current_step": str(raw_progress.get("current_step", "")),
             "current_message": str(raw_progress.get("current_message", "")),
         },
-        "steps": steps,
         "started_at": str(started_at),
         "updated_at": str(updated_at),
     }
+
+    return normalized
 
 
 # ─────────────────────────────────────────────
@@ -95,20 +85,11 @@ def _normalize_state(state: dict) -> dict:
 # ─────────────────────────────────────────────
 
 
-def init_queue(queue_task_uuid: str, created_at, steps: dict | None = None):
+def init_queue(queue_task_uuid: str, created_at):
     """
     Initialise a fresh queue entry in Redis.
 
-    ``steps`` is the developer-declared ``progress_steps`` dict from the API
-    class, e.g.::
-
-        {
-            "validate": {"label": "Validating",    "percent": 10},
-            "fetch":    {"label": "Fetching Data", "percent": 20},
-            "generate": {"label": "Generating",    "percent": 70},
-        }
-
-    It is stored as-is so the status endpoint can return it.
+    Stores only runtime queue state (no API metadata).
     """
     key = f"moq:{queue_task_uuid}"
     ts = created_at.isoformat()
@@ -120,7 +101,6 @@ def init_queue(queue_task_uuid: str, created_at, steps: dict | None = None):
         "progress": _progress_json(0, "", "queued"),
         "started_at": ts,
         "updated_at": ts,
-        "steps": json.dumps(steps or {}, separators=(",", ":"), ensure_ascii=True),
     }
     redis_client.hset(key, mapping=mapping)
     redis_client.expire(key, TTL_QUEUED)
@@ -143,12 +123,6 @@ def mark_running(queue_task_uuid: str):
         ),
         "started_at": state.get("started_at") or _now(),
         "updated_at": _now(),
-        # preserve steps
-        "steps": json.dumps(
-            state.get("steps") or {},
-            separators=(",", ":"),
-            ensure_ascii=True,
-        ),
     }
     redis_client.hset(key, mapping=mapping)
     # Running tasks must never expire while the worker is active
@@ -189,11 +163,6 @@ def update_progress(
         ),
         "started_at": state.get("started_at") or _now(),
         "updated_at": _now(),
-        "steps": json.dumps(
-            state.get("steps") or {},
-            separators=(",", ":"),
-            ensure_ascii=True,
-        ),
     }
     redis_client.hset(key, mapping=mapping)
 
@@ -211,11 +180,6 @@ def mark_completed(queue_task_uuid: str):
             "progress": _progress_json(100, "", "completed"),
             "started_at": state.get("started_at") or _now(),
             "updated_at": _now(),
-            "steps": json.dumps(
-                state.get("steps") or {},
-                separators=(",", ":"),
-                ensure_ascii=True,
-            ),
         },
     )
     redis_client.expire(key, TTL_COMPLETED)
@@ -239,11 +203,6 @@ def mark_failed(queue_task_uuid: str, error: str):
             ),
             "started_at": state.get("started_at") or _now(),
             "updated_at": _now(),
-            "steps": json.dumps(
-                state.get("steps") or {},
-                separators=(",", ":"),
-                ensure_ascii=True,
-            ),
         },
     )
     redis_client.expire(key, TTL_FAILED)
@@ -267,11 +226,6 @@ def mark_cancelled(queue_task_uuid: str, message: str = "cancelled"):
             ),
             "started_at": state.get("started_at") or _now(),
             "updated_at": _now(),
-            "steps": json.dumps(
-                state.get("steps") or {},
-                separators=(",", ":"),
-                ensure_ascii=True,
-            ),
         },
     )
     redis_client.expire(key, TTL_CANCELLED)
@@ -307,7 +261,7 @@ def get_queue_status(queue_task_uuid: str) -> dict:
     data = redis_client.hgetall(key)
 
     if not data:
-        return {"job_status": "unknown", "is_cancel": False, "steps": {}}
+        return {"job_status": "unknown", "is_cancel": False}
 
     decoded = {k.decode(): v.decode() for k, v in data.items()}
 
@@ -320,16 +274,6 @@ def get_queue_status(queue_task_uuid: str) -> dict:
             decoded["progress"] = {}
     else:
         decoded["progress"] = {}
-
-    # Deserialise the steps JSON blob
-    steps_raw = decoded.get("steps", "")
-    if steps_raw:
-        try:
-            decoded["steps"] = json.loads(steps_raw)
-        except (TypeError, ValueError):
-            decoded["steps"] = {}
-    else:
-        decoded["steps"] = {}
 
     decoded["id"] = decoded.get("id", str(queue_task_uuid))
     return _normalize_state(decoded)

@@ -10,6 +10,7 @@ from .validation_kit import mo_validation_kit, MindoffValidationError
 from typing import Any, Dict
 from ._helper_kit.validate_schema import validate_schema
 import json
+import threading
 from typing import Any, Dict, List, Union, Optional, Literal, Callable
 from django.urls import reverse
 from ._api_kit.redis import update_progress, get_queue_status, mark_cancelled
@@ -31,6 +32,12 @@ ALLOWED_PROCESS_MODES = ["direct", "queue"]
 # Expected shape of a single progress-step entry:
 #   { "label": <str>, "percent": <int 0-100> }
 _PROGRESS_STEP_REQUIRED_KEYS = {"label", "percent"}
+
+# ─── Test override ───────────────────────────────────────────────────────────
+# When `_test_force_direct.active` is True the mixin treats every request as
+# direct-mode, regardless of the `process_mode` class attribute.  The TDD kit
+# sets this flag so tests never need a real queue/worker/Redis.
+_test_force_direct = threading.local()
 
 
 def _is_queue_service_unavailable_error(exc: Exception) -> bool:
@@ -197,7 +204,7 @@ class MindoffAPIMixin(APIView):
     queue_cancel_api_limit: str | None = "30/m"
     queue_retry_api_limit: str | None = "30/m"
 
-    # 6. Queue Progress Steps  ← NEW
+    # 6. Queue Progress Steps
     #
     # Declare the checkpoints your ``run()`` method will report.  Each key is
     # the string you pass to ``progress_checkpoint()``.  Percent values must
@@ -311,7 +318,16 @@ class MindoffAPIMixin(APIView):
     # ─── Core request logic ─────────────────────────────────────────────────
 
     def _handle_request_logic(self, request, *args, **kwargs):
-        if self.process_mode == "queue":
+        # In test mode the TDD kit sets _test_force_direct.active = True so
+        # queue-mode APIs are exercised synchronously without any worker or
+        # Redis infrastructure.
+        effective_mode = (
+            "direct"
+            if getattr(_test_force_direct, "active", False)
+            else self.process_mode
+        )
+
+        if effective_mode == "queue":
             mo_validation_kit.ensure_falsey(
                 bool(request.FILES),
                 msg="Asynchronous API does not support multipart or file uploads.",
@@ -339,21 +355,36 @@ class MindoffAPIMixin(APIView):
                 msg="Failed to start the process. Please try again.",
             )
 
-            status_url = request.build_absolute_uri(
+            response_url = request.build_absolute_uri(
                 reverse("mo_queue_detail", args=[queue_id])
             )
             status_stream_url = request.build_absolute_uri(
                 reverse("mo_queue_status_stream", args=[queue_id])
+            )
+            cancel_url = request.build_absolute_uri(
+                reverse("mo_queue_cancel", args=[queue_id])
+            )
+            retry_url = request.build_absolute_uri(
+                reverse("mo_queue_retry", args=[queue_id])
             )
             return mo_response_kit.json_response(
                 code="QUEUED",
                 category="success",
                 data={
                     "queue_id": queue_id,
-                    "status_url": status_url,
+                    "response_url": response_url,
                     "status_stream_url": status_stream_url,
+                    "cancel_url": cancel_url,
+                    "retry_url": retry_url,
+                    "progress_steps": (
+                        self.progress_steps
+                        if isinstance(self.progress_steps, dict)
+                        else {}
+                    )
+                    or {},
                 },
             )
+
         return self.run(request, *args, **kwargs)
 
     # ─── DRF dispatch + exception handling ──────────────────────────────────

@@ -18,7 +18,7 @@ from typeguard import TypeCheckError
 from ...components.crud_kit import mo_crud_kit
 from ...components.polars_kit import mo_polars_kit
 from ...components.tdd_kit import MindoffTestCase, _create_model, _validate_model
-from ...components.managers.create_app import DjangoAppCreator
+from ...components.managers._create_app import DjangoAppCreator
 from ...components.validation_kit import ValidationError
 
 shared_uuid_author_book_relation = str(uuid.uuid4().hex)

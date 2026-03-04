@@ -43,7 +43,7 @@ redis_broker = RedisBroker(
 dramatiq.set_broker(redis_broker)
 
 _COMPRESSED_RESPONSE_FLAG = "__compressed__"
-
+_json_compression_string = "gzip+base64"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lightweight request wrapper used inside the worker
@@ -141,12 +141,10 @@ def enqueue_process(*, request, api_instance, args, kwargs):
         ),
     )
 
-    # 5. Initialise Redis state (including progress_steps for the status endpoint)
-    progress_steps = getattr(api_instance, "progress_steps", None) or {}
+    # 5. Initialise Redis runtime state
     init_queue(
         queue_task_uuid=str(queue_task_uuid),
         created_at=enqueue_obj.created_at,
-        steps=progress_steps,
     )
 
     # 6. Dispatch to worker
@@ -306,7 +304,7 @@ def rehydrate_queue_state(queue_task_uuid: str) -> dict:
     obj = MOQueue.objects.filter(id=queue_task_uuid).first()
 
     if obj is None and _state_status(redis_state) == "unknown":
-        return {"job_status": "unknown", "is_cancel": False, "steps": {}}
+        return {"job_status": "unknown", "is_cancel": False}
     if obj is None:
         return redis_state
 
@@ -365,7 +363,7 @@ def cancel_queue_task(queue_task_uuid: str) -> str:
 
 def retry_failed_queue_task(queue_task_uuid: str) -> str:
     """
-    Re-enqueue a previously failed task from scratch.
+    Re-enqueue a previously failed or cancelled task from scratch.
 
     Returns one of: ``"queued"`` | ``"not_found"`` | ``"not_retriable"``
     """
@@ -373,7 +371,7 @@ def retry_failed_queue_task(queue_task_uuid: str) -> str:
     if not obj:
         return "not_found"
 
-    if obj.job_status != "failed":
+    if obj.job_status not in ("failed", "cancelled"):
         return "not_retriable"
 
     # Clear all terminal state including response_code so the new run starts clean
@@ -385,17 +383,9 @@ def retry_failed_queue_task(queue_task_uuid: str) -> str:
         update_fields=["job_status", "error", "response", "response_code", "updated_at"]
     )
 
-    # Re-resolve progress_steps so Redis has them again after the retry
-    try:
-        api_cls = get_api_class_from_url_name(api_url_name=obj.api_url_name)
-        progress_steps = getattr(api_cls, "progress_steps", None) or {}
-    except Exception:
-        progress_steps = {}
-
     init_queue(
         queue_task_uuid=str(obj.id),
         created_at=timezone.now(),
-        steps=progress_steps,
     )
     execute_queue.send(str(obj.id))
     return "queued"
@@ -439,7 +429,7 @@ def _compress_json_result(result):
     b64 = base64.b64encode(compressed).decode("ascii")
     return {
         _COMPRESSED_RESPONSE_FLAG: True,
-        "codec": "gzip+base64",
+        "codec": _json_compression_string,
         "data": b64,
     }
 
@@ -463,7 +453,7 @@ def _compress_json_result_if_large(result, min_bytes: int):
     b64 = base64.b64encode(compressed).decode("ascii")
     return {
         _COMPRESSED_RESPONSE_FLAG: True,
-        "codec": "gzip+base64",
+        "codec": _json_compression_string,
         "data": b64,
     }
 
@@ -485,7 +475,7 @@ def _is_compressed_json_blob(payload) -> bool:
     return (
         isinstance(payload, dict)
         and payload.get(_COMPRESSED_RESPONSE_FLAG) is True
-        and payload.get("codec") == "gzip+base64"
+        and payload.get("codec") == _json_compression_string
     )
 
 
@@ -537,7 +527,7 @@ def _safe_get_queue_status(queue_task_uuid: str) -> dict:
     try:
         return get_queue_status(queue_task_uuid)
     except Exception:
-        return {"job_status": "unknown", "is_cancel": False, "steps": {}}
+        return {"job_status": "unknown", "is_cancel": False}
 
 
 def _is_cancel_requested(redis_state: dict) -> bool:
@@ -557,31 +547,25 @@ def _parse_updated_at(updated_at):
 
 
 def _sync_redis_from_db(obj: MOQueue):
-    """Rebuild Redis state from the DB record, preserving progress_steps."""
-    try:
-        api_cls = get_api_class_from_url_name(api_url_name=obj.api_url_name)
-        steps = getattr(api_cls, "progress_steps", None) or {}
-    except Exception:
-        steps = {}
-
+    """Rebuild Redis state from the DB record."""
     status = obj.job_status
     if status == "queued":
-        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at, steps=steps)
+        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
     elif status == "running":
-        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at, steps=steps)
+        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
         mark_running(str(obj.id))
     elif status == "completed":
-        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at, steps=steps)
+        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
         mark_completed(str(obj.id))
     elif status == "failed":
         decoded_error = _decode_json_blob(obj.error) or {}
         if not isinstance(decoded_error, dict):
             decoded_error = {}
         error_message = str(decoded_error.get("message", "failed"))
-        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at, steps=steps)
+        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
         mark_failed(str(obj.id), error=error_message)
     elif status == "cancelled":
-        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at, steps=steps)
+        init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
         mark_cancelled(str(obj.id))
 
 
