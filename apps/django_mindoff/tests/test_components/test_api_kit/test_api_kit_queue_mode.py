@@ -2141,7 +2141,7 @@ class TestQueueFullPipeline(MindoffTestCase):
                 ),
             ),
         ):
-            response = self.mo_test_api(api_url_name)
+            response = self.mo_call_api(api_url_name)
 
         assert response.status_code == 200
         body = response.json()

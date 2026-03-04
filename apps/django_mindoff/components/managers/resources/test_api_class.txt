@@ -18,7 +18,7 @@ class TestSampleAPIView(MindoffTestCase):
             "json"
         )
 
-        response = self.mo_test_api(
+        response = self.mo_call_api(
             self.api_url_name,
             user=user,
             payload=payload,

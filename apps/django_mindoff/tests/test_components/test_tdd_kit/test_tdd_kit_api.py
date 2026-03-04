@@ -9,7 +9,7 @@ from ....components.tdd_kit import MindoffTestCase
 
 @pytest.mark.django_db
 class TestMoTestApi(MindoffTestCase):
-    """Tests for the mo_test_api fixture."""
+    """Tests for the mo_call_api fixture."""
 
     API_URL_NAME = "tdd_test__sample_api"
 
@@ -27,13 +27,13 @@ class TestMoTestApi(MindoffTestCase):
                 self.client, http_method, return_value=_make_raw_response()
             ) as mock,
         ):
-            response = self.mo_test_api(self.API_URL_NAME, **call_kwargs)
+            response = self.mo_call_api(self.API_URL_NAME, **call_kwargs)
         return response, mock
 
     # ✅ ACCEPTANCE ───────────────────────────────────────────────────────
 
     def test_returns_raw_response_object(self):
-        """mo_test_api returns an object with .status_code, .headers, .content."""
+        """mo_call_api returns an object with .status_code, .headers, .content."""
         response, _ = self._patched_call(_make_api_cls(method="get"), "get")
         assert hasattr(response, "status_code")
         assert hasattr(response, "headers")
@@ -82,7 +82,7 @@ class TestMoTestApi(MindoffTestCase):
             ) as mock_rev,
             patch.object(self.client, "get", return_value=_make_raw_response()),
         ):
-            self.mo_test_api(self.API_URL_NAME, url_kwargs={"pk": 42})
+            self.mo_call_api(self.API_URL_NAME, url_kwargs={"pk": 42})
         mock_rev.assert_called_once_with(self.API_URL_NAME, kwargs={"pk": 42})
 
     def test_no_url_kwargs_calls_reverse_with_empty_dict(self):
@@ -97,7 +97,7 @@ class TestMoTestApi(MindoffTestCase):
             ) as mock_rev,
             patch.object(self.client, "get", return_value=_make_raw_response()),
         ):
-            self.mo_test_api(self.API_URL_NAME)
+            self.mo_call_api(self.API_URL_NAME)
         mock_rev.assert_called_once_with(self.API_URL_NAME, kwargs={})
 
     def test_query_params_appended_to_url(self):
@@ -129,7 +129,7 @@ class TestMoTestApi(MindoffTestCase):
             patch.object(self.client, "get", return_value=_make_raw_response()),
             patch.object(self.client, "force_authenticate") as mock_auth,
         ):
-            self.mo_test_api(self.API_URL_NAME, user=fake_user)
+            self.mo_call_api(self.API_URL_NAME, user=fake_user)
         mock_auth.assert_called_once_with(user=fake_user)
 
     def test_no_user_skips_force_authenticate(self):
@@ -145,7 +145,7 @@ class TestMoTestApi(MindoffTestCase):
             patch.object(self.client, "get", return_value=_make_raw_response()),
             patch.object(self.client, "force_authenticate") as mock_auth,
         ):
-            self.mo_test_api(self.API_URL_NAME)
+            self.mo_call_api(self.API_URL_NAME)
         mock_auth.assert_not_called()
 
     def test_accept_header_always_json_and_custom_headers_merged(self):
@@ -160,7 +160,7 @@ class TestMoTestApi(MindoffTestCase):
             ),
             patch.object(self.client, "get", return_value=_make_raw_response()) as mock,
         ):
-            self.mo_test_api(self.API_URL_NAME, headers={"X-Custom": "value"})
+            self.mo_call_api(self.API_URL_NAME, headers={"X-Custom": "value"})
         sent = mock.call_args.kwargs.get("headers", {})
         assert sent.get("Accept") == "application/json"
         assert sent.get("X-Custom") == "value"
@@ -187,7 +187,7 @@ class TestMoTestApi(MindoffTestCase):
             ),
             patch.object(self.client, "get", return_value=direct_response) as mock_get,
         ):
-            response = self.mo_test_api(self.API_URL_NAME)
+            response = self.mo_call_api(self.API_URL_NAME)
 
         assert response is direct_response
         # Only one GET — no queue polling, no detail URL fetch
@@ -217,7 +217,7 @@ class TestMoTestApi(MindoffTestCase):
             ),
             patch.object(self.client, "get", side_effect=_capture_flag),
         ):
-            self.mo_test_api(self.API_URL_NAME)
+            self.mo_call_api(self.API_URL_NAME)
 
         # Flag was active during the request
         assert observed_during == [True]
@@ -245,7 +245,7 @@ class TestMoTestApi(MindoffTestCase):
             ),
         ):
             with pytest.raises(Exception):
-                self.mo_test_api(self.API_URL_NAME, payload=payload)
+                self.mo_call_api(self.API_URL_NAME, payload=payload)
 
 
 # ════════════════════════════════════════════════════════════════════════

@@ -58,12 +58,11 @@ class MindoffTestCase:
         self.asserts = request.getfixturevalue("_asserts")
         self.mo_mock_app = request.getfixturevalue("_mo_mock_app")
         self.mo_mock_model = request.getfixturevalue("_mo_mock_model")
-        self.init_temp_dir = request.getfixturevalue("_init_temp_dir")
         self.mo_mock_model_frms = request.getfixturevalue("_mo_mock_model_frms")
         self.mo_update_mock_model_frms = request.getfixturevalue(
             "_mo_update_mock_model_frms"
         )
-        self.mo_test_api = request.getfixturevalue("_mo_test_api")
+        self.mo_call_api = request.getfixturevalue("_mo_test_api")
         self.mo_assert_api_response = request.getfixturevalue("_mo_assert_api_response")
         self.mo_create_user = request.getfixturevalue("_mo_create_user")
         self.client = APIClient()
@@ -225,24 +224,6 @@ urlpatterns = original_patterns + [
                         editor.delete_model(model)
             if auto_created_app:
                 _cleanup_dynamic_app(auto_created_app)
-
-        request.addfinalizer(__teardown)
-        return __setup
-
-    @pytest.fixture
-    def _init_temp_dir(self, request, tmp_path):
-        original_base_dir = settings.BASE_DIR
-
-        def __setup(addon_path=""):
-            temp_base_dir = tmp_path / uuid.uuid4().hex
-            temp_base_dir.mkdir()
-            nested_dir = temp_base_dir / Path(addon_path)
-            nested_dir.mkdir(parents=True, exist_ok=True)
-            settings.BASE_DIR = temp_base_dir
-            return nested_dir
-
-        def __teardown():
-            settings.BASE_DIR = original_base_dir
 
         request.addfinalizer(__teardown)
         return __setup

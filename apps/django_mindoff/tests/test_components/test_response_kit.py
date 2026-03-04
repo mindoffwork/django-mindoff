@@ -22,7 +22,6 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from django.conf import settings as django_settings
 from django.http import FileResponse, HttpResponse
 from typeguard import TypeCheckError
 
@@ -117,6 +116,7 @@ class TestJsonResponse(MindoffTestCase):
     )
     def test_json_response_valid(
         self,
+        tmp_path,
         settings,
         capsys,
         caplog,
@@ -129,8 +129,7 @@ class TestJsonResponse(MindoffTestCase):
         category,
         exception,
     ):
-        self._write_csv(CSV_HEADERS_VALID, CSV_DATA_VALID)
-        csv_path = Path(django_settings.BASE_DIR) / "config" / "responses.csv"
+        csv_path = self._write_csv(tmp_path, CSV_HEADERS_VALID, CSV_DATA_VALID)
         load_responses_csv(csv_path)
         assert len(MINDOFF_RESPONSES) > 0
         settings.DEBUG = is_debug
@@ -233,13 +232,15 @@ class TestJsonResponse(MindoffTestCase):
         assert "FALLBACK" in MINDOFF_RESPONSES
         assert MINDOFF_RESPONSES["FALLBACK"]["title"] == "Fallback"
 
-    def _write_csv(self, headers, data):
-        config_dir = self.init_temp_dir(addon_path="config")
+    def _write_csv(self, tmp_path, headers, data):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
         csv_file_path = config_dir / "responses.csv"
         with open(csv_file_path, mode="w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(headers)
             writer.writerows(data)
+        return csv_file_path
 
 
 class TestFileResponse(MindoffTestCase):
