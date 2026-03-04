@@ -15,3 +15,13 @@ INVALID_API_VERSION,Invalid API Version,Given API version does not exist for thi
 SUCCESS,Success,Operation completed successfully.,200
 CREATED,Successfully Created,Information have been saved successfully.,200
 UPDATED,Successfully Updated,Information have been updated successfully.,200
+QUEUED,Queued,Operation added to queue.,200
+QUEUE_SERVICE_UNAVAILABLE,Queue Service Unavailable,Queuing service is currently unavailable. Please try again later.,503
+QUEUE_TASK_NOT_FOUND,Queued Task Not Found,The requested queued task does not exist or has expired.,404
+QUEUE_TASK_CANCELLED,Queue Task Cancelled,The queue task was cancelled before completion.,200
+QUEUE_TASK_PENDING,Queue Task Pending,The queue task has not started yet.,200
+QUEUE_TASK_RUNNING,Queue Task Running,The queue task is currently in progress.,200
+QUEUE_TASK_FAILED,Queue Task Failed,The queue task failed during execution.,200
+QUEUE_TASK_UNKNOWN_STATUS,Queue Task Unknown Status,The queue task is in an unknown state.,200
+QUEUE_TASK_NOT_CANCELLABLE,Queue Task Not Cancellable,The queue task cannot be cancelled in its current state.,400
+QUEUE_TASK_NOT_RETRIABLE,Queue Task Not Retriable,Only failed queue tasks can be retried.,400

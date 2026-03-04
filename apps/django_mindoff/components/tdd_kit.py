@@ -5,9 +5,15 @@ import uuid
 import warnings
 import typing
 import tempfile
+import os
+import subprocess
+import threading
+import time
+import importlib.util
 from collections import namedtuple
 from pathlib import Path
 from typing import List, Tuple, Type, get_args, get_origin, Literal
+from urllib.parse import urlparse
 
 import polars as pl
 import pytest
@@ -26,9 +32,12 @@ from ._tdd_kit import field_value_generator
 from django.urls import reverse, resolve, Resolver404
 from rest_framework.test import APIClient
 from http import HTTPStatus
-from ..components.managers.create_app import DjangoAppCreator
+from .managers._create_app import DjangoAppCreator
 from django.urls import clear_url_caches
 from django.contrib.auth import get_user_model
+
+# Import the thread-local flag used to bypass queue mode during tests.
+from .api_kit import _test_force_direct
 
 
 # ----------------
@@ -37,8 +46,7 @@ from django.contrib.auth import get_user_model
 PASCAL_CASE_REGEX = r"^[A-Z][a-zA-Z0-9]+$"
 SNAKE_CASE_REGEX = r"^[a-z0-9_]+$"
 test_case = SimpleTestCase()
-_ANSI_YELLOW = "\033[93m"
-_ANSI_RESET = "\033[0m"
+json_key = "application/json"
 
 
 # ----------------
@@ -71,10 +79,14 @@ class MindoffTestCase:
         """
         Temporary Django App Creation Fixture (isolated, real-structure).
         """
+        from typing import NamedTuple
 
-        CreatedApp = namedtuple(
-            "CreatedApp", ["app_name", "temp_dir", "override", "creator"]
-        )
+        class CreatedApp(NamedTuple):
+            app_name: str
+            temp_dir: str
+            override: bool
+            creator: str
+
         created_apps: list[CreatedApp] = []
 
         def __setup(app_name: str | None = None, *, is_return_path: bool = False):
@@ -359,9 +371,10 @@ urlpatterns = original_patterns + [
                 version = None
 
             api_cls_attr = _get_api_cls_attributes(api_url_name, version=version)
-            JSON_CT = "application/json"
+            JSON_CT = json_key
 
             method = getattr(api_cls_attr, "method", "get").lower()
+
             url = reverse(api_url_name, kwargs=resolved_url_kwargs)
             if query_params:
                 url = f"{url}?{urlencode(query_params)}"
@@ -388,18 +401,22 @@ urlpatterns = original_patterns + [
                     is_exception=True,
                 )
 
-            # ── Dispatch ──────────────────────────────────────────────────────
-            client_method = getattr(self.client, method)
-            if method in {"get", "delete"}:
-                response = client_method(url, headers=final_headers, **extra)
-            else:
-                response = client_method(
-                    url,
-                    data=payload or {},
-                    format="json",
-                    headers=final_headers,
-                    **extra,
-                )
+            # ── Dispatch (queue-mode APIs run synchronously via direct-mode override) ──
+            _test_force_direct.active = True
+            try:
+                client_method = getattr(self.client, method)
+                if method in {"get", "delete"}:
+                    response = client_method(url, headers=final_headers, **extra)
+                else:
+                    response = client_method(
+                        url,
+                        data=payload or {},
+                        format="json",
+                        headers=final_headers,
+                        **extra,
+                    )
+            finally:
+                _test_force_direct.active = False
 
             return response
 
@@ -428,7 +445,7 @@ urlpatterns = original_patterns + [
             # ── JSON ──────────────────────────────────────────────────────────
             if expected_response_type == "json":
                 assert (
-                    "application/json" in content_type
+                    json_key in content_type
                 ), f"[{api_url_name}] Expected JSON, got Content-Type={content_type}"
 
             # ── Binary ───────────────────────────────────────────────────────
@@ -438,7 +455,7 @@ urlpatterns = original_patterns + [
                 ), f"[{api_url_name}] Binary response missing Content-Type"
                 assert not any(
                     content_type.startswith(t)
-                    for t in ("text/", "application/json", "application/xml")
+                    for t in ("text/", json_key, "application/xml")
                 ), f"[{api_url_name}] Binary response has unexpected text Content-Type: {content_type}"
                 assert isinstance(
                     response.content, (bytes, bytearray)
@@ -456,10 +473,6 @@ urlpatterns = original_patterns + [
                     "text/plain" in content_type
                 ), f"[{api_url_name}] Expected plain text, got Content-Type={content_type}"
 
-            # ── Others — no content-type assertion ────────────────────────────
-            elif expected_response_type == "others":
-                pass
-
         return __assert
 
     @pytest.fixture
@@ -470,18 +483,18 @@ urlpatterns = original_patterns + [
         """
 
         def __create(username=None, password="password123", **extra_fields):
-            User = get_user_model()
+            user_model = get_user_model()
 
             # If a specific username is requested, check if it exists
             if username:
-                existing = User.objects.filter(username=username).first()
+                existing = user_model.objects.filter(username=username).first()
                 if existing:
                     return existing
                 extra_fields["username"] = username
 
             # Use baker to create the user with default password logic
-            # This handles any other required fields your User model might have
-            user = baker.make(User, **extra_fields)
+            # This handles any other required fields your user_model model might have
+            user = baker.make(user_model, **extra_fields)
 
             if password:
                 user.set_password(password)
@@ -518,7 +531,7 @@ class MindoffRouterTestCase:
                 "as_view",
                 return_value=lambda req, **kw: MagicMock(status_code=200),
             ) as mock_as_view:
-                response = self.router(request, version=version)
+                _ = self.router(request, version=version)
                 assert mock_as_view.call_count == 1, (
                     f"Version {version} did not dispatch to {expected_class.__name__}. "
                     f"Expected as_view() to be called exactly once."
@@ -528,15 +541,15 @@ class MindoffRouterTestCase:
         """A version absent from VERSION_MAP must return HTTP 404 with detail and available_versions."""
         import json
         from django.test import RequestFactory
-        from django.http import JsonResponse
+        from rest_framework.response import Response
 
         request = RequestFactory().get("/")
         response = self.router(request, version=99999)
 
         assert response.status_code == 404
-        assert isinstance(response, JsonResponse)
+        assert isinstance(response, Response)
 
-        body = json.loads(response.content)
+        body = response.data
         assert body["message"]["code"] == "INVALID_API_VERSION"
         assert set(body["data"]["available_versions"]) == set(self.version_map.keys())
 
@@ -844,29 +857,38 @@ def _get_api_cls_attributes(api_url_name: str, version: int | None = None):
             stack.extend(pattern.url_patterns)
             continue
         if isinstance(pattern, URLPattern) and pattern.name == api_url_name:
-            callback = pattern.callback
-            while hasattr(callback, "__wrapped__"):
-                callback = callback.__wrapped__
-            view_class = getattr(callback, "view_class", None)
-            if view_class:
-                return view_class
-            version_map = getattr(callback, "VERSION_MAP", None)
-            if version_map is not None:
-                if not version_map:
-                    raise ImproperlyConfigured(
-                        f"Router for '{api_url_name}' has an empty VERSION_MAP."
-                    )
-                if version not in version_map:
-                    raise KeyError(
-                        f"Version {version} is not registered for '{api_url_name}'. "
-                        f"Available versions: {sorted(version_map.keys())}"
-                    )
-                return version_map[version]
-
-            raise ImproperlyConfigured(
-                f"URL '{api_url_name}' is not a class-based view or a "
-                f"version-router instance. The callback has neither a "
-                f"'view_class' nor a 'VERSION_MAP' attribute."
+            return __resolve_api_cls_from_callback(
+                callback=pattern.callback,
+                api_url_name=api_url_name,
+                version=version,
             )
 
     raise LookupError(f"No URL found with name '{api_url_name}'")
+
+
+def __resolve_api_cls_from_callback(callback, api_url_name: str, version: int | None):
+    while hasattr(callback, "__wrapped__"):
+        callback = callback.__wrapped__
+
+    view_class = getattr(callback, "view_class", None)
+    if view_class:
+        return view_class
+
+    version_map = getattr(callback, "VERSION_MAP", None)
+    if version_map is not None:
+        if not version_map:
+            raise ImproperlyConfigured(
+                f"Router for '{api_url_name}' has an empty VERSION_MAP."
+            )
+        if version not in version_map:
+            raise KeyError(
+                f"Version {version} is not registered for '{api_url_name}'. "
+                f"Available versions: {sorted(version_map.keys())}"
+            )
+        return version_map[version]
+
+    raise ImproperlyConfigured(
+        f"URL '{api_url_name}' is not a class-based view or a "
+        f"version-router instance. The callback has neither a "
+        f"'view_class' nor a 'VERSION_MAP' attribute."
+    )

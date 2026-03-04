@@ -62,8 +62,6 @@ return mo_response_kit.json_response(
 
 Run the server. Focus on your logic. Repeat.
 
----
-
 ## Response Standard 📄
 
 All responses follow a consistent structure:
@@ -114,7 +112,7 @@ project_root/
 │  ├─ urls.py
 │  ├─ asgi.py
 │  ├─ wsgi.py
-│  └─ Responses.csv
+│  └─ responses.csv
 │
 ├─ templates/
 │  ├─ index.html

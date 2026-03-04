@@ -11,6 +11,7 @@ VERSION_ROUTER_TEMPLATE_PATH = (
 TEST_ROUTER_TEMPLATE_PATH = (
     Path(__file__).parent / "resources" / "_test_api_router_class.py"
 )
+API_CLASS_TEMPLATE_NAME = "{{API_HUMAN_NAME}}"
 
 
 class DjangoApiCreator:
@@ -122,8 +123,8 @@ class DjangoApiCreator:
         if f"class {self.api_class_name}(" not in replaced:
             raise ValueError("Could not replace class name in template.")
 
-        replaced = replaced.replace("{{API_HUMAN_NAME}}", self.api_human_name)
-        if "{{API_HUMAN_NAME}}" in replaced:
+        replaced = replaced.replace(API_CLASS_TEMPLATE_NAME, self.api_human_name)
+        if API_CLASS_TEMPLATE_NAME in replaced:
             raise ValueError("Template is missing API_HUMAN_NAME replacement.")
 
         api_url_name = f"{self.original_app_name}__{self.api_function_name}"
@@ -170,7 +171,7 @@ class DjangoApiCreator:
         Template placeholders replaced:
           SampleRouterClassName        → self.api_router_class_name  (class)
           sample_router_function_name  → self.api_router_name        (instance)
-          {{{{__dict__}}}}              → "    1: <ApiClass>,"
+          {{mo_api_kit.__str__}}              → "    1: <ApiClass>,"
           {{API_HUMAN_NAME}}           → self.api_human_name
 
         Existence check uses the instance name since that is the unique
@@ -197,8 +198,8 @@ class DjangoApiCreator:
             "sample_router_function_name", self.api_router_name
         )
         version_map_entry = f"        1: {self.api_class_name},"
-        router_code = router_code.replace("{{__dict__}}", version_map_entry)
-        router_code = router_code.replace("{{API_HUMAN_NAME}}", self.api_human_name)
+        router_code = router_code.replace("mo_api_kit.__str__", version_map_entry)
+        router_code = router_code.replace(API_CLASS_TEMPLATE_NAME, self.api_human_name)
 
         router_import_lines, router_code_lines = self._extract_imports_and_code(
             router_code
@@ -397,9 +398,7 @@ class DjangoApiCreator:
                 raise FileExistsError(
                     f"URL pattern '{norm_url}' already exists in urls.py"
                 )
-            route_name = self._generate_route_name(
-                norm_url, existing_names, existing_names_lower
-            )
+            route_name = self._generate_route_name(existing_names, existing_names_lower)
             insert_lines.append(
                 f"    path('{norm_url}', csrf_exempt(views.{self.api_router_name}), name='{route_name}'),"
             )
@@ -408,7 +407,7 @@ class DjangoApiCreator:
         urls_path.write_text(new_text)
 
     def _generate_route_name(
-        self, url: str, existing_names: set[str], existing_names_lower: set[str]
+        self, existing_names: set[str], existing_names_lower: set[str]
     ) -> str:
         route_name = f"{self.original_app_name}__{self.api_function_name}"
         if route_name in existing_names:

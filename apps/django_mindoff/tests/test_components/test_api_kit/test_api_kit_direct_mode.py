@@ -1,4 +1,5 @@
 import re
+import uuid
 import logging
 import sys
 from pathlib import Path
@@ -11,9 +12,9 @@ from django.core.checks import run_checks
 from django.urls import clear_url_caches, reverse
 from rest_framework.test import APIClient
 
-from ...components.tdd_kit import MindoffTestCase
-from ...components.response_kit import mo_response_kit
-from ...components.helper_kit import mo_helper_kit
+from ....components.tdd_kit import MindoffTestCase
+from ....components.response_kit import mo_response_kit
+from ....components.helper_kit import mo_helper_kit
 
 User = get_user_model()
 paddword = "pass123"
@@ -62,8 +63,8 @@ def _api_templates(tmp_path_factory):
     from django.test import override_settings
     from django.urls import clear_url_caches as _clear
 
-    from ...components.managers.create_api import DjangoApiCreator
-    from ...components.managers.create_app import DjangoAppCreator
+    from ....components.managers._create_api import DjangoApiCreator
+    from ....components.managers._create_app import DjangoAppCreator
 
     tmp_root = Path(tmp_path_factory.mktemp("canonical_bootstrap"))
     sys.path.insert(0, str(tmp_root))
@@ -158,28 +159,12 @@ def _create_test_api(
     templates: dict,
     url_patterns: list = None,
 ) -> str:
-    """
-    Fast-path API creation.
-
-    Instead of calling DjangoApiCreator.run() (which writes 5 files and
-    generates test scaffolding we never use), this substitutes canonical
-    name tokens in the pre-captured template strings and writes exactly
-    3 files: apis/<api_name>.py, views.py (appended), urls.py (appended).
-
-    Returns the api_url_name, e.g. 'myapp__my_api'.
-    """
     pascal = _pascal(api_name)
     human = _human(api_name)
     url_name = f"{app_name}__{api_name}"
     canonical_url_name = f"{_CANONICAL_APP}__{_CANONICAL_API}"
 
     def _sub(text: str) -> str:
-        # Replacement order is critical — longest/most-specific first:
-        # 1. canonical_url_name contains both _CANONICAL_APP and _CANONICAL_API
-        # 2. _CANONICAL_ROUTER_INST contains _CANONICAL_API as a substring
-        # 3. _CANONICAL_ROUTER_CLASS contains _CANONICAL_CLASS as a substring
-        # 4. _CANONICAL_APP must precede _CANONICAL_API (no substring overlap,
-        #    but explicit ordering prevents future regressions)
         return (
             text.replace(canonical_url_name, url_name)
             .replace(_CANONICAL_ROUTER_CLASS, f"{pascal}Router")
@@ -191,68 +176,85 @@ def _create_test_api(
         )
 
     app_root = base_path / app_name
+    __write_api_file(app_root, api_name, _sub(templates["api"]))
+    __write_views_file(app_root, _sub(templates["views"]))
+    __write_urls_file(
+        app_root, app_name, api_name, url_patterns, _sub(templates["urls"])
+    )
 
-    # ── 1. apis/<api_name>.py ────────────────────────────────────────────────
+    _reload_api_modules(app_name, api_name)
+    clear_url_caches()
+    return url_name
+
+
+def __write_api_file(app_root: Path, api_name: str, content: str) -> None:
+    """Write apis/<api_name>.py, ensuring the package __init__.py exists."""
     apis_dir = app_root / "apis"
     apis_dir.mkdir(parents=True, exist_ok=True)
     init = apis_dir / "__init__.py"
     if not init.exists():
         init.write_text("")
-    (apis_dir / f"{api_name}.py").write_text(_sub(templates["api"]))
+    (apis_dir / f"{api_name}.py").write_text(content)
 
-    # ── 2. views.py — append router block; merge imports deduped ────────────
-    views_path = app_root / "views.py"
-    new_views = _sub(templates["views"])
 
-    if views_path.exists():
-        existing = views_path.read_text()
+def __write_views_file(app_root: Path, new_views: str) -> None:
+    def _split_imports_and_code(text: str) -> tuple[list[str], list[str]]:
+        """Split text lines into import lines and non-import lines."""
         import_lines, code_lines = [], []
-        for line in new_views.splitlines():
+        for line in text.splitlines():
             s = line.strip()
             if s.startswith("import ") or s.startswith("from "):
                 import_lines.append(s)
             else:
                 code_lines.append(line)
-        existing_set = set(existing.splitlines())
-        missing = [l for l in import_lines if l not in existing_set]
-        views_path.write_text(
-            existing.rstrip()
-            + ("\n" + "\n".join(missing) if missing else "")
-            + "\n\n"
-            + "\n".join(code_lines)
-            + "\n"
-        )
-    else:
-        views_path.write_text(new_views)
+        return import_lines, code_lines
 
-    # ── 3. urls.py — insert new path entry before closing ] ─────────────────
+    views_path = app_root / "views.py"
+    if not views_path.exists():
+        views_path.write_text(new_views)
+        return
+
+    import_lines, code_lines = _split_imports_and_code(new_views)
+    existing = views_path.read_text()
+    existing_set = set(existing.splitlines())
+    missing_imports = [line for line in import_lines if line not in existing_set]
+
+    views_path.write_text(
+        existing.rstrip()
+        + ("\n" + "\n".join(missing_imports) if missing_imports else "")
+        + "\n\n"
+        + "\n".join(code_lines)
+        + "\n"
+    )
+
+
+def __write_urls_file(
+    app_root: Path,
+    app_name: str,
+    api_name: str,
+    url_patterns: list,
+    fallback_content: str,
+) -> None:
+    def _ensure_csrf_exempt_imported(text: str) -> str:
+        if "csrf_exempt" in text:
+            return text
+        return "from django.views.decorators.csrf import csrf_exempt\n" + text
+
     urls_path = app_root / "urls.py"
     url_segment = url_patterns[0] if url_patterns else f"{api_name}/"
+    url_name = f"{app_name}__{api_name}"
     new_entry = (
         f"    path('{url_segment}', "
         f"csrf_exempt(views.{api_name}_router), "
         f"name='{url_name}'),"
     )
-
-    if urls_path.exists():
-        urls_text = urls_path.read_text()
-        # Ensure csrf_exempt is imported (only added once)
-        if "csrf_exempt" not in urls_text:
-            urls_text = (
-                "from django.views.decorators.csrf import csrf_exempt\n" + urls_text
-            )
-        urls_text = re.sub(r"(\])", f"{new_entry}\n\\1", urls_text, count=1)
-        urls_path.write_text(urls_text)
-    else:
-        # urls.py is always created by DjangoAppCreator — this is a safety fallback
-        base = _sub(templates["urls"])
-        if "csrf_exempt" not in base:
-            base = "from django.views.decorators.csrf import csrf_exempt\n" + base
-        urls_path.write_text(base)
-
-    _reload_api_modules(app_name, api_name)
-    clear_url_caches()
-    return url_name
+    if not urls_path.exists():
+        content = _ensure_csrf_exempt_imported(fallback_content)
+        urls_path.write_text(content)
+        return
+    urls_text = _ensure_csrf_exempt_imported(urls_path.read_text())
+    urls_text = re.sub(r"(\])", f"{new_entry}\n\\1", urls_text, count=1)
+    urls_path.write_text(urls_text)
 
 
 def _modify_api_attributes(
@@ -596,8 +598,7 @@ class TestAPIMixinAcceptance(MindoffTestCase):
         ("attribute", "value"),
         [
             ("api_request_limit", None),
-            ("queue_status_streaming_limit", None),
-            ("response_validation", False),
+            ("queue_status_stream_api_limit", None),
         ],
     )
     def test_api_success_optional_attribute_overrides(self, attribute, value):

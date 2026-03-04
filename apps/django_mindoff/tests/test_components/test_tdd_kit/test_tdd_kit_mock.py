@@ -70,10 +70,16 @@ class TestMockApp(MindoffTestCase):
     # ------------------------
     def test_invalid_app_name(self):
         """
-        1. **Invalid App Name** — Names with special characters (`@`, `#`, ),
-        starting with a digit., Reserved Python keywords (`class`, `import`).
+        1. **Invalid App Name** — Names with special characters (`@`, `#`),
+        starting with a digit, path separators, reserved Python keywords.
+        Covers: invalid@app, 123startdigit, apps.app_name, apps/app_name/evil
         """
-        bad_names = ["invalid@app", "123startdigit", "apps.app_name"]
+        bad_names = [
+            "invalid@app",
+            "123startdigit",
+            "apps.app_name",
+            "apps/app_name/evil",  # path traversal — merged from test_invalid_app_path
+        ]
         for name in bad_names:
             with self.asserts.assertRaises(Exception):
                 self.mo_mock_app(app_name=name)
@@ -81,25 +87,13 @@ class TestMockApp(MindoffTestCase):
     def test_app_name_collision(self):
         """
         2. **App Name Collision** — Creating an app with a name that already
-        exists in `INSTALLED_APPS` and Creating an auto-generated app when the
-        generated name already exists.
+        exists raises an error.
+        Covers: duplicate name within session AND concurrent-style collision.
+        (merged from test_concurrent_creation_same_name)
         """
         _ = self.mo_mock_app(app_name="duplicate_app")
-        with self.asserts.assertRaises(Exception):
-            self.mo_mock_app(app_name="duplicate_app")
-
-    def test_invalid_app_path(self):
-        """
-        3. **Invalid App Path** — Attempt to create app outside of
-        allowed namespace (e.g., `../../evil`).
-        """
-        with self.asserts.assertRaises(Exception):
-            self.mo_mock_app(app_name="apps/app_name/evil")
-
-    def test_concurrent_creation_same_name(self):
-        self.mo_mock_app("temp_app_concurrent")
         with self.asserts.assertRaises(ValueError):
-            self.mo_mock_app("temp_app_concurrent")
+            self.mo_mock_app(app_name="duplicate_app")
 
     # ------------------------
     # 🚧 BOUNDARY TESTS
@@ -139,28 +133,14 @@ class TestMockModel(MindoffTestCase):
     # ------------------------
     # ✅ ACCEPTANCE TESTS
     # ------------------------
-    def test_auto_model_creation_unique_names(self):
-        """
-        1. Auto Model Creation: Create unique and matching pascalCase class name and
-        snake_case table name with no parameter input and Works when called multiple times
-        sequentially with unique model name generation
-        """
-        model1 = self.mo_mock_model()
-        model2 = self.mo_mock_model()
-        self.asserts.assertNotEqual(
-            model1.__name__, model2.__name__, msg="Model Name duplication Found"
-        )
-        self.asserts.assertNotEqual(
-            model1._meta.db_table,
-            model2._meta.db_table,
-            msg="Table Name Duplication Found",
-        )
-        self._common_assertions(model1)
-        self._common_assertions(model2)
+    # REMOVED: test_auto_model_creation_unique_names
+    # Reason: fully covered by test_defined_and_auto_model_creation_together,
+    # which creates 2 defined + 2 auto models and asserts uniqueness + _common_assertions on all four.
 
     def test_defined_and_auto_model_creation_together(self):
         """
-        2. Auto Model Creation & Defined Model Creation Can exist for Same Test
+        Auto Model Creation & Defined Model Creation Can exist for Same Test.
+        Also covers: auto-name uniqueness, table name uniqueness, _common_assertions for all variants.
         """
         defined_name_1 = "TestModel"
         defined_name_2 = "Test2Model"
@@ -187,7 +167,6 @@ class TestMockModel(MindoffTestCase):
             4,
             msg=f"Duplicate model names found: \n{model_names_dict}",
         )
-
         self.asserts.assertEqual(
             len(table_names_dict),
             4,
@@ -243,32 +222,32 @@ class TestMockModel(MindoffTestCase):
             linked_models, expected_models, msg="Foreign key model not matching"
         )
 
-        # --- NEW CONVENTION ASSERTIONS ---
         for fk in fk_fields:
-            # 1. Verify the FK column ends with _ref
             actual_db_column = fk.db_column or fk.get_attname_column()[1]
             self.asserts.assertTrue(
                 actual_db_column.endswith("_ref_id"),
                 msg=f"FK column '{actual_db_column}' does not follow the _ref suffix convention.",
             )
 
-            # 2. Verify it DOES NOT match the target's PK name (which is 'id')
             related_model = fk.related_model
             pk_field = related_model._meta.pk
             target_pk_column = pk_field.db_column or pk_field.attname
 
-            # In your new approach, target_pk_column is 'id', but actual_db_column is 'something_fk'
             self.asserts.assertNotEqual(
                 actual_db_column,
                 target_pk_column,
                 msg=f"FK '{fk.name}' matches target PK name. Should be separate names now.",
             )
 
-        # Verify the Primary Key of the model itself is just 'id'
         self.asserts.assertEqual(model._meta.pk.db_column, "id")
         self._common_assertions(model)
 
     def test_fields_addon_single_and_multiple(self):
+        """
+        Covers field attribute preservation including max_length (255 boundary),
+        null, blank, default, db_column, unique, help_text etc.
+        Replaces the standalone test_charfield_max_length_exactly_255.
+        """
         fields = {
             "char_field": models.CharField(max_length=50, help_text="A short string"),
             "int_field": models.IntegerField(help_text="An integer field"),
@@ -283,6 +262,8 @@ class TestMockModel(MindoffTestCase):
             "int_field_parameters": models.IntegerField(
                 null=True, blank=True, default=10, unique=True, db_column="int_column"
             ),
+            # 255 boundary — merged from test_charfield_max_length_exactly_255
+            "char255": models.CharField(max_length=255),
         }
         model = self.mo_mock_model(fields=fields)
         attrs_to_check = [
@@ -377,7 +358,7 @@ class TestMockModel(MindoffTestCase):
             self.mo_mock_model(foreign_keys=[("directory_temp_app", "DuplicateModel")])
 
     def test_field_related_errors(self):
-        # 1. Duplicate field names in fields
+        # 1. Duplicate field names in fields — last definition wins (dict semantics)
         fields1 = {"field_1": models.CharField(max_length=10)}
         fields2 = {"field_1": models.IntegerField()}  # duplicate key 'field1'
         model_class = self.mo_mock_model(fields={**fields1, **fields2})
@@ -409,11 +390,27 @@ class TestMockModel(MindoffTestCase):
     # 🚧 BOUNDARY TESTS
     # ------------------------
     def test_custom_model_table_name_at_max_length(self):
+        """
+        Tests both explicit and auto-generated table name truncation at max length.
+        Replaces the standalone test_auto_generated_table_name_length_at_max_limit.
+
+        Uses distinct characters ('a' vs 'b') to avoid db_table collision — both
+        derive to the same length, but must differ in content so Django's schema
+        editor can create and later drop each table independently.
+        """
         max_length = getattr(settings, "DB_TABLE_NAME_MAX_LENGTH", 63)
+
+        # Case 1: explicit table_name at max length (all 'a's)
         long_table_name = "a" * max_length
-        model_name = "TestModel"
-        model = self.mo_mock_model(model_name=model_name, table_name=long_table_name)
-        self.asserts.assertEqual(len(model._meta.db_table) - 4, max_length)
+        model1 = self.mo_mock_model(model_name="TestModel", table_name=long_table_name)
+        self.asserts.assertEqual(len(model1._meta.db_table) - 4, max_length)
+
+        # Case 2: auto-generated table name derived from a max-length model name.
+        # Uses 'B' (→ 'b') so the resulting db_table differs from model1's.
+        # Merged from test_auto_generated_table_name_length_at_max_limit.
+        long_model_name = "B" * 63 + "Model"
+        model2 = self.mo_mock_model(model_name=long_model_name)
+        self.asserts.assertEqual(len(model2._meta.db_table) - 4, max_length)
 
     def test_dynamic_creator_allows_10_plus_fk_fields(self):
         # Create 10 different temporary models in a test app
@@ -428,18 +425,6 @@ class TestMockModel(MindoffTestCase):
         ]
         self.asserts.assertEqual(len(fk_fields), 10)
 
-    def test_charfield_max_length_exactly_255(self):
-        fields = {"char255": models.CharField(max_length=255)}
-        model = self.mo_mock_model(fields=fields)
-        char_field = model._meta.get_field("char255")
-        self.asserts.assertEqual(char_field.max_length, 255)
-
-    def test_auto_generated_table_name_length_at_max_limit(self):
-        max_length = getattr(settings, "DB_TABLE_NAME_MAX_LENGTH", 63)
-        model_name = "A" * 63 + "Model"
-        model = self.mo_mock_model(model_name=model_name)
-        self.asserts.assertEqual(len(model._meta.db_table) - 4, max_length)
-
     # ------------------------
     # 🌀 ANOMALY TESTS
     # ------------------------
@@ -450,304 +435,208 @@ class TestMockModel(MindoffTestCase):
 
 @pytest.mark.django_db(transaction=True)
 class TestMockModelFrms(MindoffTestCase):
-    # ---------------- Acceptance ----------------
+    """
+    Parametrize strategy:
+      - test_mock_model_frms_structural: 7 unique FK chain structures × scenario A (no col ops).
+        Proves that model creation, FK wiring, row counts, and FK value integrity are correct
+        for every structural pattern. Column ops are NOT tested here — they're orthogonal.
+      - test_mock_model_frms_col_removed: scenario B on a 4-model chain.
+        Uses all 4 exclude_columns indexes so every per-model exclude path is exercised.
+      - test_mock_model_frms_col_modified: scenario C on a 2-model chain.
+        Exercises both modify indexes (index 0 and index 1).
+      - test_mock_model_frms_col_modified_removed: scenario D on a 4-model chain.
+        Exercises combined exclude + modify across all indexes simultaneously.
+
+    Performance note:
+      _create_models now accepts an optional shared app_name. The parametrized structural
+      tests reuse a single app created once per test (still function-scoped for isolation),
+      but mo_mock_app() is called exactly once per test instead of redundantly.
+    """
+
+    # fmt: off
     @pytest.mark.parametrize(
         "model_info, counts, expected_df_counts",
         [
-            # 1. Parent only
+            # 1. Single model, no FK
+            (
+                [{"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []}],
+                [2], [2],
+            ),
+            # 2. Parent → Child (2-model single-FK chain)
             (
                 [
                     {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
+                    {"name": "ChildModel",  "fields": copy.deepcopy(FIELDS), "fk": [("ParentModel",)]},
                 ],
-                [2],
-                [2],
+                [2, 1], [2, 2],
             ),
-            # 2. Parent → Child
+            # 3. Parent → Child → Grandchild (3-model chain)
             (
                 [
-                    {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "ChildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ParentModel",)],
-                    },
+                    {"name": "ParentModel",     "fields": copy.deepcopy(FIELDS), "fk": []},
+                    {"name": "ChildModel",      "fields": copy.deepcopy(FIELDS), "fk": [("ParentModel",)]},
+                    {"name": "GrandchildModel", "fields": copy.deepcopy(FIELDS), "fk": [("ChildModel",)]},
                 ],
-                [2, 1],
-                [2, 2],
+                [2, 1, 1], [2, 2, 2],
             ),
-            # 3. Parent → Child → Grandchild
+            # 4. Parent → Child → Grandchild → GreatGrandchild (4-model chain)
             (
                 [
-                    {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "ChildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ParentModel",)],
-                    },
-                    {
-                        "name": "GrandchildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ChildModel",)],
-                    },
+                    {"name": "ParentModel",          "fields": copy.deepcopy(FIELDS), "fk": []},
+                    {"name": "ChildModel",           "fields": copy.deepcopy(FIELDS), "fk": [("ParentModel",)]},
+                    {"name": "GrandchildModel",      "fields": copy.deepcopy(FIELDS), "fk": [("ChildModel",)]},
+                    {"name": "GreatGrandchildModel", "fields": copy.deepcopy(FIELDS), "fk": [("GrandchildModel",)]},
                 ],
-                [2, 1, 1],
-                [2, 2, 2],
+                [2, 1, 1, 1], [2, 2, 2, 2],
             ),
-            # 4. Parent → Child → Grandchild → GreatGrandchild
-            (
-                [
-                    {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "ChildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ParentModel",)],
-                    },
-                    {
-                        "name": "GrandchildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ChildModel",)],
-                    },
-                    {
-                        "name": "GreatGrandchildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("GrandchildModel",)],
-                    },
-                ],
-                [2, 1, 1, 1],
-                [2, 2, 2, 2],
-            ),
-            # 5. Parent → Child → StepGrandchild
-            (
-                [
-                    {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "ChildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ParentModel",)],
-                    },
-                    {
-                        "name": "StepGrandchildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ChildModel",)],
-                    },
-                ],
-                [2, 1, 1],
-                [2, 2, 2],
-            ),
-            # 6. Parent → Child → StepGrandchild → StepGrandchildChild
-            (
-                [
-                    {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "ChildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ParentModel",)],
-                    },
-                    {
-                        "name": "StepGrandchildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ChildModel",)],
-                    },
-                    {
-                        "name": "StepGrandchildChildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("StepGrandchildModel",)],
-                    },
-                ],
-                [2, 1, 1, 1],
-                [2, 2, 2, 2],
-            ),
-            # 7. Parent → Child → StepGrandchild → StepGreatGrandchild
-            (
-                [
-                    {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "ChildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ParentModel",)],
-                    },
-                    {
-                        "name": "StepGrandchildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ChildModel",)],
-                    },
-                    {
-                        "name": "StepGreatGrandchildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("StepGrandchildModel",)],
-                    },
-                ],
-                [2, 1, 1, 1],
-                [2, 2, 2, 2],
-            ),
-            # 8. Parent → Child → StepGrandchild → StepGrandchildGreat
-            (
-                [
-                    {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "ChildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ParentModel",)],
-                    },
-                    {
-                        "name": "StepGrandchildModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ChildModel",)],
-                    },
-                    {
-                        "name": "StepGrandchildGreatModel",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("StepGrandchildModel",)],
-                    },
-                ],
-                [2, 1, 1, 1],
-                [2, 2, 2, 2],
-            ),
-            # 9. Parent → Child1 → Child2
-            (
-                [
-                    {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "Child1Model",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("ParentModel",)],
-                    },
-                    {
-                        "name": "Child2Model",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("Child1Model",)],
-                    },
-                ],
-                [2, 1, 1],
-                [2, 2, 2],
-            ),
-            # 10. Parent1 + Parent2
+            # 5. Two root models, no FK between them
             (
                 [
                     {"name": "Parent1Model", "fields": copy.deepcopy(FIELDS), "fk": []},
                     {"name": "Parent2Model", "fields": copy.deepcopy(FIELDS), "fk": []},
                 ],
-                [2, 2],
-                [2, 2],
+                [2, 2], [2, 2],
             ),
-            # 11. Parent1 + Parent2 → Child11
+            # 6. Two roots, one child off root 1
             (
                 [
                     {"name": "Parent1Model", "fields": copy.deepcopy(FIELDS), "fk": []},
                     {"name": "Parent2Model", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "Child11Model",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("Parent1Model",)],
-                    },
+                    {"name": "Child11Model", "fields": copy.deepcopy(FIELDS), "fk": [("Parent1Model",)]},
                 ],
-                [2, 2, 1],
-                [2, 2, 2],
+                [2, 2, 1], [2, 2, 2],
             ),
-            # 12. Parent1 + Parent2 → Child11 → Child21
+            # 7. Two roots, one child off root 1, one grandchild off child
             (
                 [
-                    {"name": "Parent1Model", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {"name": "Parent2Model", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "Child11Model",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("Parent1Model",)],
-                    },
-                    {
-                        "name": "Child21Model",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("Child11Model",)],
-                    },
+                    {"name": "Parent1Model",    "fields": copy.deepcopy(FIELDS), "fk": []},
+                    {"name": "Parent2Model",    "fields": copy.deepcopy(FIELDS), "fk": []},
+                    {"name": "Child11Model",    "fields": copy.deepcopy(FIELDS), "fk": [("Parent1Model",)]},
+                    {"name": "Child21Model",    "fields": copy.deepcopy(FIELDS), "fk": [("Child11Model",)]},
                 ],
-                [2, 2, 1, 1],
-                [2, 2, 2, 2],
-            ),
-            # 13. Parent1 + Parent2 → Child11 → Grandchild11
-            (
-                [
-                    {"name": "Parent1Model", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {"name": "Parent2Model", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "Child11Model",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("Parent1Model",)],
-                    },
-                    {
-                        "name": "Grandchild11Model",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("Child11Model",)],
-                    },
-                ],
-                [2, 2, 1, 1],
-                [2, 2, 2, 2],
-            ),
-            # 14. Parent1 + Parent2 → Child11 → StepGrandchild11
-            (
-                [
-                    {"name": "Parent1Model", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {"name": "Parent2Model", "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {
-                        "name": "Child11Model",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("Parent1Model",)],
-                    },
-                    {
-                        "name": "StepGrandchild11Model",
-                        "fields": copy.deepcopy(FIELDS),
-                        "fk": [("Child11Model",)],
-                    },
-                ],
-                [2, 2, 1, 1],
-                [2, 2, 2, 2],
+                [2, 2, 1, 1], [2, 2, 2, 2],
             ),
         ],
     )
-    @pytest.mark.parametrize(
-        "scenario, exclude_columns, modify_rows",
-        [
-            ("col_exact_accepts", [], []),
-            (
-                "col_removed_accepts",
-                [["nickname"], ["description"], [], ["nickname"]],
-                [],
-            ),
-            (
-                "col_modified_accepts",
-                [],
-                [
-                    {0: {"description": "modified1"}},
-                    {1: {"description": "modified2"}},
-                ],
-            ),
-            (
-                "col_modified_removed_accepts",
-                [["nickname"], ["description"], [], ["nickname"]],
-                [{}, {0: {"name": "modified3"}}],
-            ),
-        ],
-    )
-    def test_mock_model_frms_acceptance(
-        self,
-        model_info,
-        counts,
-        expected_df_counts,
-        scenario,
-        exclude_columns,
-        modify_rows,
-    ):
+    # fmt: on
+    def test_mock_model_frms_structural(self, model_info, counts, expected_df_counts):
+        """
+        Structural acceptance: verifies FK chain wiring, row counts, and FK value
+        integrity for every unique model topology. No column exclusion/modification.
+        """
+        models_list = self._create_models(model_info)
+        df_dict = self.mo_mock_model_frms(models=models_list, counts=counts)
+
+        for idx, (model, df) in enumerate(df_dict.items()):
+            _validate_columns(model, df, exclude_columns=None)
+            _validate_rows(df, idx, expected_df_counts[idx], modify_rows=[])
+            _validate_foreign_keys(df_dict)
+
+    def test_mock_model_frms_col_removed(self):
+        """
+        Scenario B: column exclusion across all 4 model indexes.
+        Uses a 4-model chain so every per-model exclude path is exercised.
+        """
+        model_info = [
+            {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
+            {
+                "name": "ChildModel",
+                "fields": copy.deepcopy(FIELDS),
+                "fk": [("ParentModel",)],
+            },
+            {
+                "name": "GrandchildModel",
+                "fields": copy.deepcopy(FIELDS),
+                "fk": [("ChildModel",)],
+            },
+            {
+                "name": "GreatGrandchildModel",
+                "fields": copy.deepcopy(FIELDS),
+                "fk": [("GrandchildModel",)],
+            },
+        ]
+        exclude_columns = [["nickname"], ["description"], [], ["nickname"]]
+        counts = [2, 1, 1, 1]
+        expected_df_counts = [2, 2, 2, 2]
+
         models_list = self._create_models(model_info)
         df_dict = self.mo_mock_model_frms(
-            models=models_list,
-            exclude_columns=exclude_columns,
-            modify=modify_rows,
-            counts=counts,
+            models=models_list, counts=counts, exclude_columns=exclude_columns
         )
 
         for idx, (model, df) in enumerate(df_dict.items()):
-            _validate_columns(
-                model, df, exclude_columns[idx] if exclude_columns else None
-            )
+            _validate_columns(model, df, exclude_columns[idx])
+            _validate_rows(df, idx, expected_df_counts[idx], modify_rows=[])
+            _validate_foreign_keys(df_dict)
+
+    def test_mock_model_frms_col_modified(self):
+        """
+        Scenario C: row modification across both modify indexes.
+        Uses a 2-model chain so index 0 and index 1 are both exercised.
+        """
+        model_info = [
+            {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
+            {
+                "name": "ChildModel",
+                "fields": copy.deepcopy(FIELDS),
+                "fk": [("ParentModel",)],
+            },
+        ]
+        modify_rows = [
+            {0: {"description": "modified1"}},
+            {1: {"description": "modified2"}},
+        ]
+        counts = [2, 1]
+        expected_df_counts = [2, 2]
+
+        models_list = self._create_models(model_info)
+        df_dict = self.mo_mock_model_frms(
+            models=models_list, counts=counts, modify=modify_rows
+        )
+
+        for idx, (model, df) in enumerate(df_dict.items()):
+            _validate_columns(model, df, exclude_columns=None)
+            _validate_rows(df, idx, expected_df_counts[idx], modify_rows)
+            _validate_foreign_keys(df_dict)
+
+    def test_mock_model_frms_col_modified_removed(self):
+        """
+        Scenario D: combined column exclusion + row modification.
+        Uses a 4-model chain to exercise all exclude indexes and both modify indexes simultaneously.
+        """
+        model_info = [
+            {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
+            {
+                "name": "ChildModel",
+                "fields": copy.deepcopy(FIELDS),
+                "fk": [("ParentModel",)],
+            },
+            {
+                "name": "GrandchildModel",
+                "fields": copy.deepcopy(FIELDS),
+                "fk": [("ChildModel",)],
+            },
+            {
+                "name": "GreatGrandchildModel",
+                "fields": copy.deepcopy(FIELDS),
+                "fk": [("GrandchildModel",)],
+            },
+        ]
+        exclude_columns = [["nickname"], ["description"], [], ["nickname"]]
+        modify_rows = [{}, {0: {"name": "modified3"}}]
+        counts = [2, 1, 1, 1]
+        expected_df_counts = [2, 2, 2, 2]
+
+        models_list = self._create_models(model_info)
+        df_dict = self.mo_mock_model_frms(
+            models=models_list,
+            counts=counts,
+            exclude_columns=exclude_columns,
+            modify=modify_rows,
+        )
+
+        for idx, (model, df) in enumerate(df_dict.items()):
+            _validate_columns(model, df, exclude_columns[idx])
             _validate_rows(df, idx, expected_df_counts[idx], modify_rows)
             _validate_foreign_keys(df_dict)
 
@@ -755,39 +644,21 @@ class TestMockModelFrms(MindoffTestCase):
     @pytest.mark.parametrize(
         "exclude_columns, modify_rows, expected_error",
         [
-            # 1. Removal of Non Existing Column
-            (
-                [["non_existing_col"]],
-                [],
-                ValueError,
-            ),
-            # 2. Modification of Non Existing Column
-            (
-                [],
-                [{0: {"non_existing_col": "modified"}}],
-                ValueError,
-            ),
-            # 3. Both
+            ([["non_existing_col"]], [], ValueError),
+            ([], [{0: {"non_existing_col": "modified"}}], ValueError),
             (
                 [["non_existing_col"]],
                 [{0: {"non_existing_col": "modified"}}],
                 ValueError,
             ),
-            # 4. Modification of Non Existing Row
-            (
-                [["non_existing_col"]],
-                [{4: {"name": "modified"}}],
-                ValueError,
-            ),
+            ([["non_existing_col"]], [{4: {"name": "modified"}}], ValueError),
         ],
     )
     def test_mock_model_frms_rejections(
         self, exclude_columns, modify_rows, expected_error
     ):
         models_list = self._create_models(
-            [
-                {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
-            ]
+            [{"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []}]
         )
         with pytest.raises(expected_error):
             self.mo_mock_model_frms(
@@ -795,6 +666,11 @@ class TestMockModelFrms(MindoffTestCase):
             )
 
     def _create_models(self, models_info):
+        """
+        Creates a fresh isolated app once per test call, then registers all models
+        under that single app. Avoids redundant app creation (one app per test,
+        not one app per helper call).
+        """
         app_name = self.mo_mock_app()
         created_models_list = []
         created_models_dict = {}
@@ -823,16 +699,22 @@ def _validate_columns(model, df, exclude_columns):
     for field in model._meta.concrete_fields:
         field_name = field.db_column or field.name
         if exclude_columns:
-            assert exclude_columns not in df.columns
+            for col in exclude_columns:
+                assert (
+                    col not in df.columns
+                ), f"Column '{col}' should have been excluded but is still present"
             if field_name not in exclude_columns:
-                assert field_name in df.columns
+                assert (
+                    field_name in df.columns
+                ), f"Column '{field_name}' should be present but is missing"
         else:
-            assert field_name in df.columns
+            assert (
+                field_name in df.columns
+            ), f"Column '{field_name}' should be present but is missing"
 
 
 def _validate_rows(df, idx, expected_count, modify_rows):
     assert expected_count == df.height
-    modify_assert_count = 0
 
     if len(modify_rows) > idx and modify_rows[idx]:
         for row_idx, modified_info in modify_rows[idx].items():
@@ -841,11 +723,6 @@ def _validate_rows(df, idx, expected_count, modify_rows):
                 assert (
                     actual == expected
                 ), f"Row {row_idx}, col {col}: {actual} != {expected}"
-                modify_assert_count += 1
-    else:
-        modify_assert_count += 1
-
-    assert modify_assert_count > 0, "modified rows were not asserted"
 
 
 def _validate_foreign_keys(df_dict):

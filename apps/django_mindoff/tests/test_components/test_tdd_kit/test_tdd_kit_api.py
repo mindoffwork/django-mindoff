@@ -165,6 +165,65 @@ class TestMoTestApi(MindoffTestCase):
         assert sent.get("Accept") == "application/json"
         assert sent.get("X-Custom") == "value"
 
+    def test_queue_mode_api_returns_direct_response(self):
+        """Queue-mode APIs are forced into direct mode during tests and return run() output directly."""
+        direct_response = _make_raw_response(
+            body={"message": {"code": "SUCCESS"}, "data": {"ok": 1}}
+        )
+
+        def _fake_reverse(name, kwargs=None, args=None):
+            if name == self.API_URL_NAME:
+                return "/enqueue/"
+            raise AssertionError(f"Unexpected reverse call: {name}")
+
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                return_value=_make_api_cls(method="get", process_mode="queue"),
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit.reverse",
+                side_effect=_fake_reverse,
+            ),
+            patch.object(self.client, "get", return_value=direct_response) as mock_get,
+        ):
+            response = self.mo_test_api(self.API_URL_NAME)
+
+        assert response is direct_response
+        # Only one GET — no queue polling, no detail URL fetch
+        assert mock_get.call_count == 1
+
+    def test_queue_mode_api_sets_and_clears_force_direct_flag(self):
+        """_test_force_direct.active is True during dispatch and always cleaned up after."""
+        from apps.django_mindoff.components.api_kit import _test_force_direct
+
+        observed_during: list[bool] = []
+        direct_response = _make_raw_response(
+            body={"message": {"code": "SUCCESS"}, "data": {}}
+        )
+
+        def _capture_flag(*args, **kwargs):
+            observed_during.append(getattr(_test_force_direct, "active", False))
+            return direct_response
+
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                return_value=_make_api_cls(method="get", process_mode="queue"),
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit.reverse",
+                return_value="/enqueue/",
+            ),
+            patch.object(self.client, "get", side_effect=_capture_flag),
+        ):
+            self.mo_test_api(self.API_URL_NAME)
+
+        # Flag was active during the request
+        assert observed_during == [True]
+        # Flag is cleaned up after
+        assert getattr(_test_force_direct, "active", False) is False
+
     # 🚫 REJECTION ────────────────────────────────────────────────────────
 
     @pytest.mark.parametrize(
@@ -307,11 +366,12 @@ class TestMoAssertApiResponse(MindoffTestCase):
             )
 
 
-def _make_api_cls(*, method="get"):
+def _make_api_cls(*, method="get", process_mode="direct"):
     class FakeAPI:
         pass
 
     FakeAPI.method = method
+    FakeAPI.process_mode = process_mode
     return FakeAPI
 
 

@@ -61,9 +61,11 @@ STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Mindoff specific
+AUTH_USER_MODEL = "django_mindoff.User"
 MINDOFF_LOG_ERRORS_IN_DEBUG = False
 MINDOFF_TRACEBACK_DIRS = ["apps", "config"]
 MINDOFF_USE_VIEW_CACHE = False
+MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT = "120/m"
 
 # Dummy Redis placeholder (not used in CI yet)
 REDIS_URL = "redis://localhost:6379/0"

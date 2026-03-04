@@ -3,7 +3,7 @@ from django_mindoff.components.tdd_kit import MindoffTestCase
 from typing import Literal
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 class TestSampleAPIView(MindoffTestCase):
     api_url_name = "{{API_URL_NAME}}"
 
@@ -25,6 +25,7 @@ class TestSampleAPIView(MindoffTestCase):
             url_kwargs=url_kwargs,
             query_params=query_params,
             headers=headers,
+            is_queue_response=True,
         )
         self.mo_assert_api_response(
             api_url_name=self.api_url_name,
@@ -32,4 +33,18 @@ class TestSampleAPIView(MindoffTestCase):
             expected_status_code=expected_status_code,
             expected_response_type=expected_response_type,
         )
+
+        # Usage example (direct mode):
         # result = response.json()
+        # assert result["foo"] == "bar"
+
+        # Queue mode note:
+        # If your API class uses process_mode = "queue", mo_test_api waits for
+        # completion by default and returns the final mo_queue_detail response.
+        # Progress updates are emitted only in queue mode via:
+        # self.progress_checkpoint(request, "<step_key>", msg="optional text")
+        # where <step_key> exists in progress_steps on your API class.
+        #
+        # To assert the initial enqueue payload instead, call with:
+        # queue_response = self.mo_test_api(..., is_queue_response=False)
+        # assert queue_response.json()["message"]["code"] == "QUEUED"
