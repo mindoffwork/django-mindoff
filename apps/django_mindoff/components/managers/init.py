@@ -146,10 +146,13 @@ class DjangoProjectCreator:
         if mindoff_header not in updated:
             updated += f"""
 {mindoff_header}
+AUTH_USER_MODEL = "django_mindoff.User"
 MINDOFF_LOG_ERRORS_IN_DEBUG = False
 MINDOFF_TRACEBACK_DIRS = ["apps", "config"]
 REDIS_URL = config("REDIS_URL")
 POLARS_VALIDATOR_ERROR_COL = "__error__info"
+MINDOFF_USE_VIEW_CACHE = False
+MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT = "120/m"
 """
 
         self.settings_path.write_text(updated)
@@ -186,8 +189,15 @@ POLARS_VALIDATOR_ERROR_COL = "__error__info"
             )
         elif "from django.urls import" not in content:
             content = "from django.urls import path, include\n" + content
+        if "from django_mindoff import urls as mindoff_urls" not in content:
+            content = "from django_mindoff import urls as mindoff_urls\n" + content
         if "from django.views.generic.base import TemplateView" not in content:
             content = "from django.views.generic.base import TemplateView\n" + content
+        if 'path("mindoff/", include(mindoff_urls))' not in content:
+            content = content.replace(
+                "urlpatterns = [",
+                "urlpatterns = [\n    path('mindoff/', include(mindoff_urls)),",
+            )
         if "path('', TemplateView.as_view(" not in content:
             content = content.replace(
                 "urlpatterns = [",

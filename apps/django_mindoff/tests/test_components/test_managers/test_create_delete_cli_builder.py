@@ -224,12 +224,12 @@ class TestCreateManager:
             m.setattr(
                 create_manager,
                 "_create_model_field_flow",
-                lambda apps, sel: (["app/MyModel", "field_ref", "foreign_key"], "app"),
+                lambda apps, sel: (["app/MyModel", "field_ref"], "app"),
             )
             result = create_manager._build_create_args(
                 "create_model_field", ["app"], None
             )
-        assert result == (["app/MyModel", "field_ref", "foreign_key"], "app")
+        assert result == (["app/MyModel", "field_ref"], "app")
 
     # ------------------------------------------------------------------
     # _run_create_command
@@ -503,7 +503,7 @@ class TestCreateManagerFlows:
         assert app == "shop"
         assert "shop/Order" in result
         assert "account" in result
-        assert "foreign_key" in result
+        assert result == ["shop/Order", "account", "--to", "shop/Order"]
 
     # ------------------------------------------------------------------
     # _choose_app

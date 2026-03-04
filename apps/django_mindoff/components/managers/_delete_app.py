@@ -18,9 +18,7 @@ class DjangoAppDeleter:
         self.settings_path = os.path.join(self.project_root, "config", "settings.py")
         self.urls_path = os.path.join(self.project_root, "config", "urls.py")
         self.app_name = self.dotted_path.split(".")[-1]
-        self.app_dir = os.path.join(
-            self.project_root, self.dotted_path.replace(".", "/")
-        )
+        self.app_dir = os.path.join(self.project_root, *self.dotted_path.split("."))
 
     def _normalize_path(self, dotted_path: str) -> str:
         app_names = dotted_path.split(".")
@@ -51,7 +49,9 @@ class DjangoAppDeleter:
         parent_dir = os.path.dirname(self.app_dir)
         while parent_dir != self.src_dir and os.path.isdir(parent_dir):
             try:
-                if not os.listdir(parent_dir):
+                entries = os.listdir(parent_dir)
+                non_init_entries = [e for e in entries if e != "__init__.py"]
+                if not non_init_entries:
                     init_file = os.path.join(parent_dir, "__init__.py")
                     if os.path.exists(init_file):
                         os.remove(init_file)

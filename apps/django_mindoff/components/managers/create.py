@@ -81,7 +81,7 @@ def _create_model_field_flow(local_apps, selected_app=None):
 
     field_name = _resolve_foreign_key_field_name(model_text, model_class)
 
-    args = [model, field_name, "foreign_key"]
+    args = [model, field_name]
     args = __create_foreign_key_field_flow(args, models)
     return args, app_name
 

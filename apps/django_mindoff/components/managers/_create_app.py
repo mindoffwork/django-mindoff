@@ -8,11 +8,9 @@ init_file_name = "__init__.py"
 
 
 # ======== CLASSES =======
-# Add Classes here
 class DjangoAppCreator:
-    def __init__(self, dotted_path: str, *, isolated: bool = False):
-        self.isolated = isolated
-        if not self.isolated and not dotted_path.startswith("apps."):
+    def __init__(self, dotted_path: str):
+        if not dotted_path.startswith("apps."):
             dotted_path = f"apps.{dotted_path}"
         self.original_path = dotted_path
 
@@ -21,13 +19,11 @@ class DjangoAppCreator:
         self.settings_path = os.path.join(self.project_root, "config", "settings.py")
         self.urls_path = os.path.join(self.project_root, "config", "urls.py")
         self.app_name = self.dotted_path.split(".")[-1]
-        self.app_dir = os.path.join(
-            self.project_root, self.dotted_path.replace(".", "/")
-        )
+        self.app_dir = os.path.join(self.project_root, *self.dotted_path.split("."))
 
     def _normalize_path(self, dotted_path: str) -> str:
         app_names = dotted_path.split(".")
-        if not self.isolated and len(app_names) != 2:
+        if len(app_names) != 2:
             raise ValueError(f"Invalid App Name '{dotted_path}'")
         normalized = [app_names[0]] + [p.lower() for p in app_names[1:]]
         if any(not p for p in normalized):
@@ -86,9 +82,13 @@ class DjangoAppCreator:
             return
         line = "import uuid\nfrom django_mindoff import models as mindoff_models\n"
         with open(path, "r+") as f:
-            lines = f.readlines()
-            if line in lines:
+            content = f.read()
+            if (
+                "import uuid" in content
+                and "from django_mindoff import models as mindoff_models" in content
+            ):
                 return
+            lines = content.splitlines(keepends=True)
             for i, l in enumerate(lines):
                 if not l.strip().startswith(("import", "from ")):
                     lines.insert(i, line)
@@ -164,19 +164,15 @@ class DjangoAppCreator:
         self._overwrite_apps_py()
         self._create_urls_py()
         self._create_serializers_py()
-        if not self.isolated:
-            self._patch_models_py()
+        self._patch_models_py()
         self._setup_tests_folder()
-        if not self.isolated:
-            self._update_settings()
-            self._update_project_urls()
+        self._update_settings()
+        self._update_project_urls()
 
         print(f"[OK] App creation complete for: {self.dotted_path}.")
 
 
 # ======== FUNCTIONS =======
-# Add Functions here
-# F1. Command Entry Point -- Registers the command into the CLI.
 def register_subcommand(subparsers):
     def _create_app(args):
         for app_name in args.app_names:

@@ -65,7 +65,6 @@ class DjangoModelCreator:
         model_path = Path(self.app.replace(".", "/")) / MODEL_FILE_NAME
         serializer_path = Path(self.app.replace(".", "/")) / "serializers.py"
 
-        # Only primary id field, no foreign keys -- {self.base_name}_id
         fields_code = 'id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False, db_column="id")\n    # Add model fields above this line -- (MANAGED BY MINDOFF. DO NOT TOUCH THIS LINE)'
         model_code = f"""
 class {self.final_model_name}({self.parent_class}):
@@ -86,22 +85,19 @@ class {self.final_model_name}Serializer(serializers.ModelSerializer):
 """.strip()
 
         self._append_to_file(
-            model_path, model_code, self.final_model_name, [], kind="models"
+            model_path, model_code, self.final_model_name, kind="models"
         )
         self._append_to_file(
             serializer_path,
             serializer_code,
             f"{self.final_model_name}Serializer",
-            [],
             kind="serializers",
         )
 
-    def _append_to_file(
-        self, path: Path, content: str, check_class: str, import_tuples, kind: str
-    ):
+    def _append_to_file(self, path: Path, content: str, check_class: str, kind: str):
         if kind not in ("models", "serializers"):
             raise ValueError(f"❌ Invalid kind '{kind}'")
-        base_import, imports = self._generate_imports(kind, import_tuples)
+        base_import = self._get_base_import(kind)
         if path.exists():
             text = path.read_text()
             if f"class {check_class}(" in text:
@@ -110,42 +106,19 @@ class {self.final_model_name}Serializer(serializers.ModelSerializer):
                 )
                 return
             lines = text.splitlines()
-            existing_imports = {
-                l.strip() for l in lines if l.strip().startswith("from")
-            }
-            new_imports = [line for line in imports if line not in existing_imports]
-            insert_index = next(
-                (
-                    i + 1
-                    for i, line in enumerate(lines)
-                    if line.strip().startswith(("from", "import"))
-                ),
-                0,
-            )
-            if new_imports:
-                lines[insert_index:insert_index] = new_imports
             lines.append("")
             lines.append(content)
             path.write_text("\n".join(lines))
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            lines = [base_import] + imports + ["", content]
+            lines = [base_import, "", content]
             path.write_text("\n".join(lines))
         print(f"[OK] Written to {path}")
 
-    def _generate_imports(self, kind: str, import_tuples):
+    def _get_base_import(self, kind: str) -> str:
         if kind == "models":
-            imports = [
-                f"from {p} import models as {alias}" for p, alias in import_tuples
-            ]
-            base_import = "from django.db import models"
-        else:  # serializers
-            imports = [
-                f"from {p}.serializers import {s} as {alias}_serializer"
-                for p, alias, s in import_tuples
-            ]
-            base_import = "from rest_framework import serializers"
-        return base_import, imports
+            return "from django.db import models"
+        return "from rest_framework import serializers"
 
     @mo_helper_kit.file_guardian
     def run(self):

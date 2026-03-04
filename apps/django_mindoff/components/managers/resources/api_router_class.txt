@@ -2,7 +2,9 @@ from django_mindoff.components.api_kit import mo_api_kit
 
 
 class SampleRouterClassName(mo_api_kit.BaseVersionRouter):
-    VERSION_MAP = {mo_api_kit.__str__}
+    VERSION_MAP = {
+        mo_api_kit.__str__
+    }
 
 
 sample_router_function_name = SampleRouterClassName()
