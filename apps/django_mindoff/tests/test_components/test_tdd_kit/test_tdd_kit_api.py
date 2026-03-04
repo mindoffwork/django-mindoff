@@ -4,11 +4,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ....components.tdd_kit import MindoffTestCase
+from ....components.tdd_kit import MindoffTestCase, MindoffRouterTestCase
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 🚂 TestMoCallApi
+# ════════════════════════════════════════════════════════════════════════
 
 
 @pytest.mark.django_db
-class TestMoTestApi(MindoffTestCase):
+class TestMoCallApi(MindoffTestCase):
     """Tests for the mo_call_api fixture."""
 
     API_URL_NAME = "tdd_test__sample_api"
@@ -190,7 +195,6 @@ class TestMoTestApi(MindoffTestCase):
             response = self.mo_call_api(self.API_URL_NAME)
 
         assert response is direct_response
-        # Only one GET — no queue polling, no detail URL fetch
         assert mock_get.call_count == 1
 
     def test_queue_mode_api_sets_and_clears_force_direct_flag(self):
@@ -219,9 +223,7 @@ class TestMoTestApi(MindoffTestCase):
         ):
             self.mo_call_api(self.API_URL_NAME)
 
-        # Flag was active during the request
         assert observed_during == [True]
-        # Flag is cleaned up after
         assert getattr(_test_force_direct, "active", False) is False
 
     # 🚫 REJECTION ────────────────────────────────────────────────────────
@@ -269,36 +271,30 @@ class TestMoAssertApiResponse(MindoffTestCase):
     # ✅ ACCEPTANCE — status code ─────────────────────────────────────────
 
     def test_correct_status_code_passes(self):
-        """Default expected_status_code=200 with a 200 response → passes."""
         self._assert(_make_raw_response())
 
     def test_wrong_status_code_fails(self):
-        """Response status_code != expected → AssertionError containing the actual code."""
         resp = _make_raw_response()
         resp.status_code = 404
         with pytest.raises(AssertionError, match="404"):
             self._assert(resp)
 
     def test_custom_expected_status_code_passes(self):
-        """expected_status_code=400 with a matching response → passes."""
         resp = _make_raw_response(content_type="text/plain", body="bad request")
         resp.status_code = 400
         self._assert(resp, expected_status_code=400, expected_response_type="plain")
 
     def test_custom_expected_status_code_mismatch_fails(self):
-        """expected_status_code=201 but response is 200 → AssertionError."""
         resp = _make_raw_response()
         with pytest.raises(AssertionError, match="200"):
             self._assert(resp, expected_status_code=201)
 
-    # ✅ ACCEPTANCE — response type content-type matching ─────────────────
+    # ✅ ACCEPTANCE — content-type matching ───────────────────────────────
 
     def test_json_content_type_passes(self):
-        """expected_response_type='json' with application/json Content-Type → passes."""
         self._assert(_make_raw_response(content_type="application/json"))
 
     def test_wrong_content_type_for_json_fails(self):
-        """expected_response_type='json' but Content-Type is text/html → AssertionError."""
         resp = _make_raw_response(content_type="text/html", body="<html/>")
         with pytest.raises(AssertionError, match="JSON"):
             self._assert(resp, expected_response_type="json")
@@ -312,7 +308,6 @@ class TestMoAssertApiResponse(MindoffTestCase):
         ],
     )
     def test_valid_response_types_pass(self, response_type, content_type, body):
-        """Each supported response_type passes with the matching Content-Type."""
         resp = _make_raw_response(content_type=content_type, body=body)
         self._assert(resp, expected_response_type=response_type)
 
@@ -327,35 +322,30 @@ class TestMoAssertApiResponse(MindoffTestCase):
     def test_mismatched_content_type_fails(
         self, response_type, content_type, body, match
     ):
-        """Mismatched Content-Type for any typed response → AssertionError."""
         resp = _make_raw_response(content_type=content_type, body=body)
         with pytest.raises(AssertionError, match=match):
             self._assert(resp, expected_response_type=response_type)
 
     def test_others_response_type_skips_content_type_assertion(self):
-        """expected_response_type='others' → only status code checked, content-type ignored."""
+        """expected_response_type='others' → only status code checked."""
         resp = _make_raw_response(
             content_type="application/x-custom-format", body=b"\xde\xad\xbe\xef"
         )
         self._assert(resp, expected_response_type="others")
 
     def test_binary_empty_content_is_valid_bytes(self):
-        """binary response with b'' content → still bytes, passes the isinstance check."""
         resp = _make_raw_response(content_type="application/octet-stream", body=b"")
         resp.content = b""
-        # Empty bytes is still bytes — assertion only checks Content-Type and isinstance
         self._assert(resp, expected_response_type="binary")
 
     # 🚫 REJECTION ────────────────────────────────────────────────────────
 
     def test_none_response_fails(self):
-        """response=None → AssertionError immediately."""
         with pytest.raises(AssertionError, match="no response"):
             self.mo_assert_api_response(api_url_name=self.API_URL_NAME, response=None)
 
     @pytest.mark.parametrize("invalid_type", ["JSON", "PLAIN", "Html", "xml", "file"])
     def test_invalid_expected_response_type_raises(self, invalid_type):
-        """Values not in the Literal set → TypeCheckError raised by typeguard."""
         from typeguard import TypeCheckError
 
         with pytest.raises(TypeCheckError):
@@ -364,6 +354,186 @@ class TestMoAssertApiResponse(MindoffTestCase):
                 response=_make_raw_response(),
                 expected_response_type=invalid_type,
             )
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 🚂 TestMoCreateUser
+# ════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.django_db
+class TestMoCreateUser(MindoffTestCase):
+    """Tests for the mo_create_user fixture."""
+
+    # ✅ ACCEPTANCE ───────────────────────────────────────────────────────
+
+    def test_creates_user_with_auto_username(self):
+        """No username → baker generates one; user is persisted."""
+        from django.contrib.auth import get_user_model
+
+        user = self.mo_create_user()
+        assert user.pk is not None
+        assert get_user_model().objects.filter(pk=user.pk).exists()
+
+    def test_creates_user_with_explicit_username(self):
+        """Explicit username → user created with that username."""
+        user = self.mo_create_user(username="alice")
+        assert user.username == "alice"
+
+    def test_password_is_set_and_usable(self):
+        """Created user has a hashed, usable password."""
+        password = uuid.uuid4().hex
+        user = self.mo_create_user(username="bob", password=password)
+        assert user.check_password(password)
+
+    def test_duplicate_username_returns_existing_user(self):
+        """Calling mo_create_user twice with the same username returns the same object."""
+        user1 = self.mo_create_user(username="carol")
+        user2 = self.mo_create_user(username="carol")
+        assert user1.pk == user2.pk
+
+    def test_extra_fields_are_applied(self):
+        """kwargs beyond username/password are forwarded to baker.make."""
+        user = self.mo_create_user(username="dave", email="dave@example.com")
+        assert user.email == "dave@example.com"
+
+    # 🚧 BOUNDARY ────────────────────────────────────────────────────────
+
+    def test_none_password_skips_set_password(self):
+        """password=None → set_password never called; user is still created."""
+        user = self.mo_create_user(username="nopw", password=None)
+        assert user.pk is not None
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 🚂 TestMindoffRouterTestCase
+# ════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.django_db
+class TestMindoffRouterTestCase(MindoffTestCase):
+    """
+    Unit-tests for the two built-in router assertions in MindoffRouterTestCase,
+    exercised directly without subclassing (avoids needing a real router module).
+    """
+
+    def _make_router_case(self, version_map: dict):
+        """Build a throwaway MindoffRouterTestCase instance wired to a fake router."""
+
+        class FakeRouter:
+            VERSION_MAP = version_map
+
+            def __call__(self, request, version):
+                cls = version_map.get(version)
+                if cls is None:
+                    from rest_framework.response import Response
+
+                    return Response(
+                        {
+                            "message": {"code": "INVALID_API_VERSION"},
+                            "data": {"available_versions": list(version_map.keys())},
+                        },
+                        status=404,
+                    )
+                return cls.as_view()(request)
+
+        class ConcreteRouterCase(MindoffRouterTestCase):
+            app_module = "__fake__"
+            router_function_name = "fake_router"
+
+        instance = ConcreteRouterCase()
+        instance.router = FakeRouter()
+        instance.version_map = version_map
+        return instance
+
+    # ✅ ACCEPTANCE ───────────────────────────────────────────────────────
+
+    def test_every_version_dispatches_to_correct_class(self):
+        """Each VERSION_MAP entry calls as_view() exactly once on the right class."""
+        from unittest.mock import MagicMock, patch
+        from django.test import RequestFactory
+
+        class V1View:
+            pass
+
+        class V2View:
+            pass
+
+        case = self._make_router_case({1: V1View, 2: V2View})
+        # Delegate to the built-in test — it should not raise
+        case.test_every_version_dispatches_to_correct_class()
+
+    def test_unknown_version_returns_404_with_correct_body(self):
+        """Version absent from VERSION_MAP → 404 with INVALID_API_VERSION body."""
+
+        class V1View:
+            pass
+
+        case = self._make_router_case({1: V1View})
+        case.test_unknown_version_returns_404_with_correct_body()
+
+    # 🚫 REJECTION ────────────────────────────────────────────────────────
+
+    def test_wrong_version_dispatches_to_wrong_class_fails(self):
+        """If router dispatches to the wrong class, the assertion fails."""
+        from unittest.mock import patch, MagicMock
+        from django.test import RequestFactory
+
+        class RightView:
+            pass
+
+        class WrongView:
+            pass
+
+        # Build a router that always dispatches to WrongView regardless of version
+        class BadRouter:
+            VERSION_MAP = {1: RightView}
+
+            def __call__(self, request, version):
+                return WrongView.as_view()(request)
+
+        class ConcreteRouterCase(MindoffRouterTestCase):
+            app_module = "__fake__"
+            router_function_name = "bad_router"
+
+        instance = ConcreteRouterCase()
+        instance.router = BadRouter()
+        instance.version_map = {1: RightView}
+
+        with pytest.raises(AssertionError):
+            instance.test_every_version_dispatches_to_correct_class()
+
+    def test_correct_404_body_missing_code_fails(self):
+        """Router returning 404 without INVALID_API_VERSION code → assertion fails."""
+        from rest_framework.response import Response
+
+        class V1View:
+            pass
+
+        class BadRouter:
+            VERSION_MAP = {1: V1View}
+
+            def __call__(self, request, version):
+                # Returns 404 but with wrong body structure
+                return Response(
+                    {"message": {"code": "WRONG_CODE"}, "data": {}}, status=404
+                )
+
+        class ConcreteRouterCase(MindoffRouterTestCase):
+            app_module = "__fake__"
+            router_function_name = "bad_router"
+
+        instance = ConcreteRouterCase()
+        instance.router = BadRouter()
+        instance.version_map = {1: V1View}
+
+        with pytest.raises((AssertionError, KeyError)):
+            instance.test_unknown_version_returns_404_with_correct_body()
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 🔧 Shared helpers
+# ════════════════════════════════════════════════════════════════════════
 
 
 def _make_api_cls(*, method="get", process_mode="direct"):

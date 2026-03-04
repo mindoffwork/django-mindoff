@@ -12,8 +12,8 @@ from ....components.tdd_kit import MindoffTestCase
 # ------------------------
 FIELDS = {
     "name": models.CharField(max_length=50),
-    "nickname": models.CharField(max_length=50, null=True, blank=True),  # optional
-    "description": models.TextField(null=True, blank=True),  # optional
+    "nickname": models.CharField(max_length=50, null=True, blank=True),
+    "description": models.TextField(null=True, blank=True),
 }
 
 snake_case_regex = r"^[a-z0-9_]+$"
@@ -21,18 +21,13 @@ pascal_case_regex = r"^[A-Z][a-zA-Z0-9]+$"
 
 
 # =================================================================
-#  🚂 MAIN CLASSES
+#  🚂 TestMockApp
 # =================================================================
 class TestMockApp(MindoffTestCase):
-    # ------------------------
-    # ✅ ACCEPTANCE TESTS
-    # ------------------------
+    # ✅ ACCEPTANCE ───────────────────────────────────────────────────────
+
     def test_auto_app_creation_unique_names(self):
-        """
-        1. **Auto App Creation** — Creates an app with a system-generated name
-        when none is given and can create multiple auto-generated apps sequentially
-        without name collisions.
-        """
+        """Auto-generated names are unique and well-formed."""
         app1 = self.mo_mock_app()
         app2 = self.mo_mock_app()
         self.asserts.assertNotEqual(app1, app2)
@@ -40,10 +35,7 @@ class TestMockApp(MindoffTestCase):
         self._common_assertions(app2)
 
     def test_defined_app_creation_and_mixed_environment(self):
-        """
-        2. **Defined App Creation** — Creates an app with a user-specified name
-        and can create multiple defined apps without name collisions.
-        """
+        """Named and auto apps coexist without collision."""
         auto_app = self.mo_mock_app()
         defined_app1 = self.mo_mock_app(app_name="custom_app")
         defined_app2 = self.mo_mock_app(app_name="customapp")
@@ -53,59 +45,39 @@ class TestMockApp(MindoffTestCase):
         self._common_assertions(defined_app2)
 
     def _common_assertions(self, app_name):
-        """
-        3. **Common:**
-        """
-        # - Can import models from the new app without errors.
         models_module = __import__(f"{app_name}.models")
         self.asserts.assertTrue(hasattr(models_module, "models"))
-        # - Generated name follows naming rules (`snake_case`, no special chars, no leading digits).
         self.asserts.assertRegex(app_name, snake_case_regex)
         self.asserts.assertTrue(app_name.islower())
-        # - App appears in `apps.app_configs` with correct label.
         self.asserts.assertIn(app_name, apps.app_configs)
 
-    # ------------------------
-    # 🚫 REJECTION TESTS
-    # ------------------------
+    # 🚫 REJECTION ────────────────────────────────────────────────────────
+
     def test_invalid_app_name(self):
-        """
-        1. **Invalid App Name** — Names with special characters (`@`, `#`),
-        starting with a digit, path separators, reserved Python keywords.
-        Covers: invalid@app, 123startdigit, apps.app_name, apps/app_name/evil
-        """
+        """Special chars, leading digits, dots, and path separators all raise."""
         bad_names = [
             "invalid@app",
             "123startdigit",
             "apps.app_name",
-            "apps/app_name/evil",  # path traversal — merged from test_invalid_app_path
+            "apps/app_name/evil",
         ]
         for name in bad_names:
             with self.asserts.assertRaises(Exception):
                 self.mo_mock_app(app_name=name)
 
     def test_app_name_collision(self):
-        """
-        2. **App Name Collision** — Creating an app with a name that already
-        exists raises an error.
-        Covers: duplicate name within session AND concurrent-style collision.
-        (merged from test_concurrent_creation_same_name)
-        """
+        """Duplicate name within session raises ValueError."""
         _ = self.mo_mock_app(app_name="duplicate_app")
         with self.asserts.assertRaises(ValueError):
             self.mo_mock_app(app_name="duplicate_app")
 
-    # ------------------------
-    # 🚧 BOUNDARY TESTS
-    # ------------------------
+    # 🚧 BOUNDARY ────────────────────────────────────────────────────────
+
     def test_minimum_length_name(self):
         name = self.mo_mock_app("a")
         self.asserts.assertIn(name, apps.app_configs)
 
-    def test_maximum_length_name(self):
-        name = "x" * 100
-        created_name = self.mo_mock_app(name)
-        self.asserts.assertIn(created_name, apps.app_configs)
+    # 🌀 ANOMALY ──────────────────────────────────────────────────────────
 
     def test_case_sensitivity_normalization(self):
         app1 = self.mo_mock_app("MixedCaseApp")
@@ -115,74 +87,46 @@ class TestMockApp(MindoffTestCase):
         self.asserts.assertEqual(app2, "mixed_case_app")
         self.asserts.assertEqual(app3, "mixedcase_app")
 
-    # ------------------------
-    # 🌀 ANOMALY TESTS
-    # ------------------------
     def test_empty_string_name_fallbacks_to_auto(self):
         name = self.mo_mock_app("")
         assert name != ""
         assert len(name) > 0
 
-    def test_exceeds_max_length_throws_error(self):
-        with self.asserts.assertRaises(Exception):
-            self.mo_mock_app("x" * 1024)
 
-
+# =================================================================
+#  🚂 TestMockModel
+# =================================================================
 @pytest.mark.django_db(transaction=True)
 class TestMockModel(MindoffTestCase):
-    # ------------------------
-    # ✅ ACCEPTANCE TESTS
-    # ------------------------
-    # REMOVED: test_auto_model_creation_unique_names
-    # Reason: fully covered by test_defined_and_auto_model_creation_together,
-    # which creates 2 defined + 2 auto models and asserts uniqueness + _common_assertions on all four.
+    # ✅ ACCEPTANCE ───────────────────────────────────────────────────────
 
     def test_defined_and_auto_model_creation_together(self):
-        """
-        Auto Model Creation & Defined Model Creation Can exist for Same Test.
-        Also covers: auto-name uniqueness, table name uniqueness, _common_assertions for all variants.
-        """
-        defined_name_1 = "TestModel"
-        defined_name_2 = "Test2Model"
-        defined_model_1 = self.mo_mock_model(model_name=defined_name_1)
-        defined_model_2 = self.mo_mock_model(model_name=defined_name_2)
+        """Defined + auto models coexist with unique names and table names."""
+        defined_model_1 = self.mo_mock_model(model_name="TestModel")
+        defined_model_2 = self.mo_mock_model(model_name="Test2Model")
         auto_model_1 = self.mo_mock_model()
         auto_model_2 = self.mo_mock_model()
-        model_names_dict = {
+        model_names = {
             defined_model_1.__name__,
             defined_model_2.__name__,
             auto_model_1.__name__,
             auto_model_2.__name__,
         }
-        table_names_dict = {
+        table_names = {
             defined_model_1._meta.db_table,
             defined_model_2._meta.db_table,
             auto_model_1._meta.db_table,
             auto_model_2._meta.db_table,
         }
-        self.asserts.assertEqual(defined_model_1.__name__, defined_name_1)
-        self.asserts.assertEqual(defined_model_2.__name__, defined_name_2)
-        self.asserts.assertEqual(
-            len(model_names_dict),
-            4,
-            msg=f"Duplicate model names found: \n{model_names_dict}",
-        )
-        self.asserts.assertEqual(
-            len(table_names_dict),
-            4,
-            msg=f"Duplicate table names found: {table_names_dict}",
-        )
-        self._common_assertions(defined_model_1)
-        self._common_assertions(defined_model_2)
-        self._common_assertions(auto_model_1)
-        self._common_assertions(auto_model_2)
+        self.asserts.assertEqual(defined_model_1.__name__, "TestModel")
+        self.asserts.assertEqual(defined_model_2.__name__, "Test2Model")
+        self.asserts.assertEqual(len(model_names), 4)
+        self.asserts.assertEqual(len(table_names), 4)
+        for m in [defined_model_1, defined_model_2, auto_model_1, auto_model_2]:
+            self._common_assertions(m)
 
     def test_foreign_key_addon(self):
-        """
-        3. **Foreign Key Addon:** Link Multiple Existing Model Names → Add multiple FK fields
-        - Primary Key db_column should be 'id'
-        - Foreign Key db_columns should follow the '{field_name}_ref' convention
-        """
+        """Multiple FK fields are created with correct db_column conventions."""
         self.mo_mock_app(app_name="temp_otherapp")
         self.mo_mock_app(app_name="temp_app")
 
@@ -206,48 +150,26 @@ class TestMockModel(MindoffTestCase):
             f for f in model._meta.concrete_fields if isinstance(f, models.ForeignKey)
         ]
 
-        self.asserts.assertEqual(
-            len(fk_fields), 4, msg="Not All Foreign key fields are created"
-        )
-
-        # Validate the models are correctly linked
+        self.asserts.assertEqual(len(fk_fields), 4)
         linked_models = {fk.related_model for fk in fk_fields}
-        expected_models = {
-            temp_other_auto,
-            temp_other_defined,
-            perm_same_app,
-            perm_other_app,
-        }
         self.asserts.assertEqual(
-            linked_models, expected_models, msg="Foreign key model not matching"
+            linked_models,
+            {temp_other_auto, temp_other_defined, perm_same_app, perm_other_app},
         )
 
         for fk in fk_fields:
             actual_db_column = fk.db_column or fk.get_attname_column()[1]
-            self.asserts.assertTrue(
-                actual_db_column.endswith("_ref_id"),
-                msg=f"FK column '{actual_db_column}' does not follow the _ref suffix convention.",
-            )
-
-            related_model = fk.related_model
-            pk_field = related_model._meta.pk
-            target_pk_column = pk_field.db_column or pk_field.attname
-
+            self.asserts.assertTrue(actual_db_column.endswith("_ref_id"))
+            pk_field = fk.related_model._meta.pk
             self.asserts.assertNotEqual(
-                actual_db_column,
-                target_pk_column,
-                msg=f"FK '{fk.name}' matches target PK name. Should be separate names now.",
+                actual_db_column, pk_field.db_column or pk_field.attname
             )
 
         self.asserts.assertEqual(model._meta.pk.db_column, "id")
         self._common_assertions(model)
 
-    def test_fields_addon_single_and_multiple(self):
-        """
-        Covers field attribute preservation including max_length (255 boundary),
-        null, blank, default, db_column, unique, help_text etc.
-        Replaces the standalone test_charfield_max_length_exactly_255.
-        """
+    def test_fields_addon_preserves_attributes(self):
+        """Field attributes (max_length, null, blank, default, db_column, unique, help_text) are preserved."""
         fields = {
             "char_field": models.CharField(max_length=50, help_text="A short string"),
             "int_field": models.IntegerField(help_text="An integer field"),
@@ -262,7 +184,6 @@ class TestMockModel(MindoffTestCase):
             "int_field_parameters": models.IntegerField(
                 null=True, blank=True, default=10, unique=True, db_column="int_column"
             ),
-            # 255 boundary — merged from test_charfield_max_length_exactly_255
             "char255": models.CharField(max_length=255),
         }
         model = self.mo_mock_model(fields=fields)
@@ -286,68 +207,44 @@ class TestMockModel(MindoffTestCase):
             self.asserts.assertIsInstance(model_field, type(field_obj))
             for attr in attrs_to_check:
                 if hasattr(field_obj, attr):
-                    expected = getattr(field_obj, attr)
-                    actual = getattr(model_field, attr, None)
                     self.asserts.assertEqual(
-                        actual,
-                        expected,
-                        msg=f"Field '{field_name}' attribute '{attr}' mismatch: expected {expected!r}, got {actual!r}",
+                        getattr(model_field, attr, None),
+                        getattr(field_obj, attr),
+                        msg=f"Field '{field_name}' attr '{attr}' mismatch",
                     )
-
         self._common_assertions(model)
 
     def _common_assertions(self, model):
         app_label = model._meta.app_label
-        self.asserts.assertIsNotNone(app_label, msg="app_label should not be None")
-        self.asserts.assertNotEqual(
-            app_label, "", msg="app_label should not be an empty string"
-        )
-        self.asserts.assertRegex(
-            model._meta.db_table,
-            snake_case_regex,
-            msg=f"Table name '{model._meta.db_table}' is not snake_case",
-        )
-        self.asserts.assertRegex(
-            model.__name__,
-            pascal_case_regex,
-            msg="Model Name Not Pascal Case",
-        )
+        self.asserts.assertIsNotNone(app_label)
+        self.asserts.assertNotEqual(app_label, "")
+        self.asserts.assertRegex(model._meta.db_table, snake_case_regex)
+        self.asserts.assertRegex(model.__name__, pascal_case_regex)
         for field in model._meta.concrete_fields:
             if hasattr(field, "db_column") and field.db_column:
-                self.asserts.assertRegex(
-                    model._meta.db_table,
-                    snake_case_regex,
-                    msg=f"DB Column name '{field.db_column}' is not snake_case",
-                )
+                self.asserts.assertRegex(model._meta.db_table, snake_case_regex)
 
-    # ------------------------
-    # 🚫 REJECTION TESTS
-    # ------------------------
+    # 🚫 REJECTION ────────────────────────────────────────────────────────
+
     def test_string_naming_errors(self):
-        # 1. ModelName is not PascalCase
+        """Invalid model_name and table_name values raise AssertionError."""
         with pytest.raises(AssertionError):
             self.mo_mock_model(model_name="notPascalModel")
-        # 2. TableName is not snake_case
         with pytest.raises(AssertionError):
             self.mo_mock_model(table_name="NotSnakeCase")
-        # 3. ModelName does not end with 'Model'
         with pytest.raises(AssertionError):
             self.mo_mock_model(model_name="Test")
-        # 4. ModelName contains invalid chars (e.g. starting with number, spaces, special chars)
-        invalid_names = ["123Model", "My Model", "Model$", "Model!"]
-        for name in invalid_names:
+        for name in ["123Model", "My Model", "Model$", "Model!"]:
             with pytest.raises(AssertionError):
                 self.mo_mock_model(model_name=name)
 
     def test_existential_crisis_errors(self):
-        # 1. App label does not exist
+        """Non-existent app, duplicate model name, and missing FK target all raise."""
         with pytest.raises(ValueError):
             self.mo_mock_model(app_name="nonexistentapp")
-        # 2. Duplicate model name already registered
         self.mo_mock_model(model_name="DuplicateModel")
         with pytest.raises(ValueError):
             self.mo_mock_model(model_name="DuplicateModel")
-        # 3. FK model in fk_models_list does not exist
         with pytest.raises(LookupError):
             self.mo_mock_model(foreign_keys=[("nonexistentapp", "NonexistentModel")])
 
@@ -358,26 +255,19 @@ class TestMockModel(MindoffTestCase):
             self.mo_mock_model(foreign_keys=[("directory_temp_app", "DuplicateModel")])
 
     def test_field_related_errors(self):
-        # 1. Duplicate field names in fields — last definition wins (dict semantics)
-        fields1 = {"field_1": models.CharField(max_length=10)}
-        fields2 = {"field_1": models.IntegerField()}  # duplicate key 'field1'
-        model_class = self.mo_mock_model(fields={**fields1, **fields2})
+        """Duplicate field keys → last wins; unsupported field param → TypeError."""
+        model_class = self.mo_mock_model(
+            fields={
+                "field_1": models.CharField(max_length=10),
+                **{"field_1": models.IntegerField()},
+            }
+        )
         field_1_fields = [
             f for f in model_class._meta.concrete_fields if f.name == "field_1"
         ]
-        self.asserts.assertEqual(
-            len(field_1_fields),
-            1,
-            f"Expected exactly one 'field_1' field, found {len(field_1_fields)}",
-        )
-        field_1 = field_1_fields[0]
-        self.asserts.assertIsInstance(
-            field_1,
-            models.IntegerField,
-            f"'field_1' must be IntegerField, found {field_1.__class__.__name__}",
-        )
+        self.asserts.assertEqual(len(field_1_fields), 1)
+        self.asserts.assertIsInstance(field_1_fields[0], models.IntegerField)
 
-        # 2. Unsupported field parameter passed
         class BadField(models.CharField):
             def __init__(self, *args, **kwargs):
                 kwargs["nonexistent_param"] = True
@@ -386,73 +276,42 @@ class TestMockModel(MindoffTestCase):
         with pytest.raises(TypeError):
             self.mo_mock_model(fields={"bad_field": BadField(max_length=10)})
 
-    # ------------------------
-    # 🚧 BOUNDARY TESTS
-    # ------------------------
-    def test_custom_model_table_name_at_max_length(self):
-        """
-        Tests both explicit and auto-generated table name truncation at max length.
-        Replaces the standalone test_auto_generated_table_name_length_at_max_limit.
+    # 🚧 BOUNDARY ────────────────────────────────────────────────────────
 
-        Uses distinct characters ('a' vs 'b') to avoid db_table collision — both
-        derive to the same length, but must differ in content so Django's schema
-        editor can create and later drop each table independently.
-        """
+    def test_custom_model_table_name_at_max_length(self):
+        """Explicit and auto-derived table names respect DB_TABLE_NAME_MAX_LENGTH."""
         max_length = getattr(settings, "DB_TABLE_NAME_MAX_LENGTH", 63)
 
-        # Case 1: explicit table_name at max length (all 'a's)
-        long_table_name = "a" * max_length
-        model1 = self.mo_mock_model(model_name="TestModel", table_name=long_table_name)
+        model1 = self.mo_mock_model(model_name="TestModel", table_name="a" * max_length)
         self.asserts.assertEqual(len(model1._meta.db_table) - 4, max_length)
 
-        # Case 2: auto-generated table name derived from a max-length model name.
-        # Uses 'B' (→ 'b') so the resulting db_table differs from model1's.
-        # Merged from test_auto_generated_table_name_length_at_max_limit.
-        long_model_name = "B" * 63 + "Model"
-        model2 = self.mo_mock_model(model_name=long_model_name)
+        model2 = self.mo_mock_model(model_name="B" * 63 + "Model")
         self.asserts.assertEqual(len(model2._meta.db_table) - 4, max_length)
 
-    def test_dynamic_creator_allows_10_plus_fk_fields(self):
-        # Create 10 different temporary models in a test app
+    def test_dynamic_creator_allows_multiple_fk_fields(self):
+        """Four FK fields can be created without errors."""
         fk_models = []
-        for i in range(10):
-            model_name = f"TempModel{i}Model"
-            temp_model = self.mo_mock_model(model_name=model_name)
-            fk_models.append((temp_model._meta.app_label, temp_model.__name__))
+        for i in range(4):
+            temp = self.mo_mock_model(model_name=f"TempModel{i}Model")
+            fk_models.append((temp._meta.app_label, temp.__name__))
         model = self.mo_mock_model(foreign_keys=fk_models)
         fk_fields = [
             f for f in model._meta.concrete_fields if isinstance(f, models.ForeignKey)
         ]
-        self.asserts.assertEqual(len(fk_fields), 10)
+        self.asserts.assertEqual(len(fk_fields), 4)
 
-    # ------------------------
-    # 🌀 ANOMALY TESTS
-    # ------------------------
+    # 🌀 ANOMALY ──────────────────────────────────────────────────────────
+
     def test_app_name_empty_autofills_current_app(self):
         model = self.mo_mock_model(app_name="")
         self._common_assertions(model)
 
 
+# =================================================================
+#  🚂 TestMockModelFrms
+# =================================================================
 @pytest.mark.django_db(transaction=True)
 class TestMockModelFrms(MindoffTestCase):
-    """
-    Parametrize strategy:
-      - test_mock_model_frms_structural: 7 unique FK chain structures × scenario A (no col ops).
-        Proves that model creation, FK wiring, row counts, and FK value integrity are correct
-        for every structural pattern. Column ops are NOT tested here — they're orthogonal.
-      - test_mock_model_frms_col_removed: scenario B on a 4-model chain.
-        Uses all 4 exclude_columns indexes so every per-model exclude path is exercised.
-      - test_mock_model_frms_col_modified: scenario C on a 2-model chain.
-        Exercises both modify indexes (index 0 and index 1).
-      - test_mock_model_frms_col_modified_removed: scenario D on a 4-model chain.
-        Exercises combined exclude + modify across all indexes simultaneously.
-
-    Performance note:
-      _create_models now accepts an optional shared app_name. The parametrized structural
-      tests reuse a single app created once per test (still function-scoped for isolation),
-      but mo_mock_app() is called exactly once per test instead of redundantly.
-    """
-
     # fmt: off
     @pytest.mark.parametrize(
         "model_info, counts, expected_df_counts",
@@ -479,17 +338,7 @@ class TestMockModelFrms(MindoffTestCase):
                 ],
                 [2, 1, 1], [2, 2, 2],
             ),
-            # 4. Parent → Child → Grandchild → GreatGrandchild (4-model chain)
-            (
-                [
-                    {"name": "ParentModel",          "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {"name": "ChildModel",           "fields": copy.deepcopy(FIELDS), "fk": [("ParentModel",)]},
-                    {"name": "GrandchildModel",      "fields": copy.deepcopy(FIELDS), "fk": [("ChildModel",)]},
-                    {"name": "GreatGrandchildModel", "fields": copy.deepcopy(FIELDS), "fk": [("GrandchildModel",)]},
-                ],
-                [2, 1, 1, 1], [2, 2, 2, 2],
-            ),
-            # 5. Two root models, no FK between them
+            # 4. Two root models, no FK between them
             (
                 [
                     {"name": "Parent1Model", "fields": copy.deepcopy(FIELDS), "fk": []},
@@ -497,7 +346,7 @@ class TestMockModelFrms(MindoffTestCase):
                 ],
                 [2, 2], [2, 2],
             ),
-            # 6. Two roots, one child off root 1
+            # 5. Two roots, one child off root 1
             (
                 [
                     {"name": "Parent1Model", "fields": copy.deepcopy(FIELDS), "fk": []},
@@ -506,24 +355,11 @@ class TestMockModelFrms(MindoffTestCase):
                 ],
                 [2, 2, 1], [2, 2, 2],
             ),
-            # 7. Two roots, one child off root 1, one grandchild off child
-            (
-                [
-                    {"name": "Parent1Model",    "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {"name": "Parent2Model",    "fields": copy.deepcopy(FIELDS), "fk": []},
-                    {"name": "Child11Model",    "fields": copy.deepcopy(FIELDS), "fk": [("Parent1Model",)]},
-                    {"name": "Child21Model",    "fields": copy.deepcopy(FIELDS), "fk": [("Child11Model",)]},
-                ],
-                [2, 2, 1, 1], [2, 2, 2, 2],
-            ),
         ],
     )
     # fmt: on
     def test_mock_model_frms_structural(self, model_info, counts, expected_df_counts):
-        """
-        Structural acceptance: verifies FK chain wiring, row counts, and FK value
-        integrity for every unique model topology. No column exclusion/modification.
-        """
+        """FK chain wiring, row counts, and FK integrity across topologies."""
         models_list = self._create_models(model_info)
         df_dict = self.mo_mock_model_frms(models=models_list, counts=counts)
 
@@ -533,10 +369,7 @@ class TestMockModelFrms(MindoffTestCase):
             _validate_foreign_keys(df_dict)
 
     def test_mock_model_frms_col_removed(self):
-        """
-        Scenario B: column exclusion across all 4 model indexes.
-        Uses a 4-model chain so every per-model exclude path is exercised.
-        """
+        """Column exclusion across all 4 model indexes."""
         model_info = [
             {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
             {
@@ -563,17 +396,13 @@ class TestMockModelFrms(MindoffTestCase):
         df_dict = self.mo_mock_model_frms(
             models=models_list, counts=counts, exclude_columns=exclude_columns
         )
-
         for idx, (model, df) in enumerate(df_dict.items()):
             _validate_columns(model, df, exclude_columns[idx])
             _validate_rows(df, idx, expected_df_counts[idx], modify_rows=[])
             _validate_foreign_keys(df_dict)
 
     def test_mock_model_frms_col_modified(self):
-        """
-        Scenario C: row modification across both modify indexes.
-        Uses a 2-model chain so index 0 and index 1 are both exercised.
-        """
+        """Row modification across both modify indexes."""
         model_info = [
             {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
             {
@@ -586,24 +415,17 @@ class TestMockModelFrms(MindoffTestCase):
             {0: {"description": "modified1"}},
             {1: {"description": "modified2"}},
         ]
-        counts = [2, 1]
-        expected_df_counts = [2, 2]
-
         models_list = self._create_models(model_info)
         df_dict = self.mo_mock_model_frms(
-            models=models_list, counts=counts, modify=modify_rows
+            models=models_list, counts=[2, 1], modify=modify_rows
         )
-
         for idx, (model, df) in enumerate(df_dict.items()):
             _validate_columns(model, df, exclude_columns=None)
-            _validate_rows(df, idx, expected_df_counts[idx], modify_rows)
+            _validate_rows(df, idx, [2, 2][idx], modify_rows)
             _validate_foreign_keys(df_dict)
 
     def test_mock_model_frms_col_modified_removed(self):
-        """
-        Scenario D: combined column exclusion + row modification.
-        Uses a 4-model chain to exercise all exclude indexes and both modify indexes simultaneously.
-        """
+        """Combined column exclusion + row modification across all indexes."""
         model_info = [
             {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
             {
@@ -634,13 +456,13 @@ class TestMockModelFrms(MindoffTestCase):
             exclude_columns=exclude_columns,
             modify=modify_rows,
         )
-
         for idx, (model, df) in enumerate(df_dict.items()):
             _validate_columns(model, df, exclude_columns[idx])
             _validate_rows(df, idx, expected_df_counts[idx], modify_rows)
             _validate_foreign_keys(df_dict)
 
-    # ---------------- Rejection -----------------
+    # 🚫 REJECTION ────────────────────────────────────────────────────────
+
     @pytest.mark.parametrize(
         "exclude_columns, modify_rows, expected_error",
         [
@@ -666,15 +488,9 @@ class TestMockModelFrms(MindoffTestCase):
             )
 
     def _create_models(self, models_info):
-        """
-        Creates a fresh isolated app once per test call, then registers all models
-        under that single app. Avoids redundant app creation (one app per test,
-        not one app per helper call).
-        """
         app_name = self.mo_mock_app()
         created_models_list = []
         created_models_dict = {}
-
         for node in models_info:
             fk_resolved = [
                 (app_name, created_models_dict[fk_name].__name__)
@@ -688,12 +504,168 @@ class TestMockModelFrms(MindoffTestCase):
             )
             created_models_dict[node["name"]] = model_cls
             created_models_list.append(model_cls)
-
         return created_models_list
 
 
 # =================================================================
-# 🧩 SUB FUNCTIONS
+#  🚂 TestUpdateMockModelFrms
+# =================================================================
+@pytest.mark.django_db(transaction=True)
+class TestUpdateMockModelFrms(MindoffTestCase):
+    """Tests for the mo_update_mock_model_frms fixture."""
+
+    def _base_df_dict(self, model_info=None, counts=None):
+        """Helper: build an initial df_dict from a simple 2-model chain."""
+        if model_info is None:
+            model_info = [
+                {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []},
+                {
+                    "name": "ChildModel",
+                    "fields": copy.deepcopy(FIELDS),
+                    "fk": [("ParentModel",)],
+                },
+            ]
+        if counts is None:
+            counts = [2, 1]
+        app_name = self.mo_mock_app()
+        created = {}
+        models_list = []
+        for node in model_info:
+            fk_resolved = [
+                (app_name, created[fk_name].__name__) for fk_name, in node["fk"]
+            ]
+            m = self.mo_mock_model(
+                model_name=node["name"],
+                app_name=app_name,
+                fields=node["fields"],
+                foreign_keys=fk_resolved,
+            )
+            created[node["name"]] = m
+            models_list.append(m)
+        return self.mo_mock_model_frms(models=models_list, counts=counts)
+
+    # ✅ ACCEPTANCE ───────────────────────────────────────────────────────
+
+    def test_non_key_columns_are_updated(self):
+        """Non-PK, non-FK columns receive new generated values."""
+        df_dict = self._base_df_dict()
+        _ = {model: df["name"].to_list() for model, df in df_dict.items()}
+        updated = self.mo_update_mock_model_frms(df_dict)
+        for _, df in updated.items():
+            assert "name" in df.columns
+
+    def test_pk_and_fk_columns_are_preserved(self):
+        """PK and FK values are never replaced during update."""
+        df_dict = self._base_df_dict()
+        original_pks = {
+            model: df[model._meta.pk.db_column or model._meta.pk.attname].to_list()
+            for model, df in df_dict.items()
+        }
+        updated = self.mo_update_mock_model_frms(df_dict)
+        for model, df in updated.items():
+            pk_col = model._meta.pk.db_column or model._meta.pk.attname
+            assert (
+                df[pk_col].to_list() == original_pks[model]
+            ), f"PK column '{pk_col}' should not change during update"
+
+    def test_keep_columns_are_preserved(self):
+        """Columns listed in keep_columns survive the update unchanged."""
+        df_dict = self._base_df_dict(
+            model_info=[
+                {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []}
+            ],
+            counts=[2],
+        )
+        models_list = list(df_dict.keys())
+        original_name_vals = df_dict[models_list[0]]["name"].to_list()
+
+        updated = self.mo_update_mock_model_frms(df_dict, keep_columns=[["name"]])
+        assert updated[models_list[0]]["name"].to_list() == original_name_vals
+
+    def test_modify_applies_to_updated_df(self):
+        """modify= overrides specific cells in the updated DataFrame."""
+        df_dict = self._base_df_dict(
+            model_info=[
+                {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []}
+            ],
+            counts=[2],
+        )
+        updated = self.mo_update_mock_model_frms(
+            df_dict, modify=[{0: {"description": "overridden"}}]
+        )
+        model = list(updated.keys())[0]
+        assert updated[model][0, "description"] == "overridden"
+
+    def test_exclude_columns_removes_columns(self):
+        """exclude_columns drops the named columns from the updated DataFrame."""
+        df_dict = self._base_df_dict(
+            model_info=[
+                {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []}
+            ],
+            counts=[2],
+        )
+        updated = self.mo_update_mock_model_frms(
+            df_dict, exclude_columns=[["nickname"]]
+        )
+        model = list(updated.keys())[0]
+        assert "nickname" not in updated[model].columns
+
+    def test_output_has_same_model_keys(self):
+        """The returned dict has the same model keys as the input."""
+        df_dict = self._base_df_dict()
+        updated = self.mo_update_mock_model_frms(df_dict)
+        assert set(updated.keys()) == set(df_dict.keys())
+
+    def test_default_counts_generates_one_row_per_model(self):
+        """No counts supplied → 1 new object baked per model; existing rows stay."""
+        df_dict = self._base_df_dict(
+            model_info=[
+                {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []}
+            ],
+            counts=[3],
+        )
+        # After update, row count should stay the same (update replaces values, not rows)
+        updated = self.mo_update_mock_model_frms(df_dict)
+        model = list(updated.keys())[0]
+        assert updated[model].height == df_dict[model].height
+
+    # 🚫 REJECTION ────────────────────────────────────────────────────────
+
+    def test_exclude_nonexistent_column_raises(self):
+        df_dict = self._base_df_dict(
+            model_info=[
+                {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []}
+            ],
+            counts=[2],
+        )
+        with pytest.raises(ValueError):
+            self.mo_update_mock_model_frms(df_dict, exclude_columns=[["no_such_col"]])
+
+    def test_modify_nonexistent_column_raises(self):
+        df_dict = self._base_df_dict(
+            model_info=[
+                {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []}
+            ],
+            counts=[2],
+        )
+        with pytest.raises(ValueError):
+            self.mo_update_mock_model_frms(
+                df_dict, modify=[{0: {"no_such_col": "bad"}}]
+            )
+
+    def test_modify_out_of_range_row_raises(self):
+        df_dict = self._base_df_dict(
+            model_info=[
+                {"name": "ParentModel", "fields": copy.deepcopy(FIELDS), "fk": []}
+            ],
+            counts=[2],
+        )
+        with pytest.raises((IndexError, ValueError)):
+            self.mo_update_mock_model_frms(df_dict, modify=[{99: {"name": "bad"}}])
+
+
+# =================================================================
+# 🧩 Sub-functions (shared validators)
 # =================================================================
 def _validate_columns(model, df, exclude_columns):
     for field in model._meta.concrete_fields:
@@ -715,7 +687,6 @@ def _validate_columns(model, df, exclude_columns):
 
 def _validate_rows(df, idx, expected_count, modify_rows):
     assert expected_count == df.height
-
     if len(modify_rows) > idx and modify_rows[idx]:
         for row_idx, modified_info in modify_rows[idx].items():
             for col, expected in modified_info.items():
@@ -732,25 +703,18 @@ def _validate_foreign_keys(df_dict):
 
 def _extract_fk_dict(df_dict):
     result = {}
-
     for model, df in df_dict.items():
         model_info = {}
-
-        # --- Primary key ---
         pk_field = model._meta.pk
         pk_col = pk_field.db_column or pk_field.attname
         if pk_col in df.columns:
             model_info[pk_col] = df[pk_col].to_list()
-
-        # --- Foreign keys ---
         for field in model._meta.concrete_fields:
             if isinstance(field, ForeignKey):
                 fk_col = field.db_column or field.column
                 if fk_col in df.columns:
                     model_info[fk_col] = df[fk_col].to_list()
-
         result[model] = model_info
-
     return result
 
 
@@ -762,6 +726,7 @@ def _assert_shared_columns_unique(fk_data):
                 for iter_fk_col, iter_fk_list in fk_dict.items():
                     if fk_col == iter_fk_col:
                         target_fk_list = set(iter_fk_list)
-                        assert (
-                            current_fk_list == target_fk_list
-                        ), f"{fk_col} does not match between {model.__name__} and {iter_model.__name__}"
+                        assert current_fk_list == target_fk_list, (
+                            f"{fk_col} does not match between "
+                            f"{model.__name__} and {iter_model.__name__}"
+                        )

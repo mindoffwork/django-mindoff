@@ -1,19 +1,11 @@
 import shutil
 import sys
-import secrets
 import uuid
-import warnings
-import typing
 import tempfile
 import os
-import subprocess
-import threading
-import time
-import importlib.util
-from collections import namedtuple
+import importlib
 from pathlib import Path
 from typing import List, Tuple, Type, get_args, get_origin, Literal
-from urllib.parse import urlparse
 
 import polars as pl
 import pytest
@@ -31,7 +23,6 @@ from typeguard import typechecked
 from ._tdd_kit import field_value_generator
 from django.urls import reverse, resolve, Resolver404
 from rest_framework.test import APIClient
-from http import HTTPStatus
 from .managers._create_app import DjangoAppCreator
 from django.urls import clear_url_caches
 from django.contrib.auth import get_user_model
@@ -62,7 +53,7 @@ class MindoffTestCase:
         self.mo_update_mock_model_frms = request.getfixturevalue(
             "_mo_update_mock_model_frms"
         )
-        self.mo_call_api = request.getfixturevalue("_mo_test_api")
+        self.mo_call_api = request.getfixturevalue("_mo_call_api")
         self.mo_assert_api_response = request.getfixturevalue("_mo_assert_api_response")
         self.mo_create_user = request.getfixturevalue("_mo_create_user")
         self.client = APIClient()
@@ -323,7 +314,7 @@ urlpatterns = original_patterns + [
         return __update_model_frm_dict
 
     @pytest.fixture
-    def _mo_test_api(self, request):
+    def _mo_call_api(self, request):
         @typechecked
         def __call(
             api_url_name: str,
@@ -466,15 +457,12 @@ urlpatterns = original_patterns + [
         def __create(username=None, password="password123", **extra_fields):
             user_model = get_user_model()
 
-            # If a specific username is requested, check if it exists
             if username:
                 existing = user_model.objects.filter(username=username).first()
                 if existing:
                     return existing
                 extra_fields["username"] = username
 
-            # Use baker to create the user with default password logic
-            # This handles any other required fields your user_model model might have
             user = baker.make(user_model, **extra_fields)
 
             if password:

@@ -9,12 +9,22 @@ init_file_name = "__init__.py"
 
 # ======== CLASSES =======
 class DjangoAppCreator:
-    def __init__(self, dotted_path: str):
-        if not dotted_path.startswith("apps."):
-            dotted_path = f"apps.{dotted_path}"
-        self.original_path = dotted_path
+    def __init__(self, dotted_path: str, *, isolated: bool = False):
+        self.isolated = isolated
 
-        self.dotted_path = self._normalize_path(dotted_path)
+        if isolated:
+            # In isolated mode the caller passes a bare app name (no namespace).
+            # We skip the 'apps.' prepend and the 2-segment validation entirely,
+            # so the creator can write into an arbitrary temp directory without
+            # touching the real project tree.
+            self.original_path = dotted_path
+            self.dotted_path = dotted_path.lower()
+        else:
+            if not dotted_path.startswith("apps."):
+                dotted_path = f"apps.{dotted_path}"
+            self.original_path = dotted_path
+            self.dotted_path = self._normalize_path(dotted_path)
+
         self.project_root = Path.cwd()
         self.settings_path = os.path.join(self.project_root, "config", "settings.py")
         self.urls_path = os.path.join(self.project_root, "config", "urls.py")
@@ -34,6 +44,11 @@ class DjangoAppCreator:
 
     def _create_directories(self):
         os.makedirs(self.app_dir, exist_ok=True)
+        if self.isolated:
+            # In isolated mode the app lives directly under project_root with no
+            # intermediate namespace package, so there are no parent __init__.py
+            # files to create.
+            return
         parts = self.dotted_path.replace(".", "/").split("/")
         for i in range(1, len(parts)):
             init_dir = os.path.join(self.project_root, *parts[:i])
