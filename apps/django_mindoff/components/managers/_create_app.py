@@ -11,20 +11,11 @@ init_file_name = "__init__.py"
 class DjangoAppCreator:
     def __init__(self, dotted_path: str, *, isolated: bool = False):
         self.isolated = isolated
+        if not self.isolated and not dotted_path.startswith("apps."):
+            dotted_path = f"apps.{dotted_path}"
+        self.original_path = dotted_path
 
-        if isolated:
-            # In isolated mode the caller passes a bare app name (no namespace).
-            # We skip the 'apps.' prepend and the 2-segment validation entirely,
-            # so the creator can write into an arbitrary temp directory without
-            # touching the real project tree.
-            self.original_path = dotted_path
-            self.dotted_path = dotted_path.lower()
-        else:
-            if not dotted_path.startswith("apps."):
-                dotted_path = f"apps.{dotted_path}"
-            self.original_path = dotted_path
-            self.dotted_path = self._normalize_path(dotted_path)
-
+        self.dotted_path = self._normalize_path(dotted_path)
         self.project_root = Path.cwd()
         self.settings_path = os.path.join(self.project_root, "config", "settings.py")
         self.urls_path = os.path.join(self.project_root, "config", "urls.py")
@@ -33,7 +24,7 @@ class DjangoAppCreator:
 
     def _normalize_path(self, dotted_path: str) -> str:
         app_names = dotted_path.split(".")
-        if len(app_names) != 2:
+        if not self.isolated and len(app_names) != 2:
             raise ValueError(f"Invalid App Name '{dotted_path}'")
         normalized = [app_names[0]] + [p.lower() for p in app_names[1:]]
         if any(not p for p in normalized):
@@ -179,10 +170,12 @@ class DjangoAppCreator:
         self._overwrite_apps_py()
         self._create_urls_py()
         self._create_serializers_py()
-        self._patch_models_py()
+        if not self.isolated:
+            self._patch_models_py()
         self._setup_tests_folder()
-        self._update_settings()
-        self._update_project_urls()
+        if not self.isolated:
+            self._update_settings()
+            self._update_project_urls()
 
         print(f"[OK] App creation complete for: {self.dotted_path}.")
 

@@ -26,6 +26,10 @@ class TestMoCallApi(MindoffTestCase):
                 return_value=api_cls,
             ),
             patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
                 "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
             ),
             patch.object(
@@ -83,6 +87,10 @@ class TestMoCallApi(MindoffTestCase):
                 return_value=_make_api_cls(method="get"),
             ),
             patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
                 "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
             ) as mock_rev,
             patch.object(self.client, "get", return_value=_make_raw_response()),
@@ -96,6 +104,10 @@ class TestMoCallApi(MindoffTestCase):
             patch(
                 "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
                 return_value=_make_api_cls(method="get"),
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
             ),
             patch(
                 "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
@@ -129,6 +141,10 @@ class TestMoCallApi(MindoffTestCase):
                 return_value=_make_api_cls(method="get"),
             ),
             patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
                 "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
             ),
             patch.object(self.client, "get", return_value=_make_raw_response()),
@@ -143,6 +159,10 @@ class TestMoCallApi(MindoffTestCase):
             patch(
                 "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
                 return_value=_make_api_cls(method="get"),
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
             ),
             patch(
                 "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
@@ -161,6 +181,10 @@ class TestMoCallApi(MindoffTestCase):
                 return_value=_make_api_cls(method="get"),
             ),
             patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
                 "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
             ),
             patch.object(self.client, "get", return_value=_make_raw_response()) as mock,
@@ -170,25 +194,105 @@ class TestMoCallApi(MindoffTestCase):
         assert sent.get("Accept") == "application/json"
         assert sent.get("X-Custom") == "value"
 
+    def test_mutation_method_content_type_auto_set(self):
+        """POST/PUT/PATCH without explicit Content-Type → application/json injected."""
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                return_value=_make_api_cls(method="post"),
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
+            ),
+            patch.object(
+                self.client, "post", return_value=_make_raw_response()
+            ) as mock,
+        ):
+            self.mo_call_api(self.API_URL_NAME, payload={"x": 1})
+        sent = mock.call_args.kwargs.get("headers", {})
+        assert sent.get("Content-Type") == "application/json"
+
+    def test_callback_without_view_class_or_version_map_raises_with_message(self):
+        """Callback with neither view_class nor VERSION_MAP → ImproperlyConfigured."""
+        from django.core.exceptions import ImproperlyConfigured
+
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                side_effect=ImproperlyConfigured("no view_class or VERSION_MAP"),
+            ),
+        ):
+            with pytest.raises(
+                ImproperlyConfigured, match="no view_class or VERSION_MAP"
+            ):
+                self.mo_call_api(self.API_URL_NAME)
+
+    def test_version_not_in_version_map_raises_key_error(self):
+        """Version present in url_kwargs but absent from VERSION_MAP → KeyError."""
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=True,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                side_effect=KeyError("Version 99 not registered"),
+            ),
+        ):
+            with pytest.raises(KeyError):
+                self.mo_call_api(self.API_URL_NAME, url_kwargs={"version": 99})
+
+    def test_content_type_not_overwritten_when_caller_provides_it(self):
+        """If caller passes Content-Type in headers, it is not replaced by application/json."""
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                return_value=_make_api_cls(method="post"),
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
+            ),
+            patch.object(
+                self.client, "post", return_value=_make_raw_response()
+            ) as mock,
+        ):
+            self.mo_call_api(
+                self.API_URL_NAME,
+                payload={"x": 1},
+                headers={"Content-Type": "multipart/form-data"},
+            )
+        sent = mock.call_args.kwargs.get("headers", {})
+        assert sent.get("Content-Type") == "multipart/form-data"
+
     def test_queue_mode_api_returns_direct_response(self):
-        """Queue-mode APIs are forced into direct mode during tests and return run() output directly."""
+        """Queue-mode APIs are forced into direct mode and return the response directly."""
         direct_response = _make_raw_response(
             body={"message": {"code": "SUCCESS"}, "data": {"ok": 1}}
         )
-
-        def _fake_reverse(name, kwargs=None, args=None):
-            if name == self.API_URL_NAME:
-                return "/enqueue/"
-            raise AssertionError(f"Unexpected reverse call: {name}")
-
         with (
             patch(
                 "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
                 return_value=_make_api_cls(method="get", process_mode="queue"),
             ),
             patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
                 "apps.django_mindoff.components.tdd_kit.reverse",
-                side_effect=_fake_reverse,
+                return_value="/enqueue/",
             ),
             patch.object(self.client, "get", return_value=direct_response) as mock_get,
         ):
@@ -198,7 +302,7 @@ class TestMoCallApi(MindoffTestCase):
         assert mock_get.call_count == 1
 
     def test_queue_mode_api_sets_and_clears_force_direct_flag(self):
-        """_test_force_direct.active is True during dispatch and always cleaned up after."""
+        """_test_force_direct.active is True during dispatch and cleaned up after."""
         from apps.django_mindoff.components.api_kit import _test_force_direct
 
         observed_during: list[bool] = []
@@ -216,6 +320,10 @@ class TestMoCallApi(MindoffTestCase):
                 return_value=_make_api_cls(method="get", process_mode="queue"),
             ),
             patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
                 "apps.django_mindoff.components.tdd_kit.reverse",
                 return_value="/enqueue/",
             ),
@@ -225,6 +333,57 @@ class TestMoCallApi(MindoffTestCase):
 
         assert observed_during == [True]
         assert getattr(_test_force_direct, "active", False) is False
+
+    def test_extra_kwargs_forwarded_to_client(self):
+        """**extra kwargs are forwarded to the underlying client call."""
+        _, mock = self._patched_call(
+            _make_api_cls(method="get"), "get", REMOTE_ADDR="1.2.3.4"
+        )
+        assert mock.call_count == 1
+
+    def test_force_direct_reset_even_when_client_raises(self):
+        """_test_force_direct.active is False after an exception in dispatch."""
+        from apps.django_mindoff.components.api_kit import _test_force_direct
+
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                return_value=_make_api_cls(method="get"),
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
+            ),
+            patch.object(self.client, "get", side_effect=RuntimeError("boom")),
+        ):
+            with pytest.raises(RuntimeError):
+                self.mo_call_api(self.API_URL_NAME)
+
+        assert getattr(_test_force_direct, "active", False) is False
+
+    # ✅ ACCEPTANCE — versioned URL ───────────────────────────────────────
+
+    def test_versioned_url_happy_path(self):
+        """Versioned API with version in url_kwargs dispatches correctly."""
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=True,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                return_value=_make_api_cls(method="get"),
+            ) as mock_attrs,
+            patch(
+                "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
+            ),
+            patch.object(self.client, "get", return_value=_make_raw_response()),
+        ):
+            self.mo_call_api(self.API_URL_NAME, url_kwargs={"version": 1})
+        mock_attrs.assert_called_once_with(self.API_URL_NAME, version=1)
 
     # 🚫 REJECTION ────────────────────────────────────────────────────────
 
@@ -243,11 +402,58 @@ class TestMoCallApi(MindoffTestCase):
                 return_value=_make_api_cls(method=method),
             ),
             patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
                 "apps.django_mindoff.components.tdd_kit.reverse", return_value="/fake/"
             ),
         ):
             with pytest.raises(Exception):
                 self.mo_call_api(self.API_URL_NAME, payload=payload)
+
+    def test_versioned_url_missing_version_in_kwargs_raises(self):
+        """Versioned API without 'version' in url_kwargs → ValueError."""
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=True,
+            ),
+        ):
+            with pytest.raises(ValueError, match="version"):
+                self.mo_call_api(self.API_URL_NAME)
+
+    def test_unknown_url_name_raises_lookup_error(self):
+        """URL name not registered in resolver → LookupError from _get_api_cls_attributes."""
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=False,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                side_effect=LookupError("No URL found"),
+            ),
+        ):
+            with pytest.raises(LookupError):
+                self.mo_call_api("nonexistent_url_name")
+
+    def test_empty_version_map_raises_improperly_configured(self):
+        """Router whose VERSION_MAP is empty → ImproperlyConfigured raised before dispatch."""
+        from django.core.exceptions import ImproperlyConfigured
+
+        with (
+            patch(
+                "apps.django_mindoff.components.tdd_kit._is_versioned_url",
+                return_value=True,
+            ),
+            patch(
+                "apps.django_mindoff.components.tdd_kit._get_api_cls_attributes",
+                side_effect=ImproperlyConfigured("empty VERSION_MAP"),
+            ),
+        ):
+            with pytest.raises(ImproperlyConfigured):
+                self.mo_call_api(self.API_URL_NAME, url_kwargs={"version": 1})
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -338,6 +544,34 @@ class TestMoAssertApiResponse(MindoffTestCase):
         resp.content = b""
         self._assert(resp, expected_response_type="binary")
 
+    def test_binary_empty_content_type_fails(self):
+        """Binary response with empty Content-Type must fail."""
+        resp = _make_raw_response(
+            content_type="application/octet-stream", body=b"\xde\xad"
+        )
+        resp.headers = {"Content-Type": ""}
+        with pytest.raises(AssertionError):
+            self._assert(resp, expected_response_type="binary")
+
+    def test_binary_with_json_content_type_fails(self):
+        """Binary declared but JSON Content-Type → assertion error."""
+        resp = _make_raw_response(content_type="application/json", body=b"\xff\xfe")
+        with pytest.raises(AssertionError):
+            self._assert(resp, expected_response_type="binary")
+
+    def test_binary_non_bytes_content_fails(self):
+        """Binary response whose .content is a str (not bytes) must fail."""
+        resp = _make_raw_response(content_type="application/octet-stream", body=b"ok")
+        resp.content = "not-bytes"
+        with pytest.raises(AssertionError):
+            self._assert(resp, expected_response_type="binary")
+
+    def test_others_with_non_200_status_passes_when_expected(self):
+        """expected_response_type='others' with explicit non-200 status passes."""
+        resp = _make_raw_response(content_type="application/x-custom", body=b"\x01")
+        resp.status_code = 202
+        self._assert(resp, expected_response_type="others", expected_status_code=202)
+
     # 🚫 REJECTION ────────────────────────────────────────────────────────
 
     def test_none_response_fails(self):
@@ -376,31 +610,27 @@ class TestMoCreateUser(MindoffTestCase):
         assert get_user_model().objects.filter(pk=user.pk).exists()
 
     def test_creates_user_with_explicit_username(self):
-        """Explicit username → user created with that username."""
         user = self.mo_create_user(username="alice")
         assert user.username == "alice"
 
     def test_password_is_set_and_usable(self):
-        """Created user has a hashed, usable password."""
-        password = uuid.uuid4().hex
-        user = self.mo_create_user(username="bob", password=password)
-        assert user.check_password(password)
+        code = "s3cur3!"
+        user = self.mo_create_user(username="bob", password=code)
+        assert user.check_password(code)
 
     def test_duplicate_username_returns_existing_user(self):
-        """Calling mo_create_user twice with the same username returns the same object."""
         user1 = self.mo_create_user(username="carol")
         user2 = self.mo_create_user(username="carol")
         assert user1.pk == user2.pk
 
     def test_extra_fields_are_applied(self):
-        """kwargs beyond username/password are forwarded to baker.make."""
         user = self.mo_create_user(username="dave", email="dave@example.com")
         assert user.email == "dave@example.com"
 
     # 🚧 BOUNDARY ────────────────────────────────────────────────────────
 
     def test_none_password_skips_set_password(self):
-        """password=None → set_password never called; user is still created."""
+        """password=None → user created without a usable password."""
         user = self.mo_create_user(username="nopw", password=None)
         assert user.pk is not None
 
@@ -412,14 +642,9 @@ class TestMoCreateUser(MindoffTestCase):
 
 @pytest.mark.django_db
 class TestMindoffRouterTestCase(MindoffTestCase):
-    """
-    Unit-tests for the two built-in router assertions in MindoffRouterTestCase,
-    exercised directly without subclassing (avoids needing a real router module).
-    """
+    """Unit-tests for the two built-in router assertions in MindoffRouterTestCase."""
 
     def _make_router_case(self, version_map: dict):
-        """Build a throwaway MindoffRouterTestCase instance wired to a fake router."""
-
         class FakeRouter:
             VERSION_MAP = version_map
 
@@ -449,25 +674,24 @@ class TestMindoffRouterTestCase(MindoffTestCase):
     # ✅ ACCEPTANCE ───────────────────────────────────────────────────────
 
     def test_every_version_dispatches_to_correct_class(self):
-        """Each VERSION_MAP entry calls as_view() exactly once on the right class."""
-        from unittest.mock import MagicMock, patch
-        from django.test import RequestFactory
-
         class V1View:
-            pass
+            @classmethod
+            def as_view(cls):
+                return lambda request, **kwargs: None
 
         class V2View:
-            pass
+            @classmethod
+            def as_view(cls):
+                return lambda request, **kwargs: None
 
         case = self._make_router_case({1: V1View, 2: V2View})
-        # Delegate to the built-in test — it should not raise
         case.test_every_version_dispatches_to_correct_class()
 
     def test_unknown_version_returns_404_with_correct_body(self):
-        """Version absent from VERSION_MAP → 404 with INVALID_API_VERSION body."""
-
         class V1View:
-            pass
+            @classmethod
+            def as_view(cls):
+                return lambda request, **kwargs: None
 
         case = self._make_router_case({1: V1View})
         case.test_unknown_version_returns_404_with_correct_body()
@@ -475,17 +699,16 @@ class TestMindoffRouterTestCase(MindoffTestCase):
     # 🚫 REJECTION ────────────────────────────────────────────────────────
 
     def test_wrong_version_dispatches_to_wrong_class_fails(self):
-        """If router dispatches to the wrong class, the assertion fails."""
-        from unittest.mock import patch, MagicMock
-        from django.test import RequestFactory
-
         class RightView:
-            pass
+            @classmethod
+            def as_view(cls):
+                return lambda request, **kwargs: None
 
         class WrongView:
-            pass
+            @classmethod
+            def as_view(cls):
+                return lambda request, **kwargs: None
 
-        # Build a router that always dispatches to WrongView regardless of version
         class BadRouter:
             VERSION_MAP = {1: RightView}
 
@@ -503,18 +726,55 @@ class TestMindoffRouterTestCase(MindoffTestCase):
         with pytest.raises(AssertionError):
             instance.test_every_version_dispatches_to_correct_class()
 
-    def test_correct_404_body_missing_code_fails(self):
-        """Router returning 404 without INVALID_API_VERSION code → assertion fails."""
+    def test_404_available_versions_mismatch_fails(self):
+        """Router returning correct code but wrong available_versions set → assertion fails."""
         from rest_framework.response import Response
 
         class V1View:
-            pass
+            @classmethod
+            def as_view(cls):
+                return lambda request, **kwargs: None
+
+        class V2View:
+            @classmethod
+            def as_view(cls):
+                return lambda request, **kwargs: None
+
+        class BadRouter:
+            VERSION_MAP = {1: V1View, 2: V2View}
+
+            def __call__(self, request, version):
+                return Response(
+                    {
+                        "message": {"code": "INVALID_API_VERSION"},
+                        "data": {"available_versions": [1]},
+                    },
+                    status=404,
+                )
+
+        class ConcreteRouterCase(MindoffRouterTestCase):
+            app_module = "__fake__"
+            router_function_name = "bad_router"
+
+        instance = ConcreteRouterCase()
+        instance.router = BadRouter()
+        instance.version_map = {1: V1View, 2: V2View}
+
+        with pytest.raises(AssertionError):
+            instance.test_unknown_version_returns_404_with_correct_body()
+
+    def test_correct_404_body_missing_code_fails(self):
+        from rest_framework.response import Response
+
+        class V1View:
+            @classmethod
+            def as_view(cls):
+                return lambda request, **kwargs: None
 
         class BadRouter:
             VERSION_MAP = {1: V1View}
 
             def __call__(self, request, version):
-                # Returns 404 but with wrong body structure
                 return Response(
                     {"message": {"code": "WRONG_CODE"}, "data": {}}, status=404
                 )
