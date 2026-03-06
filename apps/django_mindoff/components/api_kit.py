@@ -25,157 +25,18 @@ from rest_framework.exceptions import (
 )
 from ._api_kit.api_router import BaseVersionRouter
 
-
+# ----------------
+# Constants
+# ----------------
 ALLOWED_METHODS = ["get", "post", "put", "delete"]
 ALLOWED_PROCESS_MODES = ["direct", "queue"]
-
-# Expected shape of a single progress-step entry:
-#   { "label": <str>, "percent": <int 0-100> }
 _PROGRESS_STEP_REQUIRED_KEYS = {"label", "percent"}
-
-# ─── Test override ───────────────────────────────────────────────────────────
-# When `_test_force_direct.active` is True the mixin treats every request as
-# direct-mode, regardless of the `process_mode` class attribute.  The TDD kit
-# sets this flag so tests never need a real queue/worker/Redis.
 _test_force_direct = threading.local()
 
 
-def _is_queue_service_unavailable_error(exc: Exception) -> bool:
-    if isinstance(exc, (RedisError, ConnectionError, TimeoutError)):
-        return True
-    message = str(exc).lower()
-    return any(
-        token in message
-        for token in (
-            "connection refused",
-            "cannot connect",
-            "connection error",
-            "connection reset",
-        )
-    )
-
-
-def _is_cancel_requested(redis_state: dict) -> bool:
-    return redis_state.get("job_status") == "cancelled" or bool(
-        redis_state.get("is_cancel")
-    )
-
-
-def _validate_progress_steps(steps: dict, api_url_name: str):
-    """
-    Raise a configuration exception if ``progress_steps`` is malformed.
-
-    Rules
-    -----
-    * Must be a ``dict`` (or ``None`` / empty dict — both are valid).
-    * Each key must be a non-empty string (the checkpoint key).
-    * Each value must be a dict with exactly the keys ``"label"`` (str) and
-      ``"percent"`` (int, 0-100).
-    * Percent values must be strictly increasing so the progress bar never
-      goes backwards.
-    """
-    if not steps:
-        return  # progress_steps is optional
-
-    mo_validation_kit.ensure_type(
-        steps,
-        dict,
-        msg=f"`progress_steps` in `{api_url_name}` must be a dict",
-        is_exception=True,
-        code="API_CONFIG_ERR",
-    )
-
-    seen_percents = []
-    for key, value in steps.items():
-        mo_validation_kit.ensure_type(
-            key,
-            str,
-            msg=f"`progress_steps` key `{key!r}` in `{api_url_name}` must be a string",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        mo_validation_kit.ensure_truthy(
-            key.strip(),
-            msg=f"`progress_steps` key in `{api_url_name}` must not be empty",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        mo_validation_kit.ensure_type(
-            value,
-            dict,
-            msg=f"`progress_steps['{key}']` in `{api_url_name}` must be a dict",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        missing = _PROGRESS_STEP_REQUIRED_KEYS - set(value.keys())
-        mo_validation_kit.ensure_falsey(
-            missing,
-            msg=(
-                f"`progress_steps['{key}']` in `{api_url_name}` is missing "
-                f"required keys: {missing}"
-            ),
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        mo_validation_kit.ensure_type(
-            value["label"],
-            str,
-            msg=f"`progress_steps['{key}']['label']` in `{api_url_name}` must be a string",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        mo_validation_kit.ensure_truthy(
-            value["label"].strip(),
-            msg=f"`progress_steps['{key}']['label']` in `{api_url_name}` must not be empty",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        mo_validation_kit.ensure_type(
-            value["percent"],
-            int,
-            msg=f"`progress_steps['{key}']['percent']` in `{api_url_name}` must be an int",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        mo_validation_kit.ensure_greater_equal(
-            value["percent"],
-            1,
-            msg=(
-                f"`progress_steps['{key}']['percent']` in `{api_url_name}` "
-                f"must be between 1 and 99 (0 = queued, 100 = completed)"
-            ),
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        mo_validation_kit.ensure_lesser_equal(
-            value["percent"],
-            99,
-            msg=(
-                f"`progress_steps['{key}']['percent']` in `{api_url_name}` "
-                f"must be between 1 and 99 (0 = queued, 100 = completed)"
-            ),
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        seen_percents.append((key, value["percent"]))
-
-    # Strictly increasing check
-    for i in range(1, len(seen_percents)):
-        prev_key, prev_pct = seen_percents[i - 1]
-        curr_key, curr_pct = seen_percents[i]
-        mo_validation_kit.ensure_greater(
-            curr_pct,
-            prev_pct,
-            msg=(
-                f"`progress_steps` in `{api_url_name}`: percent for `{curr_key}` "
-                f"({curr_pct}) must be greater than `{prev_key}` ({prev_pct}). "
-                f"Steps must have strictly increasing percent values."
-            ),
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-
-
+# ----------------
+# Classes
+# ----------------
 class MindoffAPIMixin(APIView):
     # 1. API Identity
     api_url_name: str = ""
@@ -190,6 +51,7 @@ class MindoffAPIMixin(APIView):
     # 3. Execution Rules
     process_mode: Literal["direct", "queue"] = "direct"
     allow_duplicate_queue: bool = False
+    progress_steps: dict | None = None
 
     # 4. Request Rules
     payload_schema: list | dict | None = None
@@ -203,191 +65,6 @@ class MindoffAPIMixin(APIView):
     queue_status_stream_api_limit: int | None = 3
     queue_cancel_api_limit: str | None = "30/m"
     queue_retry_api_limit: str | None = "30/m"
-
-    # 6. Queue Progress Steps
-    #
-    # Declare the checkpoints your ``run()`` method will report.  Each key is
-    # the string you pass to ``progress_checkpoint()``.  Percent values must
-    # be strictly increasing and in the range 1-99 (0 is reserved for
-    # "queued", 100 for "completed").
-    #
-    # Example::
-    #
-    #     progress_steps: dict = {
-    #         "validate": {"label": "Validating",    "percent": 10},
-    #         "fetch":    {"label": "Fetching Data", "percent": 40},
-    #         "generate": {"label": "Generating",    "percent": 80},
-    #     }
-    progress_steps: dict | None = None
-
-    # ─── Progress checkpoint ────────────────────────────────────────────────
-
-    def progress_checkpoint(
-        self,
-        request,
-        checkpoint_key: str,
-        *,
-        msg: str | None = None,
-    ):
-        """
-        Report progress and check for a pending cancellation.
-
-        Parameters
-        ----------
-        request:
-            The request object forwarded to ``run()``.  Must have a
-            ``queue_task_uuid`` attribute (set automatically by the worker).
-        checkpoint_key:
-            A key that **must** exist in ``self.progress_steps``.  The
-            corresponding ``label`` and ``percent`` are looked up automatically.
-        msg:
-            Optional override for ``current_message``.  When omitted the step
-            label is used as the message.
-
-        Notes
-        -----
-        * The same checkpoint key **can** be called multiple times — each call
-          simply updates ``current_message`` while keeping the same percent and
-          step label.  This is useful to emit fine-grained status messages
-          within a single logical step.
-        * If a cancellation has been requested this method raises
-          ``MindoffValidationError`` with code ``"QUEUE_TASK_CANCELLED"``,
-          which the worker catches and handles gracefully.
-        * In ``direct`` process mode (no queue) the method is a no-op so the
-          same ``run()`` code works unchanged.
-        """
-        queue_task_uuid = getattr(request, "queue_task_uuid", None)
-        if not queue_task_uuid:
-            # Direct (non-queue) mode — nothing to do.
-            return
-
-        # ── Resolve step metadata ──────────────────────────────────────────
-        steps = self.progress_steps or {}
-        mo_validation_kit.ensure_truthy(
-            checkpoint_key in steps,
-            msg=(
-                f"progress_checkpoint called with unknown key '{checkpoint_key}'. "
-                f"Available keys: {list(steps.keys())}"
-            ),
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        step_cfg = steps[checkpoint_key]
-        percent = step_cfg["percent"]
-        label = step_cfg["label"]
-        message = msg if msg is not None else label
-
-        # ── Check for cancellation BEFORE writing progress ─────────────────
-        redis_state = get_queue_status(str(queue_task_uuid))
-        if _is_cancel_requested(redis_state):
-            mark_cancelled(str(queue_task_uuid))
-            raise MindoffValidationError(
-                message="Queue task was cancelled",
-                code="QUEUE_TASK_CANCELLED",
-                category="warning",
-                data={"queue_id": str(queue_task_uuid), "status": "cancelled"},
-            )
-
-        # ── Write progress ─────────────────────────────────────────────────
-        update_progress(
-            queue_task_uuid,
-            progress=percent,
-            step=label,
-            message=message,
-        )
-
-    # ─── Abstract entrypoint ────────────────────────────────────────────────
-
-    def run(self, request, *args, **kwargs):
-        raise NotImplementedError("You must implement run() in your API class")
-
-    # ─── HTTP method dispatch ───────────────────────────────────────────────
-
-    def get(self, request, *args, **kwargs):
-        return self._handle_request_logic(request, *args, **kwargs)
-
-    def post(self, request, *args, **kwargs):
-        return self._handle_request_logic(request, *args, **kwargs)
-
-    def put(self, request, *args, **kwargs):
-        return self._handle_request_logic(request, *args, **kwargs)
-
-    def delete(self, request, *args, **kwargs):
-        return self._handle_request_logic(request, *args, **kwargs)
-
-    # ─── Core request logic ─────────────────────────────────────────────────
-
-    def _handle_request_logic(self, request, *args, **kwargs):
-        # In test mode the TDD kit sets _test_force_direct.active = True so
-        # queue-mode APIs are exercised synchronously without any worker or
-        # Redis infrastructure.
-        effective_mode = (
-            "direct"
-            if getattr(_test_force_direct, "active", False)
-            else self.process_mode
-        )
-
-        if effective_mode == "queue":
-            mo_validation_kit.ensure_falsey(
-                bool(request.FILES),
-                msg="Asynchronous API does not support multipart or file uploads.",
-            )
-            try:
-                queue_id = enqueue_process(
-                    request=request,
-                    api_instance=self,
-                    args=args,
-                    kwargs=kwargs,
-                )
-            except Exception as exc:
-                if _is_queue_service_unavailable_error(exc):
-                    raise MindoffValidationError(
-                        message=(
-                            "Queuing service is currently unavailable. Please try again later."
-                        ),
-                        code="QUEUE_SERVICE_UNAVAILABLE",
-                        category="danger",
-                        data={"process_mode": "queue"},
-                    )
-                raise
-            mo_validation_kit.ensure_truthy(
-                queue_id,
-                msg="Failed to start the process. Please try again.",
-            )
-
-            response_url = request.build_absolute_uri(
-                reverse("mo_queue_detail", args=[queue_id])
-            )
-            status_stream_url = request.build_absolute_uri(
-                reverse("mo_queue_status_stream", args=[queue_id])
-            )
-            cancel_url = request.build_absolute_uri(
-                reverse("mo_queue_cancel", args=[queue_id])
-            )
-            retry_url = request.build_absolute_uri(
-                reverse("mo_queue_retry", args=[queue_id])
-            )
-            return mo_response_kit.json_response(
-                code="QUEUED",
-                category="success",
-                data={
-                    "queue_id": queue_id,
-                    "response_url": response_url,
-                    "status_stream_url": status_stream_url,
-                    "cancel_url": cancel_url,
-                    "retry_url": retry_url,
-                    "progress_steps": (
-                        self.progress_steps
-                        if isinstance(self.progress_steps, dict)
-                        else {}
-                    )
-                    or {},
-                },
-            )
-
-        return self.run(request, *args, **kwargs)
-
-    # ─── DRF dispatch + exception handling ──────────────────────────────────
 
     def dispatch(self, request, *args, **kwargs):
         try:
@@ -404,8 +81,6 @@ class MindoffAPIMixin(APIView):
             response.accepted_media_type = "application/json"
             response.renderer_context = self.get_renderer_context()
         return response
-
-    # ─── Validation called during initial() ─────────────────────────────────
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
@@ -439,8 +114,6 @@ class MindoffAPIMixin(APIView):
 
     def _initial_validate_request_payload(self, request):
         payload = request.data if request.data not in (None, "") else {}
-
-        # 1. Payload size check
         if self.max_payload_size is not None:
             content_length = request.META.get("CONTENT_LENGTH")
             if content_length:
@@ -451,9 +124,6 @@ class MindoffAPIMixin(APIView):
                     msg=f"Payload too large: {size_mb:.2f} MB (Limit: {self.max_payload_size} MB)",
                     code="PAYLOAD_TOO_LARGE",
                 )
-
-        # 2. Payload depth check
-        # 3. Payload schema check
         if self.payload_validation is not None:
             if self.payload_schema is None:
                 mo_validation_kit.ensure_falsey(
@@ -468,8 +138,6 @@ class MindoffAPIMixin(APIView):
                     max_nesting_depth=self.max_payload_depth,
                     validation_mode=self.payload_validation,
                 )
-
-    # ─── Full class-level configuration validation ───────────────────────────
 
     def validate_api_configuration(self):
         for attr_name in ("authentication_classes", "permission_classes"):
@@ -494,7 +162,6 @@ class MindoffAPIMixin(APIView):
                     is_exception=True,
                     code="API_CONFIG_ERR",
                 )
-
         mo_validation_kit.ensure_truthy(
             self.method,
             msg=f"A valid method must be configured in `{self.api_url_name}` API",
@@ -524,7 +191,6 @@ class MindoffAPIMixin(APIView):
             is_exception=True,
             code="API_CONFIG_ERR",
         )
-
         resolver = get_resolver()
         matches = (
             [self.api_url_name] if self.api_url_name in resolver.reverse_dict else []
@@ -542,7 +208,6 @@ class MindoffAPIMixin(APIView):
             is_exception=True,
             code="API_CONFIG_ERR",
         )
-
         mo_validation_kit.ensure_truthy(
             self.api_name,
             msg="`api_name` must not be empty or None",
@@ -655,10 +320,7 @@ class MindoffAPIMixin(APIView):
             is_exception=True,
             code="API_CONFIG_ERR",
         )
-
-        # ── Validate progress_steps ─────────────────────────────────────────
         if self.progress_steps is not None:
-            # progress_steps only make sense for queue-mode APIs
             mo_validation_kit.ensure_equal(
                 self.process_mode,
                 "queue",
@@ -672,7 +334,125 @@ class MindoffAPIMixin(APIView):
             )
             _validate_progress_steps(self.progress_steps, self.api_url_name)
 
-    # ─── Exception handler ───────────────────────────────────────────────────
+    def get(self, request, *args, **kwargs):
+        return self._handle_request_logic(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        return self._handle_request_logic(request, *args, **kwargs)
+
+    def put(self, request, *args, **kwargs):
+        return self._handle_request_logic(request, *args, **kwargs)
+
+    def delete(self, request, *args, **kwargs):
+        return self._handle_request_logic(request, *args, **kwargs)
+
+    def _handle_request_logic(self, request, *args, **kwargs):
+        effective_mode = (
+            "direct"
+            if getattr(_test_force_direct, "active", False)
+            else self.process_mode
+        )
+        if effective_mode == "queue":
+            mo_validation_kit.ensure_falsey(
+                bool(request.FILES),
+                msg="Asynchronous API does not support multipart or file uploads.",
+            )
+            try:
+                queue_id = enqueue_process(
+                    request=request,
+                    api_instance=self,
+                    args=args,
+                    kwargs=kwargs,
+                )
+            except Exception as exc:
+                if _is_queue_service_unavailable_error(exc):
+                    raise MindoffValidationError(
+                        message=(
+                            "Queuing service is currently unavailable. Please try again later."
+                        ),
+                        code="QUEUE_SERVICE_UNAVAILABLE",
+                        category="danger",
+                        data={"process_mode": "queue"},
+                    )
+                raise
+            mo_validation_kit.ensure_truthy(
+                queue_id,
+                msg="Failed to start the process. Please try again.",
+            )
+            response_url = request.build_absolute_uri(
+                reverse("mo_queue_detail", args=[queue_id])
+            )
+            status_stream_url = request.build_absolute_uri(
+                reverse("mo_queue_status_stream", args=[queue_id])
+            )
+            cancel_url = request.build_absolute_uri(
+                reverse("mo_queue_cancel", args=[queue_id])
+            )
+            retry_url = request.build_absolute_uri(
+                reverse("mo_queue_retry", args=[queue_id])
+            )
+            return mo_response_kit.json_response(
+                code="QUEUED",
+                category="success",
+                data={
+                    "queue_id": queue_id,
+                    "response_url": response_url,
+                    "status_stream_url": status_stream_url,
+                    "cancel_url": cancel_url,
+                    "retry_url": retry_url,
+                    "progress_steps": (
+                        self.progress_steps
+                        if isinstance(self.progress_steps, dict)
+                        else {}
+                    )
+                    or {},
+                },
+            )
+
+        return self.run(request, *args, **kwargs)
+
+    def run(self, request, *args, **kwargs):
+        raise NotImplementedError("You must implement run() in your API class")
+
+    def progress_checkpoint(
+        self,
+        request,
+        checkpoint_key: str,
+        *,
+        msg: str | None = None,
+    ):
+        queue_task_uuid = getattr(request, "queue_task_uuid", None)
+        if not queue_task_uuid:
+            return
+        steps = self.progress_steps or {}
+        mo_validation_kit.ensure_truthy(
+            checkpoint_key in steps,
+            msg=(
+                f"progress_checkpoint called with unknown key '{checkpoint_key}'. "
+                f"Available keys: {list(steps.keys())}"
+            ),
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        step_cfg = steps[checkpoint_key]
+        percent = step_cfg["percent"]
+        label = step_cfg["label"]
+        message = msg if msg is not None else label
+        redis_state = get_queue_status(str(queue_task_uuid))
+        if _is_cancel_requested(redis_state):
+            mark_cancelled(str(queue_task_uuid))
+            raise MindoffValidationError(
+                message="Queue task was cancelled",
+                code="QUEUE_TASK_CANCELLED",
+                category="warning",
+                data={"queue_id": str(queue_task_uuid), "status": "cancelled"},
+            )
+        update_progress(
+            queue_task_uuid,
+            progress=percent,
+            step=label,
+            message=message,
+        )
 
     def handle_exception(self, exc):
         if isinstance(exc, NotAuthenticated):
@@ -691,16 +471,13 @@ class MindoffAPIMixin(APIView):
             return mo_response_kit.json_response(
                 code="RATE_LIMITED", category="warning"
             )
-
         code = getattr(exc, "code", None) or "UNEXPECTED_ERR"
         category = getattr(exc, "category", None) or "danger"
         data = getattr(exc, "data", None) or []
-
         if isinstance(exc, MindoffValidationError):
             return mo_response_kit.json_response(
                 code=code, category=category, data=data
             )
-
         return mo_response_kit.json_response(
             code=code,
             category=category,
@@ -709,11 +486,9 @@ class MindoffAPIMixin(APIView):
         )
 
 
-# ────────────────────────────────────────────────
-# Function-based view decorator
-# ────────────────────────────────────────────────
-
-
+# ----------------
+# Functions
+# ----------------
 def api_guardian(func):
     @wraps(func)
     def wrapper(request, *args, **kwargs):
@@ -752,10 +527,132 @@ def api_guardian(func):
     return wrapper
 
 
-# ────────────────────────────────────────────────
-# Entry Point
-# ────────────────────────────────────────────────
+# ----------------
+# Helper Functions
+# ----------------
+def _is_queue_service_unavailable_error(exc: Exception) -> bool:
+    if isinstance(exc, (RedisError, ConnectionError, TimeoutError)):
+        return True
+    message = str(exc).lower()
+    return any(
+        token in message
+        for token in (
+            "connection refused",
+            "cannot connect",
+            "connection error",
+            "connection reset",
+        )
+    )
 
+
+def _is_cancel_requested(redis_state: dict) -> bool:
+    return redis_state.get("job_status") == "cancelled" or bool(
+        redis_state.get("is_cancel")
+    )
+
+
+def _validate_progress_steps(steps: dict, api_url_name: str):
+    if not steps:
+        return
+    mo_validation_kit.ensure_type(
+        steps,
+        dict,
+        msg=f"`progress_steps` in `{api_url_name}` must be a dict",
+        is_exception=True,
+        code="API_CONFIG_ERR",
+    )
+    seen_percents = []
+    for key, value in steps.items():
+        mo_validation_kit.ensure_type(
+            key,
+            str,
+            msg=f"`progress_steps` key `{key!r}` in `{api_url_name}` must be a string",
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        mo_validation_kit.ensure_truthy(
+            key.strip(),
+            msg=f"`progress_steps` key in `{api_url_name}` must not be empty",
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        mo_validation_kit.ensure_type(
+            value,
+            dict,
+            msg=f"`progress_steps['{key}']` in `{api_url_name}` must be a dict",
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        missing = _PROGRESS_STEP_REQUIRED_KEYS - set(value.keys())
+        mo_validation_kit.ensure_falsey(
+            missing,
+            msg=(
+                f"`progress_steps['{key}']` in `{api_url_name}` is missing "
+                f"required keys: {missing}"
+            ),
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        mo_validation_kit.ensure_type(
+            value["label"],
+            str,
+            msg=f"`progress_steps['{key}']['label']` in `{api_url_name}` must be a string",
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        mo_validation_kit.ensure_truthy(
+            value["label"].strip(),
+            msg=f"`progress_steps['{key}']['label']` in `{api_url_name}` must not be empty",
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        mo_validation_kit.ensure_type(
+            value["percent"],
+            int,
+            msg=f"`progress_steps['{key}']['percent']` in `{api_url_name}` must be an int",
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        mo_validation_kit.ensure_greater_equal(
+            value["percent"],
+            1,
+            msg=(
+                f"`progress_steps['{key}']['percent']` in `{api_url_name}` "
+                f"must be between 1 and 99 (0 = queued, 100 = completed)"
+            ),
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        mo_validation_kit.ensure_lesser_equal(
+            value["percent"],
+            99,
+            msg=(
+                f"`progress_steps['{key}']['percent']` in `{api_url_name}` "
+                f"must be between 1 and 99 (0 = queued, 100 = completed)"
+            ),
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        seen_percents.append((key, value["percent"]))
+    for i in range(1, len(seen_percents)):
+        prev_key, prev_pct = seen_percents[i - 1]
+        curr_key, curr_pct = seen_percents[i]
+        mo_validation_kit.ensure_greater(
+            curr_pct,
+            prev_pct,
+            msg=(
+                f"`progress_steps` in `{api_url_name}`: percent for `{curr_key}` "
+                f"({curr_pct}) must be greater than `{prev_key}` ({prev_pct}). "
+                f"Steps must have strictly increasing percent values."
+            ),
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+
+
+# ----------------
+# Entry Point
+# ----------------
 mo_api_kit = SimpleNamespace(
     api_guardian=api_guardian,
     MindoffAPIMixin=MindoffAPIMixin,

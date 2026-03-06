@@ -96,11 +96,15 @@ class ColumnValidator:
         self, df: Union[pl.DataFrame, pl.LazyFrame], missing: set
     ) -> Tuple[Union[pl.DataFrame, pl.LazyFrame], str]:
         if self.is_add_missing_columns:
-            df = (
-                df.with_columns([pl.lit(None).alias(col) for col in missing])
-                if missing
-                else df
-            )
+            if missing:
+                is_zero_rows = (
+                    df.limit(1).collect().height == 0
+                    if isinstance(df, pl.LazyFrame)
+                    else df.height == 0
+                )
+                df = df.with_columns([pl.lit(None).alias(col) for col in missing])
+                if is_zero_rows:
+                    df = df.limit(0) if isinstance(df, pl.LazyFrame) else df.head(0)
         elif not self.is_add_missing_columns and missing:
             return df, f"Missing column(s): {', '.join(sorted(missing))}"
         return df, ""
@@ -149,10 +153,17 @@ class ColumnValidator:
                 expected_fields = set(field_map.keys())
                 current_fields = set(self._get_columns(df))
 
+                missing = expected_fields - current_fields
+                extra = current_fields - expected_fields
+
+                df, missing_error = self._handle_missing_columns(df, missing)
+                df, extra_error = self._handle_extra_columns(df, extra)
+
                 pk_field_name = model_cls._meta.pk.name
                 pk_db_column = (
                     getattr(model_cls._meta.pk, "db_column", None) or pk_field_name
                 )
+                current_fields = set(self._get_columns(df))
                 if (
                     pk_field_name not in current_fields
                     and pk_db_column not in current_fields
@@ -160,12 +171,6 @@ class ColumnValidator:
                     raise ValueError(
                         f"Missing required primary key column in {model_cls}: '{pk_field_name}' (db_column='{pk_db_column}')"
                     )
-
-                missing = expected_fields - current_fields
-                extra = current_fields - expected_fields
-
-                df, missing_error = self._handle_missing_columns(df, missing)
-                df, extra_error = self._handle_extra_columns(df, extra)
 
                 df = self._rename_to_db_column_names(df, field_map)
 

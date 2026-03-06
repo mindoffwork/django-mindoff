@@ -15,9 +15,11 @@ API_CLASS_TEMPLATE_NAME = "{{API_HUMAN_NAME}}"
 
 
 class DjangoApiCreator:
-    def __init__(self, api_path: str, url_paths: list[str] = None):
+    def __init__(
+        self, api_path: str, url_paths: list[str] = None, base_path: Path = None
+    ):
         self.api_path = api_path
-        self.base_path = Path.cwd() / "apps"
+        self.base_path = Path(base_path) if base_path else Path.cwd() / "apps"
         self.url_paths = url_paths or []
         self.original_app_name = None
         self.raw_api = None
@@ -33,6 +35,8 @@ class DjangoApiCreator:
     # ------------------------------------------------------------------
 
     def _normalize_app_name(self, dotted_path: str) -> str:
+        if self.base_path != Path.cwd() / "apps":
+            return dotted_path.lower()
         if not dotted_path.startswith("apps."):
             dotted_path = f"apps.{dotted_path}"
         app_names = dotted_path.split(".")

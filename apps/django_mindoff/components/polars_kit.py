@@ -6,7 +6,6 @@ import polars as pl
 import pathlib
 import uuid
 import tempfile
-from django.db import models
 from typeguard import typechecked
 
 from .validation_kit import mo_validation_kit
@@ -31,23 +30,23 @@ class MindoffPolarsKit:
     @typechecked
     def is_model_frms_empty(
         self,
-        model_frms: dict[type[models.Model], pl.DataFrame | pl.LazyFrame],
+        model_frms: dict[Any, pl.DataFrame | pl.LazyFrame],
     ) -> bool:
         return all(self.is_frm_empty(frm) for frm in model_frms.values())
 
     @typechecked
     def is_model_frms_not_empty(
         self,
-        model_frms: dict[type[models.Model], pl.DataFrame | pl.LazyFrame],
+        model_frms: dict[Any, pl.DataFrame | pl.LazyFrame],
     ) -> bool:
         return any(not self.is_frm_empty(frm) for frm in model_frms.values())
 
     @typechecked
     def collect_model_frms(
         self,
-        df_dict: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
+        df_dict: Dict[Any, Union[pl.DataFrame, pl.LazyFrame]],
         streaming: bool = True,
-    ) -> Dict[Type[models.Model], pl.DataFrame]:
+    ) -> Dict[Any, pl.DataFrame]:
         collected_model_frms = {}
         for model, frm in df_dict.items():
             if isinstance(frm, pl.LazyFrame):
@@ -59,8 +58,8 @@ class MindoffPolarsKit:
     @typechecked
     def sync_model_frms_type(
         self,
-        model_frms: dict[type[models.Model], pl.DataFrame | pl.LazyFrame],
-    ) -> dict[type[models.Model], pl.DataFrame | pl.LazyFrame]:
+        model_frms: dict[Any, pl.DataFrame | pl.LazyFrame],
+    ) -> dict[Any, pl.DataFrame | pl.LazyFrame]:
         any_lazy = any(isinstance(v, pl.LazyFrame) for v in model_frms.values())
         if not any_lazy:
             return model_frms
@@ -84,11 +83,11 @@ class MindoffPolarsKit:
     @typechecked
     def split_model_frms_on_null(
         self,
-        model_frms: dict[type[models.Model], pl.DataFrame | pl.LazyFrame],
+        model_frms: dict[Any, pl.DataFrame | pl.LazyFrame],
         column: str = "__error__info",
     ) -> tuple[
-        dict[type[models.Model], pl.DataFrame | pl.LazyFrame],
-        dict[type[models.Model], pl.DataFrame | pl.LazyFrame],
+        dict[Any, pl.DataFrame | pl.LazyFrame],
+        dict[Any, pl.DataFrame | pl.LazyFrame],
     ]:
         valid_dfs, invalid_dfs = {}, {}
         for model, frm in model_frms.items():

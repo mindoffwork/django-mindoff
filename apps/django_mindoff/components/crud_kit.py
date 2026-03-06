@@ -2,12 +2,10 @@ import warnings
 from itertools import islice
 from types import SimpleNamespace
 from typing import Any, Dict, List, Tuple, Type, Union
-
 import polars as pl
 from django.core.paginator import EmptyPage, Paginator
 from django.db import models
 from typeguard import typechecked
-
 from ._crud_kit.column_validator import ColumnValidator
 from ._crud_kit.crud_processor import CRUDProcessor
 from ._crud_kit.foreign_key_validator import ForeignKeyValidator
@@ -29,11 +27,6 @@ ERROR_COL = getattr(settings, "POLARS_VALIDATOR_ERROR_COL", None) or "__error__i
 # Classes
 # --------------
 class MindoffCRUDHandler:
-    """
-    ⚠️ INTERNAL CLASS
-    Handles the actual database operations for create/update based on validated DataFrames.
-    """
-
     @typechecked
     def create(
         self,
@@ -45,7 +38,7 @@ class MindoffCRUDHandler:
     ) -> Tuple[str, Dict, Dict]:
         model_frms = mo_polars_kit.sync_model_frms_type(model_frms)
         if is_validate:
-            # Step 1: Column validation
+            # 1. Column validation
             column_validator = ColumnValidator(
                 model_frms=model_frms,
                 is_remove_extra_columns=True,
@@ -55,11 +48,11 @@ class MindoffCRUDHandler:
             if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
                 return "fail", valid_model_frms, invalid_model_frms
 
-            # Step 2: Row validation
+            # 2. Row validation
             row_validator = RowValidator(valid_model_frms)
             row_validated_frms = row_validator.run()
 
-            # Step 3: Foreign key validation
+            # 3. Foreign key validation
             fk_validator = ForeignKeyValidator(row_validated_frms)
             fk_validated_frms = fk_validator.validate()
             frm_dict_valid_invalid_splitter = _ModelFrmsValidInvalidSplitter(
@@ -67,7 +60,7 @@ class MindoffCRUDHandler:
             )
             valid_model_frms, invalid_model_frms = frm_dict_valid_invalid_splitter.run()
 
-            # Step 4: Decide partial save
+            # 4. Decide partial save
             if mo_polars_kit.is_model_frms_empty(valid_model_frms):
                 return "fail", valid_model_frms, invalid_model_frms
             if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
@@ -86,7 +79,7 @@ class MindoffCRUDHandler:
             status = "ok"
             valid_model_frms, invalid_model_frms = model_frms, {}
 
-        # Step 5: Perform CRUD operation
+        # 5. Perform CRUD operation
         crud_processor = CRUDProcessor(valid_model_frms)
         _ = crud_processor.create(batch_size=batch_size)
         return status, valid_model_frms, invalid_model_frms
@@ -173,7 +166,6 @@ class MindoffCRUDHandler:
                 has_next=False,
                 has_previous=page_number > 1,
             )
-
         return frm, stats
 
     @typechecked
@@ -239,12 +231,6 @@ class MindoffCRUDHandler:
 # Helper Classes
 # --------------
 class _ModelFrmsValidInvalidSplitter:
-    """
-    ⚠️ INTERNAL CLASS
-    Cascade-splits a dict of DataFrames/LazyFrames into valid and invalid sets
-    based on `ERROR_COL` and relational dependencies (FK/OneToOne).
-    """
-
     def __init__(
         self, model_frms: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]]
     ):

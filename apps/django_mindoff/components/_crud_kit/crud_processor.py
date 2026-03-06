@@ -46,19 +46,20 @@ class CRUDProcessor:
         port = db.get("PORT", "")
         name = db["NAME"]
 
-        connection.ensure_connection()
         if "mysql" in engine:
             self.dialect = "mysql+pymysql"
         elif "postgresql" in engine or "postgres" in engine:
             self.dialect = "postgresql+psycopg2"
         elif "sqlite" in engine:
             self.dialect = "sqlite"
+            connection.ensure_connection()
             return create_engine("sqlite://", creator=lambda: connection.connection)
         else:
             raise ValueError(f"Unsupported database engine: {engine}")
 
         auth_part = f"{user}:{password}@" if user or password else ""
         port_part = f":{port}" if port else ""
+        connection.ensure_connection()
         return create_engine(f"{self.dialect}://{auth_part}{host}{port_part}/{name}")
 
     @staticmethod

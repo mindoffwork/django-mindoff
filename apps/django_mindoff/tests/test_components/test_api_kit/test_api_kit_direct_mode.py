@@ -10,8 +10,21 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.checks import run_checks
 from django.urls import clear_url_caches, reverse
+from rest_framework.exceptions import (
+    AuthenticationFailed,
+    NotAuthenticated,
+    PermissionDenied,
+    Throttled,
+)
+from rest_framework.response import Response
 from rest_framework.test import APIClient
 
+from ....components.api_kit import (
+    MindoffAPIMixin,
+    _is_queue_service_unavailable_error,
+    api_guardian,
+)
+from ....components.validation_kit import MindoffValidationError
 from ....components.tdd_kit import MindoffTestCase
 from ....components.response_kit import mo_response_kit
 from ....components.helper_kit import mo_helper_kit
@@ -485,6 +498,63 @@ class TestAPIConfigurationValidation(MindoffTestCase):
         clear_url_caches()
         _reload_api_modules(self._app, api_name)
         self._assert_config_error("must match '<int>/(s|m|h|d)' format")
+
+    def test_config_invalid_auth_entry_type(self):
+        """Verify auth/permission entries must be callables (classes), not strings."""
+        api_name = "test_invalid_auth_entry_api"
+        self._make_api(api_name)
+        _modify_api_attribute(
+            self._app,
+            api_name,
+            "authentication_classes",
+            '["BasicAuthentication"]',
+            base_path=self._dir,
+        )
+        clear_url_caches()
+        _reload_api_modules(self._app, api_name)
+        self._assert_config_error("Expected a class, got a string")
+
+    def test_config_invalid_queue_status_stream_limit(self):
+        """Verify queue_status_stream_api_limit enforces int and non-negative."""
+        api_name = "test_invalid_stream_limit_api"
+        self._make_api(api_name)
+        _modify_api_attribute(
+            self._app,
+            api_name,
+            "queue_status_stream_api_limit",
+            "3",
+            base_path=self._dir,
+        )
+        clear_url_caches()
+        _reload_api_modules(self._app, api_name)
+        self._assert_config_error("`queue_status_stream_api_limit` must be int | None")
+
+    def test_config_progress_steps_valid_for_queue_mode(self):
+        """Verify queue-mode API with valid progress_steps passes config checks."""
+        api_name = "test_valid_progress_steps_config_api"
+        api_url_name = self._make_api(api_name)
+        _modify_api_attributes(
+            self._app,
+            api_name,
+            {
+                "process_mode": "queue",
+                "progress_steps": {
+                    "validate": {"label": "Validating", "percent": 10},
+                    "fetch": {"label": "Fetching", "percent": 40},
+                },
+            },
+            base_path=self._dir,
+        )
+        clear_url_caches()
+        _reload_api_modules(self._app, api_name)
+        errors = run_checks()
+        matching = [
+            e
+            for e in errors
+            if e.id == self.EXPECTED_CHECK_ID
+            and (api_url_name in e.msg or api_name in e.msg)
+        ]
+        assert not matching, f"Unexpected config errors: {[(e.id, e.msg) for e in errors]}"
 
 
 @pytest.mark.django_db(transaction=True)
@@ -1047,3 +1117,237 @@ class TestAPIMixinBoundary(MindoffTestCase):
         )
         assert response.status_code == 200
         assert response.data["message"]["code"] == "SUCCESS"
+
+
+class TestApiKitAndChecksCoverage:
+    def test_queue_service_unavailable_error_detection(self):
+        assert _is_queue_service_unavailable_error(ConnectionError("offline")) is True
+        assert (
+            _is_queue_service_unavailable_error(RuntimeError("cannot connect to redis"))
+            is True
+        )
+        assert _is_queue_service_unavailable_error(RuntimeError("bad payload")) is False
+
+    def test_mindoff_api_run_default_raises_not_implemented(self):
+        mixin = MindoffAPIMixin()
+        with pytest.raises(NotImplementedError):
+            mixin.run(request=None)
+
+    def test_dispatch_ensure_response_sets_renderer_when_missing(self):
+        mixin = MindoffAPIMixin()
+        mixin.get_renderer_context = lambda: {}
+        resp = Response({"ok": True}, status=200)
+        out = mixin._dispatch_ensure_response_is_rendered(resp)
+        assert out.accepted_media_type == "application/json"
+        assert hasattr(out, "accepted_renderer")
+
+    def test_dispatch_exception_path_wraps_response(self):
+        from django.test import RequestFactory
+
+        mixin = MindoffAPIMixin()
+        mixin.get_renderer_context = lambda: {}
+        req = RequestFactory().get("/x")
+
+        with patch(
+            "rest_framework.views.APIView.dispatch", side_effect=RuntimeError("boom")
+        ):
+            out = mixin.dispatch(req)
+
+        assert out.status_code == 500
+        assert out.data["message"]["code"] == "UNEXPECTED_ERR"
+        assert hasattr(out, "accepted_renderer")
+
+    @patch("apps.django_mindoff.components.api_kit.enqueue_process")
+    def test_handle_request_logic_reraises_non_queue_backend_errors(self, mock_enqueue):
+        mock_enqueue.side_effect = ValueError("unexpected worker error")
+
+        class QueueOnlyMixin(MindoffAPIMixin):
+            process_mode = "queue"
+            progress_steps = None
+
+        req = type(
+            "Req",
+            (),
+            {
+                "FILES": {},
+                "build_absolute_uri": staticmethod(lambda s: f"http://x{s}"),
+            },
+        )()
+        with pytest.raises(ValueError, match="unexpected worker error"):
+            QueueOnlyMixin()._handle_request_logic(req)
+
+    def test_handle_exception_authentication_failed_branch(self):
+        mixin = MindoffAPIMixin()
+        resp = mixin.handle_exception(AuthenticationFailed("bad auth"))
+        assert resp.status_code == 401
+        assert resp.data["message"]["code"] == "AUTHENTICATION_FAILED"
+
+    @pytest.mark.parametrize(
+        ("exc", "expected_code"),
+        [
+            (
+                MindoffValidationError(
+                    message="bad",
+                    code="VALIDATION_ERR",
+                    category="warning",
+                    data={"a": 1},
+                ),
+                "VALIDATION_ERR",
+            ),
+            (NotAuthenticated("x"), "NOT_AUTHENTICATED"),
+            (AuthenticationFailed("x"), "AUTHENTICATION_FAILED"),
+            (PermissionDenied("x"), "PERMISSION_DENIED"),
+            (Throttled(wait=1), "RATE_LIMITED"),
+            (RuntimeError("x"), "UNEXPECTED_ERR"),
+        ],
+    )
+    def test_api_guardian_maps_errors(self, exc, expected_code):
+        @api_guardian
+        def protected_view(_request):
+            raise exc
+
+        resp = protected_view(object())
+        assert resp.data["message"]["code"] == expected_code
+
+    def test_base_version_router_invalid_version_response_shape(self):
+        from django.test import RequestFactory
+        from ....components._api_kit.api_router import BaseVersionRouter
+
+        class Router(BaseVersionRouter):
+            VERSION_MAP = {1: object}
+
+        req = RequestFactory().get("/x")
+        resp = Router()(req, version=99)
+        assert resp.data["message"]["code"] == "INVALID_API_VERSION"
+        assert resp.data["data"]["available_versions"] == [1]
+
+    @patch("apps.django_mindoff.components._api_kit.api_router.settings")
+    def test_base_version_router_view_cache_enabled(self, mock_settings):
+        from django.test import RequestFactory
+        from ....components._api_kit.api_router import BaseVersionRouter
+
+        mock_settings.MINDOFF_USE_VIEW_CACHE = True
+        calls = {"as_view": 0}
+
+        class FakeView:
+            @classmethod
+            def as_view(cls):
+                calls["as_view"] += 1
+                return lambda request, *args, **kwargs: mo_response_kit.json_response(
+                    code="SUCCESS", category="success"
+                )
+
+        class Router(BaseVersionRouter):
+            VERSION_MAP = {1: FakeView}
+
+        req = RequestFactory().get("/x")
+        router = Router()
+        r1 = router(req, version=1)
+        r2 = router(req, version=1)
+        assert r1.status_code == 200 and r2.status_code == 200
+        assert calls["as_view"] == 1
+
+    @patch("apps.django_mindoff.components._api_kit.api_router.settings")
+    def test_base_version_router_view_cache_disabled(self, mock_settings):
+        from django.test import RequestFactory
+        from ....components._api_kit.api_router import BaseVersionRouter
+
+        mock_settings.MINDOFF_USE_VIEW_CACHE = False
+        calls = {"as_view": 0}
+
+        class FakeView:
+            @classmethod
+            def as_view(cls):
+                calls["as_view"] += 1
+                return lambda request, *args, **kwargs: mo_response_kit.json_response(
+                    code="SUCCESS", category="success"
+                )
+
+        class Router(BaseVersionRouter):
+            VERSION_MAP = {1: FakeView}
+
+        req = RequestFactory().get("/x")
+        router = Router()
+        router(req, version=1)
+        router(req, version=1)
+        assert calls["as_view"] == 2
+
+    def test_checks_dependency_error_short_circuit(self, monkeypatch):
+        import apps.django_mindoff.checks as checks_module
+
+        monkeypatch.setattr(
+            checks_module, "_get_missing_dependencies", lambda: ["dramatiq", "redis"]
+        )
+        errors = checks_module.check_mindoff_api_configs(None)
+        assert errors
+        assert errors[0].id == "django_mindoff.DEPENDENCY_ERR"
+        assert "dramatiq, redis" in errors[0].msg
+
+    def test_checks_import_failure_returns_dependency_error(self, monkeypatch):
+        import builtins
+        import apps.django_mindoff.checks as checks_module
+
+        monkeypatch.setattr(checks_module, "_get_missing_dependencies", lambda: [])
+        original_import = builtins.__import__
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name.endswith("components.api_kit"):
+                raise ImportError("forced import failure")
+            return original_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        errors = checks_module.check_mindoff_api_configs(None)
+        assert errors
+        assert errors[0].id == "django_mindoff.DEPENDENCY_ERR"
+        assert "Failed to import django-mindoff API components" in errors[0].msg
+
+    def test_validate_view_class_reports_api_config_error_id(self):
+        import apps.django_mindoff.checks as checks_module
+
+        class BadView:
+            def validate_api_configuration(self):
+                exc = Exception("broken config")
+                exc.code = "API_CONFIG_ERR"
+                raise exc
+
+        errors = []
+        checks_module._validate_view_class(BadView, errors)
+        assert errors
+        assert errors[0].id == "django_mindoff.API_CONFIG_ERR"
+
+    def test_get_missing_dependencies_detects_modules(self, monkeypatch):
+        import apps.django_mindoff.checks as checks_module
+
+        monkeypatch.setattr(
+            checks_module,
+            "REQUIRED_INTEGRATION_DEPENDENCIES",
+            [("pkg_ok", "json"), ("pkg_missing", "__definitely_missing_mod__")],
+        )
+        missing = checks_module._get_missing_dependencies()
+        assert missing == ["pkg_missing"]
+
+    def test_checks_skips_unimportable_api_modules(self, monkeypatch, tmp_path):
+        import apps.django_mindoff.checks as checks_module
+
+        class FakeAppConfig:
+            path = str(tmp_path / "fake_app")
+            name = "fake_app"
+
+        (tmp_path / "fake_app" / "apis").mkdir(parents=True)
+        monkeypatch.setattr(checks_module, "_get_missing_dependencies", lambda: [])
+        monkeypatch.setattr(
+            checks_module.django_apps, "get_app_configs", lambda: [FakeAppConfig()]
+        )
+        monkeypatch.setattr(
+            checks_module.pkgutil,
+            "walk_packages",
+            lambda path, prefix, onerror: [(None, f"{prefix}broken_api", False)],
+        )
+        monkeypatch.setattr(
+            checks_module.importlib,
+            "import_module",
+            lambda name: (_ for _ in ()).throw(RuntimeError("broken import")),
+        )
+
+        errors = checks_module.check_mindoff_api_configs(None)
+        assert errors == []

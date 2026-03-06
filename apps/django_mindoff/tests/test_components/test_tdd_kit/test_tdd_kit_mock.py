@@ -1,14 +1,21 @@
 import copy
 import datetime
+import shutil
+import sys
+import tempfile
 import uuid
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from django.apps import apps
 from django.conf import settings
 from django.db import models
 from django.db.models import ForeignKey
+from django.test import override_settings
+from django.urls import clear_url_caches
 from ....components.tdd_kit import MindoffTestCase
+from ....components.managers._create_app import DjangoAppCreator
 
 # ------------------------
 # ⚓ CONSTANTS
@@ -21,6 +28,84 @@ FIELDS = {
 
 snake_case_regex = r"^[a-z0-9_]+$"
 pascal_case_regex = r"^[A-Z][a-zA-Z0-9]+$"
+
+
+# =================================================================
+# ⚙️  Class-scoped app helpers
+# =================================================================
+
+
+def _register_isolated_app():
+    """Create and register a throw-away Django app; return (app_name, temp_dir, override)."""
+    app_name = f"app_{uuid.uuid4().hex[:12]}"
+    temp_dir = Path(tempfile.mkdtemp()).resolve()
+    sys.path.insert(0, str(temp_dir))
+
+    dotted_path = app_name
+    creator = DjangoAppCreator(dotted_path, isolated=True)
+    creator.project_root = temp_dir
+    creator.app_dir = str(temp_dir / app_name)
+    creator.settings_path = temp_dir / "dummy_settings.py"
+    creator.urls_path = temp_dir / "dummy_urls.py"
+    creator.run()
+
+    mock_root_urlconf_name = f"urls_{app_name}"
+    mock_root_path = temp_dir / f"{mock_root_urlconf_name}.py"
+    mock_root_content = f"""
+from django.urls import path, include
+from {settings.ROOT_URLCONF} import urlpatterns as original_patterns
+import {dotted_path}.urls
+
+urlpatterns = original_patterns + [
+    path(\'{app_name}/\', include(\'{dotted_path}.urls\')),
+]
+"""
+    mock_root_path.write_text(mock_root_content)
+
+    ov = override_settings(
+        INSTALLED_APPS=list(settings.INSTALLED_APPS) + [dotted_path],
+        ROOT_URLCONF=mock_root_urlconf_name,
+    )
+    ov.enable()
+    apps.set_installed_apps(settings.INSTALLED_APPS)
+    apps.clear_cache()
+    clear_url_caches()
+    return app_name, temp_dir, ov
+
+
+def _unregister_isolated_app(app_name, temp_dir, ov):
+    """Undo everything _register_isolated_app did."""
+    ov.disable()
+    clear_url_caches()
+    root_url_mod = f"urls_{app_name}"
+    mods_to_remove = [
+        m
+        for m in sys.modules
+        if m == app_name or m.startswith(f"{app_name}.") or m == root_url_mod
+    ]
+    for m in mods_to_remove:
+        sys.modules.pop(m, None)
+    sys.path[:] = [p for p in sys.path if str(p) != str(temp_dir)]
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    apps.clear_cache()
+    clear_url_caches()
+    apps.populate(settings.INSTALLED_APPS)
+
+
+@pytest.fixture(scope="class")
+def _class_app_frms():
+    """One Django app for the entire TestMockModelFrms class."""
+    app_name, temp_dir, ov = _register_isolated_app()
+    yield app_name
+    _unregister_isolated_app(app_name, temp_dir, ov)
+
+
+@pytest.fixture(scope="class")
+def _class_app_update():
+    """One Django app for the entire TestUpdateMockModelFrms class."""
+    app_name, temp_dir, ov = _register_isolated_app()
+    yield app_name
+    _unregister_isolated_app(app_name, temp_dir, ov)
 
 
 # =================================================================
@@ -379,6 +464,40 @@ class TestMockModel(MindoffTestCase):
 # =================================================================
 @pytest.mark.django_db(transaction=True)
 class TestMockModelFrms(MindoffTestCase):
+    """
+    PERF NOTE: All tests in this class share one Django app + one set of model
+    definitions, created once via the `_shared_models` fixture (module scope).
+    Tests that need a custom topology create their own models inside the test,
+    but re-use the shared app so we only pay app-registration cost once.
+    """
+
+    # ── One app for the whole class (class-scoped, zero per-test overhead) ──
+
+    @pytest.fixture(autouse=True)
+    def _shared_app(self, _class_app_frms):
+        """Expose the class-scoped app name on self so _create_models() can reach it."""
+        self._app_name = _class_app_frms
+
+    # ── Internal helpers ──────────────────────────────────────────────────
+
+    def _create_models(self, models_info, app_name=None):
+        app = app_name or self._app_name
+        created_list = []
+        created_dict = {}
+        for node in models_info:
+            fk_resolved = [
+                (app, created_dict[fk_name].__name__) for fk_name, in node["fk"]
+            ]
+            model_cls = self.mo_mock_model(
+                model_name=node["name"],
+                app_name=app,
+                fields=node["fields"],
+                foreign_keys=fk_resolved,
+            )
+            created_dict[node["name"]] = model_cls
+            created_list.append(model_cls)
+        return created_list
+
     # fmt: off
     @pytest.mark.parametrize(
         "model_info, counts, expected_df_counts",
@@ -619,32 +738,28 @@ class TestMockModelFrms(MindoffTestCase):
                 models=models_list, exclude_columns=exclude_columns, modify=modify_rows
             )
 
-    def _create_models(self, models_info):
-        app_name = self.mo_mock_app()
-        created_models_list = []
-        created_models_dict = {}
-        for node in models_info:
-            fk_resolved = [
-                (app_name, created_models_dict[fk_name].__name__)
-                for fk_name, in node["fk"]
-            ]
-            model_cls = self.mo_mock_model(
-                model_name=node["name"],
-                app_name=app_name,
-                fields=node["fields"],
-                foreign_keys=fk_resolved,
-            )
-            created_models_dict[node["name"]] = model_cls
-            created_models_list.append(model_cls)
-        return created_models_list
-
 
 # =================================================================
 #  🚂 TestUpdateMockModelFrms
 # =================================================================
 @pytest.mark.django_db(transaction=True)
 class TestUpdateMockModelFrms(MindoffTestCase):
-    """Tests for the mo_update_mock_model_frms fixture."""
+    """
+    Tests for the mo_update_mock_model_frms fixture.
+
+    PERF NOTE: A single Django app + two models (ParentModel → ChildModel) are
+    built once per *test* via `_base_df_dict`.  The heavy setup is unavoidable
+    for tests that mutate schema state, but we avoid redundant app registrations
+    by keeping a single `_app_name` per test function (provided by the autouse
+    fixture below).
+    """
+
+    # -- One app for the whole class (class-scoped, zero per-test overhead) --
+
+    @pytest.fixture(autouse=True)
+    def _test_app(self, _class_app_update):
+        """Expose the class-scoped app name on self so _base_df_dict can reach it."""
+        self._test_app_name = _class_app_update
 
     def _base_df_dict(self, model_info=None, counts=None):
         if model_info is None:
@@ -658,7 +773,8 @@ class TestUpdateMockModelFrms(MindoffTestCase):
             ]
         if counts is None:
             counts = [2, 1]
-        app_name = self.mo_mock_app()
+
+        app_name = self._test_app_name
         created = {}
         models_list = []
         for node in model_info:

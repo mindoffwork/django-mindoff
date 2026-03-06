@@ -963,3 +963,106 @@ class TestCustomCodeValidator:
         result = mo_validation_kit.finalize(return_mode="list")
         assert len(result) == 1
         assert result[0]["code"] == code
+
+
+class _CmpBoom:
+    def __eq__(self, other):
+        raise RuntimeError("eq failed")
+
+    def __gt__(self, other):
+        raise RuntimeError("gt failed")
+
+    def __ge__(self, other):
+        raise RuntimeError("ge failed")
+
+    def __lt__(self, other):
+        raise RuntimeError("lt failed")
+
+    def __le__(self, other):
+        raise RuntimeError("le failed")
+
+
+class _BadIterable:
+    def __iter__(self):
+        raise RuntimeError("iter failed")
+
+
+class TestValidationCoverageGaps:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        mo_validation_kit.reset()
+
+    def test_mindoff_validation_error_rejects_invalid_data_type(self):
+        with pytest.raises(TypeError, match="'data' must be dict or list"):
+            MindoffValidationError(data="not-dict-or-list")
+
+    def test_ensure_equal_comparison_exception_path(self):
+        with pytest.raises(TypeError, match="Comparison failed"):
+            mo_validation_kit.ensure_equal(
+                left=_CmpBoom(), right=1, is_exception=True
+            )
+
+    @pytest.mark.parametrize(
+        "fn, kwargs",
+        [
+            ("ensure_greater", {"left": _CmpBoom(), "right": 1}),
+            ("ensure_greater_equal", {"left": _CmpBoom(), "right": 1}),
+            ("ensure_lesser", {"left": _CmpBoom(), "right": 1}),
+            ("ensure_lesser_equal", {"left": _CmpBoom(), "right": 1}),
+            (
+                "ensure_in_range",
+                {"value": _CmpBoom(), "min_value": _CmpBoom(), "max_value": _CmpBoom()},
+            ),
+            (
+                "ensure_not_in_range",
+                {"value": _CmpBoom(), "min_value": _CmpBoom(), "max_value": _CmpBoom()},
+            ),
+            ("ensure_almost_equal", {"left": "x", "right": 1.0}),
+            ("ensure_not_almost_equal", {"left": "x", "right": 1.0}),
+        ],
+    )
+    def test_comparison_helpers_exception_paths(self, fn, kwargs):
+        with pytest.raises(TypeError):
+            getattr(mo_validation_kit, fn)(**kwargs, is_exception=True)
+
+    @pytest.mark.parametrize(
+        "fn, kwargs",
+        [
+            ("ensure_subclass", {"cls": 1, "parent": int}),
+            ("ensure_not_subclass", {"cls": 1, "parent": int}),
+        ],
+    )
+    def test_subclass_helpers_exception_paths(self, fn, kwargs):
+        with pytest.raises(TypeError):
+            getattr(mo_validation_kit, fn)(**kwargs, is_exception=True)
+
+    @pytest.mark.parametrize(
+        "fn",
+        ["ensure_count_equal", "ensure_count_not_equal"],
+    )
+    def test_count_helpers_generic_exception_path(self, fn):
+        with pytest.raises(TypeError):
+            getattr(mo_validation_kit, fn)(
+                left=_BadIterable(),
+                right=_BadIterable(),
+                is_exception=True,
+            )
+
+    @pytest.mark.parametrize(
+        "mode, expected",
+        [("list", []), ("error", None), ("exception", None)],
+    )
+    def test_finalize_no_errors_all_return_modes(self, mode, expected):
+        assert mo_validation_kit.finalize(return_mode=mode) == expected
+
+    def test_finalize_default_error_mode_raises_mindoff_validation_error(self):
+        mo_validation_kit.ensure_equal(
+            left=1, right=2, is_aggregate=True, is_exception=False, code="INVALID_PAYLOAD"
+        )
+        with pytest.raises(MindoffValidationError) as errinfo:
+            mo_validation_kit.finalize(code="INVALID_PAYLOAD", message="Aggregate failed")
+
+        assert errinfo.value.code == "INVALID_PAYLOAD"
+        assert errinfo.value.message == "Aggregate failed"
+        assert isinstance(errinfo.value.data, list)
+        assert len(errinfo.value.data) == 1

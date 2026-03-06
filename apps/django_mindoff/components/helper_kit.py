@@ -17,13 +17,6 @@ from django.urls import get_resolver, URLPattern, URLResolver
 # ----------------
 # Functions
 # ----------------
-def safe_print(msg: str):
-    encoding = sys.stdout.encoding or "utf-8"
-    try:
-        print(msg)
-    except UnicodeEncodeError:
-        cleaned = msg.encode(encoding, "replace").decode(encoding)
-        print(cleaned)
 
 
 def pascal_to_snake(name: str) -> str:
@@ -63,7 +56,7 @@ def get_current_app_name():
 
 def get_exact_traceback(*, skip: int | None = None) -> str:
     stack = inspect.stack()
-    project_dirs = getattr(settings, "VALIDATION_TRACEBACK_DIRS", ["apps", "config"])
+    project_dirs = getattr(settings, "MINDOFF_TRACEBACK_DIRS", ["apps", "config"])
     project_dirs = [os.path.abspath(str(Path(d))) for d in project_dirs]
     valid_frames = []
     for frame_info in stack:
@@ -140,7 +133,6 @@ def get_api_class_attributes(*, api_url_name: str, version: int = 1) -> dict:
 # Entry Point
 # ----------------
 mo_helper_kit = SimpleNamespace(
-    safe_print=safe_print,
     pascal_to_snake=pascal_to_snake,
     get_current_app_name=get_current_app_name,
     get_exact_traceback=get_exact_traceback,
