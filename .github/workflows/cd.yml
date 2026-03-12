@@ -1,0 +1,92 @@
+name: CD
+
+on:
+  release:
+    types:
+      - published
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ─────────────────────────────────────────────
+  # 1. Replace "Recent Changes" with version tag
+  #    in CHANGELOG.md and push to root
+  # ─────────────────────────────────────────────
+  version-changelog:
+    name: Version changelog
+    runs-on: ubuntu-latest
+    if: github.event.release.target_commitish == 'root'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: root
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Replace "Recent Changes" with release version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          DATE=$(date +"%Y-%m-%d")
+          # Replace the first occurrence of "## Recent Changes"
+          sed -i "s/^## Recent Changes$/## ${VERSION} — ${DATE}/" CHANGELOG.md
+          echo "[INFO] Replaced 'Recent Changes' with '${VERSION} — ${DATE}'"
+
+      - name: Commit versioned changelog
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "📝 Update changelog for release: ${GITHUB_REF#refs/tags/}"
+          git push
+
+  # ─────────────────────────────────────────────
+  # 2. Build & publish to PyPI
+  # ─────────────────────────────────────────────
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: version-changelog
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: root
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Remove old build artifacts
+        run: rm -rf dist/ build/ *.egg-info
+
+      - name: Build package
+        run: python -m build
+
+      - name: Validate distribution metadata
+        run: python -m twine check dist/*
+
+      - name: Verify version matches release tag
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PROJECT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "[INFO] Tag: $TAG_VERSION  |  pyproject.toml: $PROJECT_VERSION"
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "[ERROR] Version mismatch — aborting."
+            exit 1
+          fi
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

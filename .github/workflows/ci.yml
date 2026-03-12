@@ -3,14 +3,13 @@ name: CI
 on:
   push:
     branches:
-      - main
-      - dev
+      - root
     tags:
       - "v*"
   pull_request:
     branches:
-      - main
-      - dev
+      - root
+      - test/ci
   workflow_dispatch:
 
 concurrency:
@@ -18,16 +17,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ─────────────────────────────────────────────
+  # 1. Smoke test (minimal install)
+  # ─────────────────────────────────────────────
   smoke-minimal:
     name: Smoke (minimal install)
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           cache: pip
@@ -40,26 +39,24 @@ jobs:
       - name: CLI smoke check
         run: django-mindoff init --help
 
+  # ─────────────────────────────────────────────
+  # 2. Tests + coverage enforcement (≥90%)
+  # ─────────────────────────────────────────────
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
-
     env:
       DJANGO_SETTINGS_MODULE: apps.django_mindoff.tests.settings
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -76,8 +73,13 @@ jobs:
       - name: Run migrations
         run: python manage.py migrate --noinput --settings=apps.django_mindoff.tests.settings
 
-      - name: Run tests
-        run: pytest --ds=apps.django_mindoff.tests.settings --cov=apps.django_mindoff --cov-report=xml
+      - name: Run tests with coverage (min 90%)
+        run: |
+          pytest \
+            --ds=apps.django_mindoff.tests.settings \
+            --cov=apps.django_mindoff \
+            --cov-report=xml \
+            --cov-fail-under=90
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -85,39 +87,146 @@ jobs:
           name: coverage-py${{ matrix.python-version }}
           path: coverage.xml
 
-  build:
-    name: Build distribution
+  # ─────────────────────────────────────────────
+  # 3. PR title format lint
+  #    Format: {emoji} {Verb-starting sentence}
+  #    e.g.  ✨ Add user authentication
+  # ─────────────────────────────────────────────
+  lint-pr-title:
+    name: Lint PR title
     runs-on: ubuntu-latest
-    needs: [smoke-minimal, test]
-
+    if: github.event_name == 'pull_request'
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Check PR title and label
+        uses: actions/github-script@v7
         with:
-          python-version: "3.13"
-          cache: pip
+          script: |
+            const title = context.payload.pull_request.title;
+            const labels = context.payload.pull_request.labels.map(l => l.name);
 
-      - name: Install build tools
-        run: |
-          python -m pip install --upgrade pip
-          pip install build twine
+            // ── Title format check ──────────────────────────────────────────
+            // Must start with a real emoji (Unicode) followed by a space and
+            // a capitalised verb-like word. We match any Unicode emoji cluster.
+            const titleRegex = /^\p{Emoji_Presentation}\s+[A-Z][a-z]+/u;
+            if (!titleRegex.test(title)) {
+              core.setFailed(
+                `PR title "${title}" does not match the required format.\n` +
+                `Expected: {emoji} {Sentence starting with a capitalised Verb}\n` +
+                `Example:  ✨ Add user authentication`
+              );
+            }
 
-      - name: Build package
-        run: python -m build
+            // ── Label check ─────────────────────────────────────────────────
+            const allowedLabels = [
+              "bug",
+              "feature",
+              "enhancement",
+              "documentation",
+              "internal",
+            ];
 
-      - name: Validate distribution metadata
-        run: python -m twine check dist/*
+            const hasAllowed = labels.some(l => allowedLabels.includes(l));
+            if (!hasAllowed) {
+              core.setFailed(
+                `PR must have at least one of the allowed labels:\n` +
+                allowedLabels.join(", ") + "\n" +
+                `Current labels: ${labels.join(", ") || "(none)"}`
+              );
+            }
 
-      - name: Validate import path from built wheel
-        run: |
-          pip install dist/*.whl
-          python -c "import django_mindoff; print(django_mindoff.__version__)"
-
-      - name: Upload dist artifacts
-        uses: actions/upload-artifact@v4
+  # ─────────────────────────────────────────────
+  # 4. Update CHANGELOG.md (PR only)
+  #    Appends entry under "## Recent Changes"
+  #    in the h3 section matching the PR label.
+  # ─────────────────────────────────────────────
+  update-changelog:
+    name: Update changelog
+    runs-on: ubuntu-latest
+    needs: lint-pr-title
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: dist
-          path: dist/*
+          # Check out the PR's head branch so we can push back to it
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Append entry to CHANGELOG.md
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+
+            const pr     = context.payload.pull_request;
+            const title  = pr.title;
+            const number = pr.number;
+            const author = pr.user.login;
+            const prUrl  = pr.html_url;
+            const labels = pr.labels.map(l => l.name);
+
+            // Map label → changelog category heading
+            const labelToCategory = {
+              "feature":        "Features",
+              "bug":            "Bug Fixes",
+              "fix":            "Bug Fixes",
+              "docs":           "Documentation",
+              "chore":          "Chores",
+              "refactor":       "Refactoring",
+              "performance":    "Performance",
+              "test":           "Tests",
+              "ci":             "CI/CD",
+              "breaking change":"Breaking Changes",
+              "security":       "Security",
+            };
+
+            const allowedLabels = Object.keys(labelToCategory);
+            const matchedLabel  = labels.find(l => allowedLabels.includes(l));
+            const category      = matchedLabel ? labelToCategory[matchedLabel] : "Miscellaneous";
+
+            // Build the new entry line
+            const entry = `- ${title}. PR [#${number}](${prUrl}) by [@${author}](https://github.com/${author})`;
+
+            let changelog = fs.readFileSync("CHANGELOG.md", "utf8");
+
+            const recentHeader = "## Recent Changes";
+            const categoryHeader = `### ${category}`;
+
+            // Ensure "## Recent Changes" section exists
+            if (!changelog.includes(recentHeader)) {
+              changelog = `${recentHeader}\n\n${changelog}`;
+            }
+
+            // Find the Recent Changes block
+            const recentIdx = changelog.indexOf(recentHeader);
+
+            // Find the next h2 after Recent Changes (to know the block boundary)
+            const afterRecent = changelog.indexOf("\n## ", recentIdx + recentHeader.length);
+            const blockEnd    = afterRecent === -1 ? changelog.length : afterRecent;
+
+            let block = changelog.slice(recentIdx, blockEnd);
+
+            if (block.includes(categoryHeader)) {
+              // Append entry right after the category header line
+              block = block.replace(
+                new RegExp(`(${categoryHeader}[^\\n]*)`, ""),
+                `$1\n${entry}`
+              );
+            } else {
+              // Add new category section before the next h2 (or at end of block)
+              block = block.trimEnd() + `\n\n${categoryHeader}\n${entry}\n`;
+            }
+
+            changelog = changelog.slice(0, recentIdx) + block + changelog.slice(blockEnd);
+            fs.writeFileSync("CHANGELOG.md", changelog, "utf8");
+            console.log("CHANGELOG.md updated successfully.");
+
+      - name: Commit changelog update
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git diff --cached --quiet || git commit -m "📝 Update changelog for PR #${{ github.event.pull_request.number }}"
+          git push
