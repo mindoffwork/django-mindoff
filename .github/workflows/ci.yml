@@ -9,7 +9,7 @@ on:
   pull_request:
     branches:
       - root
-      - test/ci
+      - polish/ci_pipeline
   workflow_dispatch:
 
 concurrency:
