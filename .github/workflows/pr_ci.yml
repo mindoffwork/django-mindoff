@@ -1,4 +1,4 @@
-name: CI
+name: PR CI
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
     tags:
       - "v*"
   pull_request:
+    types: [opened, synchronize, reopened]
     branches:
       - root
       - test/ci
@@ -110,8 +111,6 @@ jobs:
             const labels = context.payload.pull_request.labels.map(l => l.name);
 
             // ── Title format check ──────────────────────────────────────────
-            // Must start with a real emoji (Unicode) followed by a space and
-            // a capitalised verb-like word. We match any Unicode emoji cluster.
             const titleRegex = /^\p{Emoji_Presentation}\s+[A-Z][a-z]+/u;
             if (!titleRegex.test(title)) {
               core.setFailed(
@@ -138,94 +137,3 @@ jobs:
                 `Current labels: ${labels.join(", ") || "(none)"}`
               );
             }
-
-  # ─────────────────────────────────────────────
-  # 4. Update CHANGELOG.md (PR only)
-  #    Appends entry under "## Recent Changes"
-  #    in the h3 section matching the PR label.
-  # ─────────────────────────────────────────────
-  update-changelog:
-    name: Update changelog
-    runs-on: ubuntu-latest
-    needs: lint-pr-title
-    if: github.event_name == 'pull_request'
-    permissions:
-      contents: write
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Check out the PR's head branch so we can push back to it
-          ref: ${{ github.head_ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Append entry to CHANGELOG.md
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require("fs");
-
-            const pr     = context.payload.pull_request;
-            const title  = pr.title;
-            const number = pr.number;
-            const author = pr.user.login;
-            const prUrl  = pr.html_url;
-            const labels = pr.labels.map(l => l.name);
-
-            // Map label → changelog category heading
-            const labelToCategory = {
-              "bug":            "Fixes",
-              "feature":        "Features",
-              "enhancement":    "Enhancements",
-              "documentation":  "Documentation",
-              "internal":       "Internal",
-            };
-
-            const allowedLabels = Object.keys(labelToCategory);
-            const matchedLabel  = labels.find(l => allowedLabels.includes(l));
-            const category      = matchedLabel ? labelToCategory[matchedLabel] : "Miscellaneous";
-
-            // Build the new entry line
-            const entry = `- ${title} ([#${number}](${prUrl}))`;
-
-            let changelog = fs.readFileSync("CHANGELOG.md", "utf8");
-
-            const recentHeader = "## Recent Changes";
-            const categoryHeader = `### ${category}`;
-
-            // Ensure "## Recent Changes" section exists
-            if (!changelog.includes(recentHeader)) {
-              changelog = `${recentHeader}\n\n${changelog}`;
-            }
-
-            // Find the Recent Changes block
-            const recentIdx = changelog.indexOf(recentHeader);
-
-            // Find the next h2 after Recent Changes (to know the block boundary)
-            const afterRecent = changelog.indexOf("\n## ", recentIdx + recentHeader.length);
-            const blockEnd    = afterRecent === -1 ? changelog.length : afterRecent;
-
-            let block = changelog.slice(recentIdx, blockEnd);
-
-            if (block.includes(categoryHeader)) {
-              // Append entry right after the category header line
-              block = block.replace(
-                new RegExp(`(${categoryHeader}[^\\n]*)`, ""),
-                `$1\n${entry}`
-              );
-            } else {
-              // Add new category section before the next h2 (or at end of block)
-              block = block.trimEnd() + `\n\n${categoryHeader}\n${entry}\n`;
-            }
-
-            changelog = changelog.slice(0, recentIdx) + block + changelog.slice(blockEnd);
-            fs.writeFileSync("CHANGELOG.md", changelog, "utf8");
-            console.log("CHANGELOG.md updated successfully.");
-
-      - name: Commit changelog update
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          git diff --cached --quiet || git commit -m "📝 Update changelog for PR #${{ github.event.pull_request.number }}"
-          git push
