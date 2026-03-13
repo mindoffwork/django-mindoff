@@ -1,4 +1,4 @@
-# Django Mindoff Security Policy
+<h1>Django Mindoff Security Policy</h1>
 
 For an API-building framework, security stands above everything.
 Responsible disclosure about any vulnerability is truly appreciated 👏.

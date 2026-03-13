@@ -34,6 +34,7 @@ nav:
   - Community:
       - Overview: community/index.md
       - Contribution Guide: community/contribution-guide.md
+      - Security Policy: community/security-policy.md
 
 theme:
   name: material

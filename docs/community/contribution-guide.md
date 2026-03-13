@@ -33,7 +33,7 @@ Disagreements about design or implementation are normal in software development.
 
 ### Issues
 
-Open an Issue only when something is broken or needs correction.
+Open an Issue only when something is broken or needs correction by following the issue template carefully.
 
 Examples:
 
@@ -41,8 +41,6 @@ Examples:
 - Security concerns
 - Incorrect documentation
 - Compatibility problems with upcoming Django or Python versions
-
-When reporting a bug, follow the issue template carefully.
 
 You can also contribute by confirming bugs, sharing reproducible examples, or submitting a pull request that fixes the issue.
 
