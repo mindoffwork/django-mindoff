@@ -1,8 +1,8 @@
 # Code of Conduct
 
-The django-mindoff community is committed to maintaining a welcoming, respectful, and collaborative environment for everyone.
+We're committed to maintaining a welcoming, respectful, and collaborative environment for everyone.
 
-By participating in this project, you agree to uphold the following guidelines.
+By contributing to this project, you agree to uphold the following guidelines.
 
 ## Our Standards
 
@@ -27,7 +27,7 @@ The following behaviors are not acceptable within the community:
 
 If you experience or witness behavior that violates this code of conduct, please report it through the project's GitHub repository.
 
-Provide relevant details so maintainers can review the situation appropriately.
+Provide relevant details so we can handle the situation appropriately.
 
 ## Enforcement
 

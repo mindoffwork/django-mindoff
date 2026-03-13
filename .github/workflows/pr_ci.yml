@@ -94,7 +94,7 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 3. PR title format lint
-  #    Format: {emoji} {Verb-starting sentence}
+  #    Format: {emoji} {Verb-starting phrase}
   # ─────────────────────────────────────────────
   lint-pr-title:
     name: Lint PR title
