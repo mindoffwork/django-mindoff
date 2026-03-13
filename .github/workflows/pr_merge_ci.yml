@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       github.event.pull_request.merged == true &&
-      contains(fromJson('["root", "staging", "dev"]'), github.base_ref)
+      contains(fromJson('["root", "test/ci"]'), github.base_ref)
     permissions:
       contents: write
       pull-requests: read
