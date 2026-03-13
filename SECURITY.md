@@ -7,7 +7,7 @@ Only the latest version of the `django-mindoff` package is actively supported. S
 
 ## Reporting a Vulnerability
 
-Email us at **security@mindoff.work**. If you’re unsure whether something is a security issue, it’s still OK to reach out.
+Email us at **joe@mindoff.work**. If you’re unsure whether something is a security issue, it’s still OK to reach out.
 
 Include whatever you have, ideally:
 

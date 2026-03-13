@@ -15,19 +15,14 @@ Contributions help improve the framework and make it more useful for developers 
 
 Django Mindoff follows linear versioning system where only the latest version is actively supported. Before opening any issue, discussion or pull requests:
 
-    - Search the GitHub repository for related items to avoid duplicates.
-    - Make sure you're using the latest version of `django-mindoff` package.
+- Search the GitHub repository for related items to avoid duplicates.
+- Make sure you're using the latest version of `django-mindoff` package.
 
 ## Code of Conduct
 
-**Be respectful, open-minded and constructive**.
+> **Be respectful, open-minded and constructive**.
 
-- Treat other contributors and maintainers with respect.
-- Focus on improving the project, not winning arguments.
-- Provide helpful feedback and assume good intent.
-- Harassment, hostility, or dismissive behavior will not be tolerated.
-
-Disagreements about design or implementation are normal in software development. Keep discussions technical, respectful, and solution-oriented. Maintainers may moderate discussions, issues, or pull requests that do not follow these principles.
+Read the guidelines in repo: [Code of Conduct Document](https://github.com/mindoffwork/django-mindoff/blob/root/.github/CODE_OF_CONDUCT.md)
 
 ## Issues & Discussions
 
@@ -65,15 +60,14 @@ Avoid requesting changes to the behavior of existing features unless they are re
 
 **Option A - Fork**
 
-1. Click **Fork** in the GitHub UI to create your own copy of the repository.
-2. Clone your fork locally:
+Click **Fork** in the GitHub UI to create your own copy of the repository and Clone your fork locally:
 
 ```bash
 git clone https://github.com/mindoffwork/django-mindoff.git
 cd django-mindoff
 ```
 
-3. Add the upstream remote (so you can sync changes from the original repo):
+Add the upstream remote (so you can sync changes from the original repo):
 
 ```bash
 git remote add upstream https://github.com/mindoffwork/django-mindoff.git
@@ -83,7 +77,7 @@ git rebase upstream/root
 
 **Option B - Clone directly (Recommended only for maintainers and collaborators)**
 
-1. Clone the original repository:
+Clone the original repository:
 
 ```bash
 git clone https://github.com/mindoffwork/django-mindoff.git
@@ -147,7 +141,7 @@ internal/ci-changelog-step
 
 ### 6. Commit Message Guidelines
 
-Use [Gitmoji](https://gitmoji.dev) codes in commit messages that match the change type. Keep the text short and action-oriented. Please favor clarity over creativity and squashed commits over a long commit history.
+Use [Gitmoji](https://gitmoji.dev) codes in commit messages that match the change type. Keep the text short and action-oriented. Favor clarity over creativity.
 
 Example:
 
@@ -247,5 +241,5 @@ If you're using AI or similar tools, always review, understand, and test your ch
 
 <div class="admonition warning">
   <p class="admonition-title">Important Note</p>
-  <p>Pull requests that do not follow this guide properly may get rejected without a review.</p>
+  <p>Pull requests, Issues or Discussion threads that do not follow this guide properly may get rejected, closed or removed from the repo without any review or notice.</p>
 </div>
