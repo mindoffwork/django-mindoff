@@ -558,6 +558,11 @@ class RowValidator:
                 raise ValueError(
                     f"Django field not Supported with 'django-mindoff' Package: {django_field_name}"
                 )
+            if django_field_name == "DecimalField":
+                precision = getattr(field, "max_digits", None)
+                scale = getattr(field, "decimal_places", None)
+                if precision is not None and scale is not None:
+                    expected_dtype = pl.Decimal(precision=precision, scale=scale)
             valid_string_dtypes = (pl.Utf8, str)
             if not is_blank_true and dtype in valid_string_dtypes:
                 df = df.with_columns(

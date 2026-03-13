@@ -132,11 +132,22 @@ def _restore_modified_file(path, backup_path):
         print(f"[ERROR] Could not restore file {path}: {err}")
 
 
+def _is_in_backup_root(path, backup_root):
+    try:
+        abs_path = os.path.abspath(path)
+        abs_root = os.path.abspath(backup_root)
+        return os.path.commonpath([abs_path, abs_root]) == abs_root
+    except Exception:
+        return False
+
+
 def _make_wrapped_open(created_files, modified_files, backup_root, original_open):
     def _wrapped_open(file, mode="r", *a, **k):
         path = str(file)
         is_writing = any(m in mode for m in "wax+")
         if is_writing:
+            if _is_in_backup_root(path, backup_root):
+                return original_open(file, mode, *a, **k)
             if not os.path.exists(path):
                 created_files.add(path)
             elif path not in modified_files:
@@ -161,6 +172,8 @@ def _make_wrapped_write_text(
 ):
     def _wrapped_write_text(path_obj, data, encoding=None, errors=None):
         file = str(path_obj)
+        if _is_in_backup_root(file, backup_root):
+            return original_write_text(path_obj, data, encoding=encoding, errors=errors)
         if not os.path.exists(file):
             created_files.add(file)
         elif file not in modified_files:
@@ -175,6 +188,8 @@ def _make_wrapped_write_bytes(
 ):
     def _wrapped_write_bytes(path_obj, data):
         file = str(path_obj)
+        if _is_in_backup_root(file, backup_root):
+            return original_write_bytes(path_obj, data)
         if not os.path.exists(file):
             created_files.add(file)
         elif file not in modified_files:

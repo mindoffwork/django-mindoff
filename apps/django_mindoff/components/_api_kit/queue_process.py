@@ -434,7 +434,7 @@ def _compress_json_result(result):
     }
 
 
-def _compress_json_result_if_large(result, min_bytes: int):
+def _compress_json_result_if_large(result, min_bytes):
     if result is None:
         return None
     if _is_compressed_json_blob(result):

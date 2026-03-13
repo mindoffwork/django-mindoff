@@ -8,7 +8,7 @@ class TestSampleAPIView(MindoffTestCase):
     api_url_name = "{{API_URL_NAME}}"
 
     def test_acceptance_api_success(self):
-        user: callable | None = self.mo_create_user()
+        user: callable | None = self.mo_mock_user()
         payload: dict | list | None = None
         url_kwargs: dict | None = {"version": 1}
         query_params: dict | None = None
@@ -18,7 +18,7 @@ class TestSampleAPIView(MindoffTestCase):
             "json"
         )
 
-        response = self.mo_call_api(
+        response = self.mo_mock_call_api(
             self.api_url_name,
             user=user,
             payload=payload,

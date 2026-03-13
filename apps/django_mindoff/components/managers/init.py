@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 from ..helper_kit import mo_helper_kit
@@ -65,26 +66,13 @@ class DjangoProjectCreator:
     def _install_packages(self):
         print("[ACTION] Installing required packages.")
 
-        base_packages = [
-            # Core
-            "django",
-            "djangorestframework",
-            "python-decouple",
-            "django-ratelimit",
-            "pytest",
-            "pytest-django",
-            "model-bakery",
-            "typeguard",
-            # Polars
-            "polars",
-            "pandas",
-            "sqlalchemy",
-            "orjson",
-            "pyarrow",
-            # Queuing
-            "dramatiq",
-            "redis",
-        ]
+        base_packages = self._get_base_packages()
+        if not base_packages:
+            print(
+                "[WARN] No dependencies found in pyproject.toml. "
+                "Skipping package installation."
+            )
+            return
         subprocess.run(
             [self.pip_cmd, "install", *base_packages],
             check=True,
@@ -256,6 +244,35 @@ MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT = "120/m"
                 new_lines.insert(-1, f"{indent}'{value}',")
                 inside_list = False
         return "\n".join(new_lines)
+
+    def _get_base_packages(self):
+        pyproject_path = self.project_root / "pyproject.toml"
+        packages = self._read_pyproject_dependencies(
+            pyproject_path, optional_group="internal"
+        )
+        if packages:
+            return packages
+        return []
+
+    def _read_pyproject_dependencies(self, path, optional_group=None):
+        if not path.exists():
+            return []
+        data = tomllib.loads(path.read_text())
+        project = data.get("project", {})
+        base = project.get("dependencies", []) or []
+        optional = []
+        if optional_group:
+            opt = project.get("optional-dependencies", {})
+            optional = opt.get(optional_group, []) or []
+
+        # Preserve order and dedupe
+        seen = set()
+        combined = []
+        for item in list(base) + list(optional):
+            if item not in seen:
+                combined.append(item)
+                seen.add(item)
+        return combined
 
 
 # ======== FUNCTIONS =======

@@ -1,28 +1,6 @@
-"""
-TEST CASES:
-1. Basic exception -- ensure_equal(a, b) ✅
-2. Exception with custom message -- ensure_equal(a, b, msg="custom message for validation") ✅
-3. Json Response -- ensure_equal(a, b, is_exception=False) ✅
-4. Json Response with custom message -- ensure_equal(a, b, is_exception=False, msg="VALIDATION_ERR") ✅
-5. Aggregated Exception -- ensure_equal(a, b, is_aggregate=True) -- ensure_not_equal(c, d, is_aggregate=True) -- finalize() ✅
-6. Aggregated Json Response -- ensure_equal(a, b, is_aggregate=True, is_exception=False) -- ensure_not_equal(c, d, is_aggregate=True, is_exception=False) -- finalize() ✅
-7. Aggregated Json Response with custom message -- ensure_equal(a, b, is_aggregate=True, is_exception=False) -- ensure_not_equal(c, d, is_aggregate=True, is_exception=False) -- finalize(msg="VALIDATION_ERR") ✅
-
-TEST CASES FOR CUSTOM CODE PARAMETER:
-1. Custom code with exception -- ensure_equal(a, b, code="CUSTOM_CODE") ✅
-2. Custom code with json response -- ensure_equal(a, b, is_exception=False, code="CUSTOM_CODE") ✅
-3. Custom code with aggregate -- ensure_equal(a, b, is_aggregate=True, code="CUSTOM_CODE") ✅
-4. Custom code with aggregate json -- ensure_equal(a, b, is_aggregate=True, is_exception=False, code="CUSTOM_CODE") ✅
-5. All available codes are reflected in assertions ✅
-
-Available codes: UNEXPECTED_ERR, NOT_AUTHENTICATED, PERMISSION_DENIED, INVALID_PAYLOAD, INVALID_METHOD
-"""
-
-import logging
+﻿import logging
 import sys
-
 import pytest
-
 from ...components.validation_kit import (
     MindoffValidationError,
     ValidationError,
@@ -30,22 +8,30 @@ from ...components.validation_kit import (
 )
 
 
-# ---------------------------------------------------------------------------
-# TestImmediateValidator
-# Removed MindoffTestCase inheritance: this class uses none of those fixtures
-# (no DB, no HTTP, no models). The autouse `run` fixture was spinning up 8
-# heavy fixtures (APIClient, mock model, mock app, …) for every single test.
-# ---------------------------------------------------------------------------
-class TestImmediateValidator:
-    @pytest.fixture(autouse=True)
-    def _reset(self):
-        """Ensure aggregation state is clean before each test."""
-        mo_validation_kit.reset()
+class _CmpBoom:
+    def __eq__(self, other):
+        raise RuntimeError("eq failed")
 
-    # ── Acceptance (passing checks) ─────────────────────────────────────────
-    # is_exception=True is the canonical path; when ok=True, _record_or_raise
-    # returns True unconditionally regardless of is_exception.
-    # 3 smoke cases at the bottom confirm the is_exception=False route.
+    def __gt__(self, other):
+        raise RuntimeError("gt failed")
+
+    def __ge__(self, other):
+        raise RuntimeError("ge failed")
+
+    def __lt__(self, other):
+        raise RuntimeError("lt failed")
+
+    def __le__(self, other):
+        raise RuntimeError("le failed")
+
+
+class _BadIterable:
+    def __iter__(self):
+        raise RuntimeError("iter failed")
+
+
+class TestImmediateValidator:
+
     @pytest.mark.parametrize(
         "fn, kwargs",
         [
@@ -87,10 +73,10 @@ class TestImmediateValidator:
         ],
     )
     def test_validation_acceptance(self, fn, kwargs):
+        """ACCEPTANCE: Validation helpers return True for valid inputs."""
         result = getattr(mo_validation_kit, fn)(**kwargs, is_exception=True)
         assert result == True
 
-    # Smoke: confirm is_exception=False routing returns True when ok
     @pytest.mark.parametrize(
         "fn, kwargs",
         [
@@ -100,18 +86,14 @@ class TestImmediateValidator:
         ],
     )
     def test_validation_acceptance_json_smoke(self, fn, kwargs):
+        """ACCEPTANCE: JSON mode also returns True for valid validation checks."""
         result = getattr(mo_validation_kit, fn)(**kwargs, is_exception=False)
         assert result == True
 
-    # ── Rejection (failing checks) ──────────────────────────────────────────
-    # is_debug parametrize removed: the validation kit never branches on DEBUG
-    # inside _record_or_raise, so the duplicate set added zero coverage.
-    # is_exception=False mirror reduced to 6 representative cases (one per
-    # major exception category) — the wrapping is in shared _record_or_raise.
     @pytest.mark.parametrize(
         "fn, kwargs, is_exception, expected_exc, is_msg",
         [
-            # ── Native exception path (is_exception=True) ──
+            # â”€â”€ Native exception path (is_exception=True) â”€â”€
             (
                 "ensure_equal",
                 {"left": 3, "right": 5, "msg": "Custom Message 3 is not equal 5"},
@@ -242,7 +224,7 @@ class TestImmediateValidator:
             ),
             ("ensure_not_path", {"path": sys.executable}, True, FileExistsError, False),
             ("ensure", {"check": False}, True, ValidationError, False),
-            # ── MindoffValidationError path (is_exception=False) ──
+            # â”€â”€ MindoffValidationError path (is_exception=False) â”€â”€
             # Representative sample: one per exception category + custom-msg path.
             # The wrapping is in shared _record_or_raise; every method above also
             # exercises it through the exception path.
@@ -285,6 +267,7 @@ class TestImmediateValidator:
         ],
     )
     def test_validation_rejection(self, fn, kwargs, is_exception, expected_exc, is_msg):
+        """REJECTION: Invalid inputs raise expected errors in both exception and JSON modes."""
         if is_exception:
             with pytest.raises(expected_exc) as excinfo:
                 getattr(mo_validation_kit, fn)(**kwargs, is_exception=is_exception)
@@ -297,13 +280,10 @@ class TestImmediateValidator:
             if is_msg:
                 assert "Custom Message 3 is not equal 5" in str(errinfo.value.message)
 
-    # ── Boundary & Anomaly ──────────────────────────────────────────────────
-    # is_exception=False mirror removed for the same reason as rejection above.
-    # 2 smoke cases at the bottom confirm the json routing for boundary inputs.
     @pytest.mark.parametrize(
         "fn, kwargs, expected_result",
         [
-            # ── Boundary ──
+            # â”€â”€ Boundary â”€â”€
             ("ensure_equal", {"left": [], "right": []}, True),
             ("ensure_equal", {"left": [1], "right": (1,)}, True),
             ("ensure_greater_equal", {"left": 5, "right": 5}, True),
@@ -333,7 +313,7 @@ class TestImmediateValidator:
             ("ensure_falsey", {"value": ""}, True),
             ("ensure_truthy", {"value": " "}, True),
             ("ensure_finite", {"value": float("nan")}, ValueError),
-            # ── Anomaly ──
+            # â”€â”€ Anomaly â”€â”€
             ("ensure_equal", {"left": None, "right": None}, True),
             ("ensure_equal", {"left": object(), "right": object()}, ValueError),
             ("ensure_equal", {"left": iter([1, 2]), "right": [1, 2]}, True),
@@ -355,6 +335,7 @@ class TestImmediateValidator:
         ],
     )
     def test_validation_boundary_anomaly(self, fn, kwargs, expected_result):
+        """BOUNDARY: Edge and unusual inputs return expected pass or failure behavior."""
         if expected_result is not True:
             with pytest.raises(expected_result):
                 getattr(mo_validation_kit, fn)(**kwargs, is_exception=True)
@@ -362,7 +343,6 @@ class TestImmediateValidator:
             result = getattr(mo_validation_kit, fn)(**kwargs, is_exception=True)
             assert result == expected_result
 
-    # Smoke: boundary inputs through is_exception=False path
     @pytest.mark.parametrize(
         "fn, kwargs, expected_exc_type",
         [
@@ -371,23 +351,21 @@ class TestImmediateValidator:
         ],
     )
     def test_boundary_anomaly_json_smoke(self, fn, kwargs, expected_exc_type):
+        """ANOMALY: JSON mode preserves exception type for problematic edge inputs."""
         with pytest.raises(MindoffValidationError) as errinfo:
             getattr(mo_validation_kit, fn)(**kwargs, is_exception=False)
         assert errinfo.value.data["type"] == expected_exc_type.__name__
 
-
-# ---------------------------------------------------------------------------
-# TestAggregatedValidator
-# is_debug parametrize removed: no assertion in this test checks DEBUG-specific
-# behavior. The validation kit doesn't branch on settings.DEBUG in finalize().
-# ---------------------------------------------------------------------------
-class TestAggregatedValidator:
     @pytest.fixture(autouse=True)
     def _reset(self):
         mo_validation_kit.reset()
 
+
+class TestAggregatedValidator:
+
     @pytest.mark.parametrize("is_exception", [True, False])
     def test_multiple_failures(self, caplog, capsys, is_exception):
+        """REJECTION: Aggregate mode returns or raises all collected failures correctly."""
         mo_validation_kit.ensure_equal(
             left=1, right=2, is_aggregate=True, is_exception=is_exception
         )
@@ -414,19 +392,11 @@ class TestAggregatedValidator:
             with caplog.at_level(logging.ERROR):
                 assert not any("Traceback" in rec.message for rec in caplog.records)
 
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        mo_validation_kit.reset()
 
-# ---------------------------------------------------------------------------
-# TestCustomCodeValidator
-# Removed:
-#   - test_all_methods_accept_custom_code (130): when ok=True, code is never
-#     read by _record_or_raise. Passing-with-code acceptance already covered
-#     by test_custom_code_acceptance. Kwarg signature covered implicitly.
-#   - test_custom_code_preserved_in_mindoff_validation_error (35): every fn/code
-#     combo it tests is already in test_custom_code_rejection with identical asserts.
-#   - test_each_validation_method_with_custom_code_failure (130): the 14 fns
-#     it uniquely covered (not in test_custom_code_rejection) have been absorbed
-#     into test_custom_code_rejection below as proper parametrize cases.
-# ---------------------------------------------------------------------------
+
 class TestCustomCodeValidator:
     VALID_CODES = [
         "UNEXPECTED_ERR",
@@ -435,10 +405,6 @@ class TestCustomCodeValidator:
         "INVALID_PAYLOAD",
         "INVALID_METHOD",
     ]
-
-    @pytest.fixture(autouse=True)
-    def _reset(self):
-        mo_validation_kit.reset()
 
     @pytest.mark.parametrize(
         "fn, kwargs, code, is_exception, expected_result",
@@ -580,20 +546,16 @@ class TestCustomCodeValidator:
     def test_custom_code_acceptance(
         self, fn, kwargs, code, is_exception, expected_result
     ):
+        """ACCEPTANCE: Valid checks accept custom error codes without changing success flow."""
         result = getattr(mo_validation_kit, fn)(
             **kwargs, code=code, is_exception=is_exception
         )
         assert result == expected_result
 
-    # Expanded to absorb the 14 fns that were uniquely covered by the removed
-    # test_each_validation_method_with_custom_code_failure and the removed
-    # test_custom_code_preserved_in_mindoff_validation_error.
-    # Each absorbed fn uses a single representative code ("INVALID_PAYLOAD")
-    # since the code-preservation logic is in shared _record_or_raise.
     @pytest.mark.parametrize(
         "fn, kwargs, code, is_exception, expected_exc",
         [
-            # ── Original entries ──────────────────────────────────────────────
+            # â”€â”€ Original entries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # UNEXPECTED_ERR Failures
             (
                 "ensure_equal",
@@ -777,8 +739,8 @@ class TestCustomCodeValidator:
                 False,
                 ValueError,
             ),
-            # ── Absorbed from test_each_validation_method_with_custom_code_failure ──
-            # These 14 fns had no prior coverage of "fail + code= → .code preserved".
+            # â”€â”€ Absorbed from test_each_validation_method_with_custom_code_failure â”€â”€
+            # These 14 fns had no prior coverage of "fail + code= â†’ .code preserved".
             (
                 "ensure_not_same",
                 {"left": "a", "right": "a"},
@@ -868,6 +830,7 @@ class TestCustomCodeValidator:
         ],
     )
     def test_custom_code_rejection(self, fn, kwargs, code, is_exception, expected_exc):
+        """REJECTION: Failed checks keep custom codes in raised or wrapped errors."""
         if is_exception:
             with pytest.raises(expected_exc):
                 getattr(mo_validation_kit, fn)(
@@ -883,6 +846,7 @@ class TestCustomCodeValidator:
 
     @pytest.mark.parametrize("code", VALID_CODES)
     def test_custom_code_reflected_in_error_data(self, code):
+        """REJECTION: MindoffValidationError exposes the provided custom code."""
         with pytest.raises(MindoffValidationError) as errinfo:
             mo_validation_kit.ensure_equal(
                 left=1, right=2, code=code, is_exception=False
@@ -891,6 +855,7 @@ class TestCustomCodeValidator:
 
     @pytest.mark.parametrize("code", VALID_CODES)
     def test_custom_code_in_aggregate_exception(self, code):
+        """REJECTION: Aggregate exception mode preserves custom code during finalize."""
         mo_validation_kit.ensure_equal(
             left=1, right=2, is_aggregate=True, is_exception=True, code=code
         )
@@ -899,6 +864,7 @@ class TestCustomCodeValidator:
 
     @pytest.mark.parametrize("code", VALID_CODES)
     def test_custom_code_in_aggregate_json_response(self, code):
+        """REJECTION: Aggregate list mode returns custom code for each failure."""
         mo_validation_kit.ensure_equal(
             left=1, right=2, is_aggregate=True, is_exception=False, code=code
         )
@@ -915,6 +881,7 @@ class TestCustomCodeValidator:
         ],
     )
     def test_multiple_custom_codes_in_aggregate(self, code1, code2, code3):
+        """BOUNDARY: Aggregate failures keep each custom code in original order."""
         mo_validation_kit.ensure_equal(
             left=1, right=2, is_aggregate=True, is_exception=False, code=code1
         )
@@ -932,6 +899,7 @@ class TestCustomCodeValidator:
 
     @pytest.mark.parametrize("code", VALID_CODES)
     def test_custom_code_with_custom_message(self, code):
+        """REJECTION: Custom message and custom code are both retained on failure."""
         custom_msg = "Custom validation message"
         with pytest.raises(MindoffValidationError) as errinfo:
             mo_validation_kit.ensure_equal(
@@ -945,12 +913,14 @@ class TestCustomCodeValidator:
         assert errinfo.value.message == custom_msg
 
     def test_default_code_is_validation_err(self):
+        """BOUNDARY: Default error code is VALIDATION_ERR when no code is supplied."""
         with pytest.raises(MindoffValidationError) as errinfo:
             mo_validation_kit.ensure_equal(left=1, right=2, is_exception=False)
         assert errinfo.value.code == "VALIDATION_ERR"
 
     @pytest.mark.parametrize("code", VALID_CODES)
     def test_custom_code_in_aggregate_mixed_success_failure(self, code):
+        """BOUNDARY: Mixed aggregate results include only failed entries with custom code."""
         mo_validation_kit.ensure_equal(
             left=5, right=5, is_aggregate=True, is_exception=False, code=code
         )
@@ -964,47 +934,28 @@ class TestCustomCodeValidator:
         assert len(result) == 1
         assert result[0]["code"] == code
 
-
-class _CmpBoom:
-    def __eq__(self, other):
-        raise RuntimeError("eq failed")
-
-    def __gt__(self, other):
-        raise RuntimeError("gt failed")
-
-    def __ge__(self, other):
-        raise RuntimeError("ge failed")
-
-    def __lt__(self, other):
-        raise RuntimeError("lt failed")
-
-    def __le__(self, other):
-        raise RuntimeError("le failed")
-
-
-class _BadIterable:
-    def __iter__(self):
-        raise RuntimeError("iter failed")
-
-
-class TestValidationCoverageGaps:
     @pytest.fixture(autouse=True)
     def _reset(self):
         mo_validation_kit.reset()
 
+
+class TestValidationCoverageGaps:
+
     def test_mindoff_validation_error_rejects_invalid_data_type(self):
+        """REJECTION: MindoffValidationError rejects unsupported data payload types."""
         with pytest.raises(TypeError, match="'data' must be dict or list"):
-            MindoffValidationError(data="not-dict-or-list")
+            raise MindoffValidationError(data="not-dict-or-list")
 
     def test_ensure_equal_comparison_exception_path(self):
+        """ANOMALY: Comparison failures are converted into TypeError by ensure_equal."""
         with pytest.raises(TypeError, match="Comparison failed"):
-            mo_validation_kit.ensure_equal(
-                left=_CmpBoom(), right=1, is_exception=True
-            )
+            mo_validation_kit.ensure_equal(left=_CmpBoom(), right=1, is_exception=True)
 
     @pytest.mark.parametrize(
         "fn, kwargs",
         [
+            ("ensure_subclass", {"cls": 1, "parent": int}),
+            ("ensure_not_subclass", {"cls": 1, "parent": int}),
             ("ensure_greater", {"left": _CmpBoom(), "right": 1}),
             ("ensure_greater_equal", {"left": _CmpBoom(), "right": 1}),
             ("ensure_lesser", {"left": _CmpBoom(), "right": 1}),
@@ -1022,17 +973,7 @@ class TestValidationCoverageGaps:
         ],
     )
     def test_comparison_helpers_exception_paths(self, fn, kwargs):
-        with pytest.raises(TypeError):
-            getattr(mo_validation_kit, fn)(**kwargs, is_exception=True)
-
-    @pytest.mark.parametrize(
-        "fn, kwargs",
-        [
-            ("ensure_subclass", {"cls": 1, "parent": int}),
-            ("ensure_not_subclass", {"cls": 1, "parent": int}),
-        ],
-    )
-    def test_subclass_helpers_exception_paths(self, fn, kwargs):
+        """ANOMALY: Comparison helpers raise TypeError when operators fail internally."""
         with pytest.raises(TypeError):
             getattr(mo_validation_kit, fn)(**kwargs, is_exception=True)
 
@@ -1041,6 +982,7 @@ class TestValidationCoverageGaps:
         ["ensure_count_equal", "ensure_count_not_equal"],
     )
     def test_count_helpers_generic_exception_path(self, fn):
+        """ANOMALY: Count helpers raise TypeError for iterables that fail during iteration."""
         with pytest.raises(TypeError):
             getattr(mo_validation_kit, fn)(
                 left=_BadIterable(),
@@ -1053,16 +995,28 @@ class TestValidationCoverageGaps:
         [("list", []), ("error", None), ("exception", None)],
     )
     def test_finalize_no_errors_all_return_modes(self, mode, expected):
+        """BOUNDARY: Finalize returns empty outputs when no aggregate errors exist."""
         assert mo_validation_kit.finalize(return_mode=mode) == expected
 
     def test_finalize_default_error_mode_raises_mindoff_validation_error(self):
+        """REJECTION: Default finalize mode raises MindoffValidationError for collected failures."""
         mo_validation_kit.ensure_equal(
-            left=1, right=2, is_aggregate=True, is_exception=False, code="INVALID_PAYLOAD"
+            left=1,
+            right=2,
+            is_aggregate=True,
+            is_exception=False,
+            code="INVALID_PAYLOAD",
         )
         with pytest.raises(MindoffValidationError) as errinfo:
-            mo_validation_kit.finalize(code="INVALID_PAYLOAD", message="Aggregate failed")
+            mo_validation_kit.finalize(
+                code="INVALID_PAYLOAD", message="Aggregate failed"
+            )
 
         assert errinfo.value.code == "INVALID_PAYLOAD"
         assert errinfo.value.message == "Aggregate failed"
         assert isinstance(errinfo.value.data, list)
         assert len(errinfo.value.data) == 1
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        mo_validation_kit.reset()

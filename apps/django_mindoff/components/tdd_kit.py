@@ -1,35 +1,40 @@
+"""
+Mindoff TDD Kit
+1. MindoffTestCase
+    1.1. self.mo_mock_app
+    1.2. self.mo_mock_model
+    1.3. self.mo_mock_model_frms
+    1.4. self.mo_mock_call_api
+    1.5. self.mo_mock_user
+    1.6. self.mo_update_mock_model_frms
+    1.7. self.mo_assert_api_response
+    1.8. self.asserts
+2. MindoffRouterTestCase
+"""
+
 import shutil
 import sys
-import uuid
 import tempfile
-import os
-import importlib
+import uuid
 from pathlib import Path
-from typing import List, Tuple, Type, get_args, get_origin, Literal
-
+from typing import List, Tuple, Type, Literal
 import polars as pl
 import pytest
-from django.apps import apps
-from django.conf import settings
-from django.db import connection, models
-from django.test import SimpleTestCase, override_settings
-from django.urls import get_resolver, URLResolver, URLPattern
-from django.core.exceptions import ImproperlyConfigured
-from .helper_kit import mo_helper_kit
-from .validation_kit import mo_validation_kit
 from model_bakery import baker
 from typeguard import typechecked
-
-from ._tdd_kit import field_value_generator
-from django.urls import reverse, resolve, Resolver404
-from rest_framework.test import APIClient
-from .managers._create_app import DjangoAppCreator
-from django.urls import clear_url_caches
+from django.apps import apps
+from django.conf import settings
 from django.contrib.auth import get_user_model
-
-# Import the thread-local flag used to bypass queue mode during tests.
+from django.core.exceptions import ImproperlyConfigured
+from django.db import connection, models
+from django.test import SimpleTestCase, override_settings
+from django.urls import URLPattern, URLResolver, clear_url_caches, get_resolver, reverse
+from rest_framework.test import APIClient
 from .api_kit import _test_force_direct
-
+from .helper_kit import mo_helper_kit
+from .managers._create_app import DjangoAppCreator
+from .validation_kit import mo_validation_kit
+from ._tdd_kit import field_value_generator
 
 # ----------------
 # Constants
@@ -44,30 +49,81 @@ json_key = "application/json"
 # Classes
 # ----------------
 class MindoffTestCase:
+    """Pytest helper mixin for Django Mindoff API and model tests.
+
+    Exposed helper attributes are injected per-test through `run`:
+    - `self.mo_mock_app`
+    - `self.mo_mock_model`
+    - `self.mo_mock_model_frms`
+    - `self.mo_update_mock_model_frms`
+    - `self.mo_mock_call_api`
+    - `self.mo_assert_api_response`
+    - `self.mo_mock_user`
+    - `self.asserts`
+    """
+
     @pytest.fixture(autouse=True)
     def run(self, request):
-        self.asserts = request.getfixturevalue("_asserts")
         self.mo_mock_app = request.getfixturevalue("_mo_mock_app")
         self.mo_mock_model = request.getfixturevalue("_mo_mock_model")
         self.mo_mock_model_frms = request.getfixturevalue("_mo_mock_model_frms")
+        self.mo_mock_call_api = request.getfixturevalue("_mo_mock_call_api")
+        self.mo_mock_user = request.getfixturevalue("_mo_mock_user")
         self.mo_update_mock_model_frms = request.getfixturevalue(
             "_mo_update_mock_model_frms"
         )
-        self.mo_call_api = request.getfixturevalue("_mo_call_api")
         self.mo_assert_api_response = request.getfixturevalue("_mo_assert_api_response")
-        self.mo_create_user = request.getfixturevalue("_mo_create_user")
+        self.asserts = request.getfixturevalue("_asserts")
         self.client = APIClient()
         if hasattr(mo_validation_kit, "reset"):
             mo_validation_kit.reset()
 
     @pytest.fixture(scope="session")
     def _asserts(self):
+        """
+        Provide shared `django.test.SimpleTestCase` assertion helpers.
+
+        Usage:
+
+        ```python
+        self.asserts.assertEqual(actual, expected)
+        self.asserts.assertIn("ok", value)
+        ```
+
+        Possible responses:
+
+        - Returns `SimpleTestCase` assertion helper instance.
+        """
         return SimpleTestCase()
 
     @pytest.fixture
     def _mo_mock_app(self, request):
         """
-        Temporary Django App Creation Fixture (isolated, real-structure).
+        Create isolated temporary Django apps for test runtime.
+
+        Usage:
+
+        ```python
+        app_name = self.mo_mock_app()
+        app_name, temp_dir = self.mo_mock_app(is_return_path=True)
+        ```
+
+        Parameters:
+
+        - `app_name` (`str | None`, default=`None`):
+          Optional app label. Auto-generated when omitted.
+        - `is_return_path` (`bool`, default=`False`):
+          When `True`, returns both app name and temp directory path.
+
+        Possible responses:
+
+        - Returns `str` app name when `is_return_path=False`.
+        - Returns `(str, pathlib.Path)` when `is_return_path=True`.
+
+        Notes:
+
+        - Registers app in `INSTALLED_APPS` and injects a temporary URLConf.
+        - Automatically cleans modules, URL cache, and temp files at teardown.
         """
         from typing import NamedTuple
 
@@ -82,28 +138,16 @@ class MindoffTestCase:
         def __setup(app_name: str | None = None, *, is_return_path: bool = False):
             app_name = _validate_or_generate_app_name(created_apps, app_name)
             app_name = app_name.lower().replace(" ", "_")
-
-            # Create a unique temp directory for this specific app
             temp_dir = Path(tempfile.mkdtemp()).resolve()
-
-            # Add the temp_dir to the START of sys.path
-            # This ensures that when we say 'import {app_name}', Python looks here first
             sys.path.insert(0, str(temp_dir))
-
-            # In isolation mode, the dotted_path is just the app_name itself
             dotted_path = app_name
             app_dir = temp_dir / app_name
-
-            # --- Create app ---
-            # We use dotted_path (just the name) so apps.py shows: name = 'test_app'
             creator = DjangoAppCreator(dotted_path, isolated=True)
             creator.project_root = temp_dir
             creator.app_dir = str(app_dir)
             creator.settings_path = temp_dir / "dummy_settings.py"
             creator.urls_path = temp_dir / "dummy_urls.py"
             creator.run()
-
-            # --- URL and Settings Overrides ---
             mock_root_urlconf_name = f"urls_{app_name}"
             mock_root_path = temp_dir / f"{mock_root_urlconf_name}.py"
 
@@ -117,13 +161,11 @@ urlpatterns = original_patterns + [
 ]
             """
             mock_root_path.write_text(mock_root_content)
-
             override = override_settings(
                 INSTALLED_APPS=list(settings.INSTALLED_APPS) + [dotted_path],
                 ROOT_URLCONF=mock_root_urlconf_name,
             )
             override.enable()
-
             apps.set_installed_apps(settings.INSTALLED_APPS)
             apps.clear_cache()
             clear_url_caches()
@@ -139,11 +181,7 @@ urlpatterns = original_patterns + [
                 app_name, temp_dir, override, _ = created_apps.pop()
                 override.disable()
                 root_url_mod = f"urls_{app_name}"
-
-                # CRITICAL: Clear URL caches BEFORE removing modules
                 clear_url_caches()
-
-                # Remove app modules - be thorough with all submodules
                 mods_to_remove = [
                     mod_name
                     for mod_name in (sys.modules.keys())
@@ -154,17 +192,10 @@ urlpatterns = original_patterns + [
                         or mod_name.startswith(f"{root_url_mod}.")
                     )
                 ]
-
                 for mod_name in mods_to_remove:
                     sys.modules.pop(mod_name, None)
-
-                # Remove temp directory from sys.path
                 sys.path[:] = [p for p in sys.path if str(p) != str(temp_dir)]
-
-                # Clean up filesystem
                 shutil.rmtree(temp_dir, ignore_errors=True)
-
-            # Final Django house-cleaning - AFTER all apps are removed
             apps.clear_cache()
             clear_url_caches()
             apps.populate(settings.INSTALLED_APPS)
@@ -174,6 +205,41 @@ urlpatterns = original_patterns + [
 
     @pytest.fixture
     def _mo_mock_model(self, request):
+        """
+        Create dynamic Django models/tables for integration-style tests.
+
+        Usage:
+
+        ```python
+        OrderModel = self.mo_mock_model(
+            model_name="OrderModel",
+            table_name="orders",
+            fields={"total": models.FloatField(default=0)},
+        )
+        ```
+
+        Parameters:
+
+        - `model_name` (`str | None`, default=`None`):
+          Optional PascalCase model name. Must end with `Model` when provided.
+        - `app_name` (`str | None`, default=`None`):
+          Existing app label. Resolved/created dynamically when omitted.
+        - `table_name` (`str | None`, default=`None`):
+          Optional snake_case table suffix.
+        - `foreign_keys` (`list[tuple[str, str] | tuple[str, str, str]]`, default=`[]`):
+          FK specifications:
+          `(target_app, target_model)` or `(target_app, target_model, "required"|"optional")`.
+        - `fields` (`dict`, default=`{}`): Extra model fields to add.
+        - `base_model` (default=`models.Model`): Base class for generated model.
+
+        Possible responses:
+
+        - Returns generated Django model class.
+
+        Notes:
+
+        - Creates DB table on setup and drops it during teardown.
+        """
         created_models = []
         auto_created_app = None
 
@@ -221,6 +287,37 @@ urlpatterns = original_patterns + [
 
     @pytest.fixture
     def _mo_mock_model_frms(self, request):
+        """
+        Build model-to-Polars DataFrame fixtures from bakery-generated rows.
+
+        Usage:
+
+        ```python
+        model_frms = self.mo_mock_model_frms(
+            [OrderModel, ItemModel],
+            counts=[3, 5],
+        )
+        ```
+
+        Parameters:
+
+        - `models` (`list[type]`): Ordered model classes.
+        - `counts` (`list[int]`, default=`[]`): Row counts per model index.
+        - `exclude_columns` (`list[list[str]]`, default=`[]`):
+          Per-model columns to remove.
+        - `modify` (`list[dict]`, default=`[]`):
+          Per-model row mutation map: `{row_index: {"column": value}}`.
+        - `is_fk_as_id` (`bool`, default=`True`):
+          Convert FK values to FK ids.
+        - `is_enforce_db_column` (`bool`, default=`True`):
+          Use DB column names as DataFrame columns.
+        - `is_uuid_hex` (`bool`, default=`True`): Generate UUID values as hex.
+
+        Possible responses:
+
+        - Returns `dict[type, polars.DataFrame]`.
+        """
+
         @typechecked
         def __bake_model_frm_dict(
             models: List[Type],
@@ -260,7 +357,34 @@ urlpatterns = original_patterns + [
         return __bake_model_frm_dict
 
     @pytest.fixture
-    def _mo_update_mock_model_frms(self, request):
+    def _mo_update_mock_model_frms(self):
+        """
+        Update existing model DataFrame fixtures with fresh generated values.
+
+        Usage:
+
+        ```python
+        updated = self.mo_update_mock_model_frms(
+            model_frms,
+            keep_columns=[["id"]],
+        )
+        ```
+
+        Parameters:
+
+        - `df_dict` (`dict[type, polars.DataFrame]`): Existing model-frame map.
+        - `counts` (`list[int]`, default=`[]`): Generation counts per model index.
+        - `exclude_columns` (`list[list[str]]`, default=`[]`): Columns to drop.
+        - `modify` (`list[dict]`, default=`[]`): Per-model row mutation map.
+        - `keep_columns` (`list[list[str]]`, default=`[]`):
+          Per-model columns preserved from replacement. PK/FK columns are always protected.
+        - `is_uuid_hex` (`bool`, default=`True`): Generate UUID values as hex.
+
+        Possible responses:
+
+        - Returns updated `dict[type, polars.DataFrame]`.
+        """
+
         @typechecked
         def __update_model_frm_dict(
             df_dict: dict[Type, pl.DataFrame],
@@ -271,50 +395,67 @@ urlpatterns = original_patterns + [
             keep_columns: List[List[str]] = [],
             is_uuid_hex: bool = True,
         ) -> dict[Type, pl.DataFrame]:
+            """Return updated fixture DataFrames with generated replacement values."""
             updated_df_dict = {}
             models = list(df_dict.keys())
             counts = counts or [1] * len(models)
             baked_objects_per_model = []
             for idx, (model, df) in enumerate(df_dict.items()):
-                new_df = df.clone()
-                pk_name = model._meta.pk.db_column or model._meta.pk.attname
-                fk_cols = [
-                    (f.db_column or f.get_attname_column()[1])
-                    for f in model._meta.concrete_fields
-                    if f.is_relation
-                ]
-                user_keep = set(keep_columns[idx] if idx < len(keep_columns) else [])
-                keep = {pk_name, *fk_cols, *user_keep}
-
-                update_cols = [c for c in new_df.columns if c not in keep]
-                new_df = _apply_exclude_columns(idx, new_df, exclude_columns)
-
+                user_keep = keep_columns[idx] if idx < len(keep_columns) else []
+                keep = _get_protected_columns(model, user_keep)
                 objs = _generate_model_factory_objects(
                     idx, model, models, baked_objects_per_model, counts, is_uuid_hex
                 )
                 baked_objects_per_model.append(objs)
-                new_data = pl.DataFrame(
-                    [_obj_to_dict(obj, is_fk_as_id=True) for obj in objs]
-                )
-                field_map = {
-                    f.name: (f.db_column or f.get_attname_column()[1])
-                    for f in model._meta.concrete_fields
-                    if hasattr(f, "attname")
-                }
-                new_data = new_data.rename(
-                    {col: field_map.get(col, col) for col in new_data.columns}
-                )
+                new_df = _apply_exclude_columns(idx, df.clone(), exclude_columns)
+                factory_df = _get_factory_data_as_df(model, objs)
+                update_cols = [
+                    c
+                    for c in new_df.columns
+                    if c not in keep and c in factory_df.columns
+                ]
                 for col in update_cols:
-                    if col in new_data.columns:
-                        new_df = new_df.with_columns(new_data[col].alias(col))
-                new_df = _apply_modify(idx, new_df, modify)
-                updated_df_dict[model] = new_df
+                    new_df = new_df.with_columns(factory_df[col].alias(col))
+                updated_df_dict[model] = _apply_modify(idx, new_df, modify)
             return updated_df_dict
 
         return __update_model_frm_dict
 
     @pytest.fixture
-    def _mo_call_api(self, request):
+    def _mo_mock_call_api(self, request):
+        """
+        Invoke APIs by URL name with automatic method/headers handling.
+
+        Usage:
+
+        ```python
+        response = self.mo_mock_call_api(
+            "orders__create_order",
+            payload={"item": "A"},
+        )
+        ```
+
+        Parameters:
+
+        - `api_url_name` (`str`): Named URL route to call.
+        - `user` (default=`None`): Auth user to force-authenticate.
+        - `headers` (`dict | None`, default=`None`): Extra request headers.
+        - `payload` (`list | dict | None`, default=`None`): Request JSON body.
+        - `url_kwargs` (`dict | None`, default=`None`): URL kwargs for reverse lookup.
+        - `query_params` (`dict | None`, default=`None`): Query-string params.
+        - `**extra`: Passed through to Django test client call.
+
+        Possible responses:
+
+        - Returns raw Django/DRF response object.
+
+        Notes:
+
+        - HTTP method is resolved from API class `method`.
+        - GET/DELETE requests reject `payload` (use `query_params`).
+        - Queue-mode APIs are forced to direct mode for deterministic tests.
+        """
+
         @typechecked
         def __call(
             api_url_name: str,
@@ -326,11 +467,11 @@ urlpatterns = original_patterns + [
             query_params: dict | None = None,
             **extra,
         ):
+            """Execute API call and return raw Django/DRF response object."""
             from urllib.parse import urlencode
 
             resolved_url_kwargs = url_kwargs or {}
             is_versioned = _is_versioned_url(api_url_name)
-
             if is_versioned:
                 if "version" not in resolved_url_kwargs:
                     raise ValueError(
@@ -341,12 +482,9 @@ urlpatterns = original_patterns + [
                 version = int(resolved_url_kwargs["version"])
             else:
                 version = None
-
             api_cls_attr = _get_api_cls_attributes(api_url_name, version=version)
             JSON_CT = json_key
-
             method = getattr(api_cls_attr, "method", "get").lower()
-
             url = reverse(api_url_name, kwargs=resolved_url_kwargs)
             if query_params:
                 url = f"{url}?{urlencode(query_params)}"
@@ -372,8 +510,6 @@ urlpatterns = original_patterns + [
                     ),
                     is_exception=True,
                 )
-
-            # ── Dispatch (queue-mode APIs run synchronously via direct-mode override) ──
             _test_force_direct.active = True
             try:
                 client_method = getattr(self.client, method)
@@ -389,13 +525,40 @@ urlpatterns = original_patterns + [
                     )
             finally:
                 _test_force_direct.active = False
-
             return response
 
         return __call
 
     @pytest.fixture
     def _mo_assert_api_response(self, request):
+        """
+        Assert standardized API response contract and content type.
+
+        Usage:
+
+        ```python
+        self.mo_assert_api_response(
+            api_url_name="orders__create_order",
+            response=response,
+            expected_response_type="json",
+            expected_status_code=200,
+        )
+        ```
+
+        Parameters:
+
+        - `api_url_name` (`str`): URL name used in assertion messages.
+        - `response`: Raw Django/DRF response object.
+        - `expected_response_type` (`Literal["json","plain","html","binary","others"]`, default=`"json"`):
+          Expected response media type category.
+        - `expected_status_code` (`int`, default=`200`): Expected HTTP status code.
+
+        Possible responses:
+
+        - Raises assertion error on status/content-type mismatch.
+        - Returns `None` when assertions pass.
+        """
+
         @typechecked
         def __assert(
             *,
@@ -411,16 +574,11 @@ urlpatterns = original_patterns + [
                 f"[{api_url_name}] Expected HTTP {expected_status_code}, "
                 f"got {response.status_code}"
             )
-
             content_type = response.headers.get("Content-Type", "").lower()
-
-            # ── JSON ──────────────────────────────────────────────────────────
             if expected_response_type == "json":
                 assert (
                     json_key in content_type
                 ), f"[{api_url_name}] Expected JSON, got Content-Type={content_type}"
-
-            # ── Binary ───────────────────────────────────────────────────────
             elif expected_response_type == "binary":
                 assert (
                     content_type
@@ -432,14 +590,10 @@ urlpatterns = original_patterns + [
                 assert isinstance(
                     response.content, (bytes, bytearray)
                 ), f"[{api_url_name}] Binary response must be bytes"
-
-            # ── HTML ──────────────────────────────────────────────────────────
             elif expected_response_type == "html":
                 assert (
                     "text/html" in content_type
                 ), f"[{api_url_name}] Expected HTML, got Content-Type={content_type}"
-
-            # ── Plain ─────────────────────────────────────────────────────────
             elif expected_response_type == "plain":
                 assert (
                     "text/plain" in content_type
@@ -448,38 +602,53 @@ urlpatterns = original_patterns + [
         return __assert
 
     @pytest.fixture
-    def _mo_create_user(self, request):
+    def _mo_mock_user(self, request):
         """
-        Creates a Django user using model_bakery.
-        If username is not provided, baker generates a random one.
+        Create or reuse user fixtures for authenticated API tests.
+
+        Usage:
+
+        ```python
+        user = self.mo_mock_user(username="demo", password="secret123")
+        ```
+
+        Parameters:
+
+        - `username` (default=`None`): Username to reuse/create.
+        - `password` (`str`, default=`"password123"`): Raw password to set.
+        - `**extra_fields`: Additional user model fields for bakery creation.
+
+        Possible responses:
+
+        - Returns existing user when `username` already exists.
+        - Returns newly created user otherwise.
         """
 
         def __create(username=None, password="password123", **extra_fields):
             user_model = get_user_model()
-
             if username:
                 existing = user_model.objects.filter(username=username).first()
                 if existing:
                     return existing
                 extra_fields["username"] = username
-
             user = baker.make(user_model, **extra_fields)
-
             if password:
                 user.set_password(password)
                 user.save()
-
             return user
 
         return __create
 
 
 class MindoffRouterTestCase:
+    """Reusable assertions for API version-router behavior in `views.py`."""
+
     app_module: str
     router_function_name: str
 
     @pytest.fixture(autouse=True)
     def run(self, request):
+        """Load router callable and VERSION_MAP from configured module/class attributes."""
         import importlib
 
         views = importlib.import_module(self.app_module)
@@ -487,7 +656,7 @@ class MindoffRouterTestCase:
         self.version_map = self.router.VERSION_MAP
 
     def test_every_version_dispatches_to_correct_class(self):
-        """Each key in VERSION_MAP must dispatch to exactly the class it maps to."""
+        """Assert each router version dispatches to the expected API view class."""
         from unittest.mock import patch, MagicMock
         from django.test import RequestFactory
 
@@ -507,8 +676,7 @@ class MindoffRouterTestCase:
                 )
 
     def test_unknown_version_returns_404_with_correct_body(self):
-        """A version absent from VERSION_MAP must return HTTP 404 with detail and available_versions."""
-        import json
+        """Assert unknown versions return 404 with `INVALID_API_VERSION` payload."""
         from django.test import RequestFactory
         from rest_framework.response import Response
 
@@ -556,13 +724,11 @@ def _ensure_dynamic_app():
     app_path.mkdir(parents=True, exist_ok=True)
     (app_path / "__init__.py").write_text("")
     (app_path / "models.py").write_text("from django.db import models\n")
-
     sys.path.insert(0, str(temp_dir))
     new_installed = list(settings.INSTALLED_APPS) + [app_name]
     override = override_settings(INSTALLED_APPS=new_installed)
     override.enable()
     apps.set_installed_apps(new_installed)
-
     return {
         "name": app_name,
         "temp_dir": temp_dir,
@@ -571,10 +737,8 @@ def _ensure_dynamic_app():
 
 
 def _resolve_app_name(auto_created_app, provided_name: str | None) -> str:
-    """Handles the logic for identifying which Django app to use."""
     if provided_name:
         return _validate_or_generate_app_name(app_name=provided_name, is_exists=True)
-
     try:
         return mo_helper_kit.get_current_app_name()
     except (ValueError, AttributeError, IndexError):
@@ -835,14 +999,32 @@ def _get_api_cls_attributes(api_url_name: str, version: int | None = None):
     raise LookupError(f"No URL found with name '{api_url_name}'")
 
 
+def _get_protected_columns(model, user_keep_list: list[str]) -> set[str]:
+    pk_name = model._meta.pk.db_column or model._meta.pk.attname
+    fk_cols = [
+        (f.db_column or f.get_attname_column()[1])
+        for f in model._meta.concrete_fields
+        if f.is_relation
+    ]
+    return {pk_name, *fk_cols, *user_keep_list}
+
+
+def _get_factory_data_as_df(model, factory_objs) -> pl.DataFrame:
+    raw_data = pl.DataFrame([_obj_to_dict(o, is_fk_as_id=True) for o in factory_objs])
+    field_map = {
+        f.name: (f.db_column or f.get_attname_column()[1])
+        for f in model._meta.concrete_fields
+        if hasattr(f, "attname")
+    }
+    return raw_data.rename({c: field_map.get(c, c) for c in raw_data.columns})
+
+
 def __resolve_api_cls_from_callback(callback, api_url_name: str, version: int | None):
     while hasattr(callback, "__wrapped__"):
         callback = callback.__wrapped__
-
     view_class = getattr(callback, "view_class", None)
     if view_class:
         return view_class
-
     version_map = getattr(callback, "VERSION_MAP", None)
     if version_map is not None:
         if not version_map:
@@ -855,7 +1037,6 @@ def __resolve_api_cls_from_callback(callback, api_url_name: str, version: int | 
                 f"Available versions: {sorted(version_map.keys())}"
             )
         return version_map[version]
-
     raise ImproperlyConfigured(
         f"URL '{api_url_name}' is not a class-based view or a "
         f"version-router instance. The callback has neither a "

@@ -1,193 +1,133 @@
-# django-mindoff
+<h1>Django Mindoff</h1>
 
-`django-mindoff` is an architectural framework designed to eliminate repetitive API setup so developers can focus on business logic instead of infrastructure, scaffolding, and version coordination.
+[![Coverage Status](https://codecov.io/gh/mindoffwork/django-mindoff/branch/main/graph/badge.svg)](https://codecov.io/gh/mindoffwork/django-mindoff)
+[![PyPI version](https://img.shields.io/pypi/v/django-mindoff.svg?logo=pypi&logoColor=white)](https://pypi.org/project/django-mindoff/)
+[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/mindoffwork/django-mindoff/actions/workflows/ci.yml)
 
-It combines project automation, standardized API architecture, structured responses, testing utilities, and Polars-powered workflows into one cohesive system.
+_Build production-ready Django REST APIs faster with less boilerplate._
 
-## Project Status 🧪
+Django Mindoff is an architectural framework that manages the structure and mechanics of API development so developers can focus on business logic, with efficient data workflows powered by Polars.
 
-`django-mindoff` is currently experimental and in active development. Architecture, philosophy, functionality and structure may evolve. It is designed for fresh Django-Mindoff projects and is not intended for retrofitting into existing Django applications.
+## Key Features
 
-## Requirements ⚙️
+1. **Project Setup That Just Works**
+   Start a new API project with guided CLI commands for init, create, delete, and nuke. Projects start ready to run with a sensible structure, so developers can begin building APIs immediately without worrying about project layout.
 
-- Python ≥ 3.12
+2. **Fully Managed APIs**
+   Define request method, access control, payload rules, rate limits, and execution mode in a single API definition. Mindoff enforces these rules automatically, handling validation, security checks, and execution flow behind the scenes.
 
-All other framework dependencies are managed internally. `django-mindoff` selects compatible versions of Django, DRF, and Polars so you do not have to manage version alignment manually.
+3. **API Versioning That Stays Manageable**
+   Ship and evolve versioned APIs using a built‑in routing structure. APIs are automatically organized so new versions stay clean while existing clients continue working without disruption.
 
-## Installation 📦
+4. **Queue-Ready APIs**
+   Run APIs synchronously or as background processes when needed. Simply switch `process_mode` to `"queue"` and Mindoff handles queue orchestration, status tracking, progress updates, cancellation, and retries.
+
+5. **Validation in One Line**
+   Use simple validation helpers that keep API logic clean and cognitively light. With aggregation support, multiple validation errors can be captured together and returned in a structured response.
+
+6. **Consistent Responses, Every Time**
+   Return responses through a unified response structure using response endpoints. Messages stay professional, consistent, and predictable across the entire API surface.
+
+7. **Vectorized Model Validation & Bulk Writes**
+   Pass a `model_frame` (DataFrame or LazyFrame) to `create` or `update` and Mindoff validates it automatically against the Django model. Validation runs in a vectorized, loop‑free pipeline and valid rows are written directly to the model's table with high efficiency.
+
+8. **Querysets to DataFrames, Instantly**
+   Provide a Django queryset and Mindoff converts the results into a DataFrame or LazyFrame. Data is returned with built‑in pagination and streaming support, making large reads predictable and efficient.
+
+9. **Optimized Polars Utilities for DataFrame & LazyFrame**
+   Run checks, conversions, and transformations seamlessly across both DataFrame and LazyFrame with Mindoff’s Polars utilities. Operations run natively in vectorized form and stay tuned for performance and efficiency, keeping data pipelines smooth and predictable.
+
+10. **Tests With Almost No Setup**
+    Write API tests using declarative test mixins that talk to the API automatically.
+    Focus on verifying behavior instead of crafting request calls and basic assertions, which are handled automatically by Mindoff.
+
+## Quick Start
+
+### 1. Install the Package
 
 ```bash
 pip install django-mindoff
 ```
 
-## Quick Start 🚀
-
-### 1. Initialize a Project
+### 2. Initialize a Project
 
 ```bash
 django-mindoff init
 ```
 
-Creates a fully structured Django-Mindoff project with:
+_This sets up the project foundation for you, including structure, config files, and ready-to-run wiring. Framework dependencies are managed internally, and `django-mindoff` aligns compatible Django, DRF, and Polars versions for you. Read the complete list here: [requirements guide][requirements-guide]._
 
-- Virtual environment
-- `.env` configuration
-- Git initialization (if available)
-- Preconfigured architecture
+What you should see:
 
-### 2. Create Apps, Models, and APIs
+- A new project scaffold with `manage.py`, `mindoff.py`, `config/`, and `apps/`
+- Environment and config files ready to use
+
+### 3. Create an App
 
 ```bash
 python mindoff.py create
 ```
 
-Interactive CLI allows you to:
+In the interactive flow, choose option 1 and create an app named `shop`.
 
-- Create apps → `apps/<app_name>/`
-- Create models → `apps/<app_name>/models.py`
-- Create APIs → `apps/<app_name>/apis/<api_name>.py`
-- Auto-register routes
+What you should see:
 
-### 3. Add Your Logic
+- App folder at `apps/shop/`
+- App route linked as versioned URL at `config/urls.py`
+- App path added `INSTALLED_APPS` at `config/settings.py`
 
-Edit your generated API and return structured responses:
-
-```python
-return mo_response_kit.json_response(
-    code="SUCCESS",
-    category="success",
-    data={"message": "Hello World"}
-)
-```
-
-Run the server. Focus on your logic. Repeat.
-
-## Response Standard 📄
-
-All responses follow a consistent structure:
-
-```json
-{
-	"status": "ok",
-	"message": {
-		"code": "SUCCESS",
-		"title": "Success",
-		"description": "Operation completed successfully.",
-		"category": "success"
-	},
-	"data": {
-		"id": "ec4786f7-3646-4159-a091-7c83ba3addaf",
-		"name": "John Doe"
-	}
-}
-```
-
-No unstructured exceptions. No inconsistent payloads.
-Umm... One more thing. `django-mindoff` uses uuids for primary keys and foreign keys by design.
-
-## Architecture 🧭
-
-### Versioned Routing
-
-```
-<int:version>/<app_name>
-```
-
-Routers resolve the correct API version automatically.
-
-### Project Structure 📁
-
-A freshly generated project follows this layout:
-
-```text
-project_root/
-├─ manage.py
-├─ mindoff.py
-├─ pytest.ini
-├─ README.md
-├─ .env
-│
-├─ config/
-│  ├─ settings.py
-│  ├─ urls.py
-│  ├─ asgi.py
-│  ├─ wsgi.py
-│  └─ responses.csv
-│
-├─ templates/
-│  ├─ index.html
-│  └─ 404.html
-│
-└─ apps/
-   └─ <app_name>/
-      ├─ apps.py
-      ├─ models.py
-      ├─ serializers.py
-      ├─ views.py
-      ├─ urls.py
-      ├─ apis/
-      │  └─ <api_name>.py
-      ├─ components/
-      │  └─ <component_name>.py
-      └─ tests/
-         ├─ test_views.py
-         └─ test_apis/
-            └─ test_<api_name>.py
-```
-
-## Core Kits 🧰
-
-Mindoff is modular. Each kit removes a specific category of friction.
-
-**1. Project Management Kit:**
-Prompt-driven CLI for creating and organizing projects, apps, models, and APIs.
-
-**2. API Kit:**
-Centralized configuration layer handling validation, security, documentation, and error handling.
-
-**3. CRUD Kit:**
-Polars `DataFrame` and `LazyFrame` driven database operations with validation.
-
-**4. Polars Kit:**
-High-performance utilities for streaming-safe frame operations.
-
-**5. Validation Kit:**
-Single-line validation helpers that reduce conditional complexity.
-
-**6. Response Kit:**
-Structured JSON, file, text, and HTML responses.
-
-**7. TDD Kit:**
-Testing base classes and helpers for rapid API testing.
-
-## CLI Overview 🛠️
+### 4. Create an API
 
 ```bash
-django-mindoff init      # Create project
-django-mindoff delete    # Delete project
-python mindoff.py create # Create app/model/api
-python mindoff.py delete # Delete app
+python mindoff.py create
 ```
 
-## Testing ✅
+In the interactive flow, choose option 2 and create an API named `ping` under the `shop` app.
 
-`MindoffTestCase` provides:
+_This generates the API file and wires its route so the endpoint is callable right away._
 
-- Pytest integration
-- Mock app and model generation
-- Polars DataFrame and LazyFrame support
-- Assertion helpers
+What you should see:
 
-## Configuration ⚙️
+- API file at `apps/shop/apis/ping.py`
+- URL route auto-registered at `apps/shop/urls.py`
 
-Optional settings in `settings.py`:
+### 5. Return a Success Response
+
+Open `apps/shop/apis/ping.py` and add this inside the API class `run()` method:
 
 ```python
-MINDOFF_LOG_ERRORS_IN_DEBUG = False
-MINDOFF_TRACEBACK_DIRS = ["apps", "config"]
-REDIS_URL = config("REDIS_URL")
-POLARS_VALIDATOR_ERROR_COL = "__error__info"
-MINDOFF_USE_VIEW_CACHE = False
+def run(self, request, *args, **kwargs):
+    return mo_response_kit.json_response(
+        code="SUCCESS",
+        category="success",
+        data={"message": "Hello from shop ping"}
+    )
 ```
 
-`.env` is auto-generated during initialization.
+### 6. Run and Verify
+
+```bash
+python manage.py makemigrations
+python manage.py migrate
+python manage.py runserver
+```
+
+Open:
+
+- `http://127.0.0.1:8000/v1/shop/ping/`
+
+**What you should get:**
+
+- A JSON response with status, structured message metadata, and your data.message
+
+✅ You now have a working API endpoint running with a structured success response.
+
+From here, shape the `run()` method around your real business logic and output. To control response messaging, add custom entries in `config/responses.csv` with your preferred `http_status` code. When you are ready to move beyond Quick Start, continue with the [developer guide][developer-guide]. It covers the package features in detail, explains configuration and architecture choices, and helps you build real-world applications with confidence.
+
+## License
+
+This project uses the same BSD 3-Clause License as the Django project. See the [LICENSE][project-license] file for full terms.
+
+[requirements-guide]: https://mindoffwork.github.io/django-mindoff/architecture/management-kit/#default-package-set-installed-by-init
+[developer-guide]: https://mindoffwork.github.io/django-mindoff/developer_guide/
+[project-license]: https://github.com/mindoffwork/django-mindoff/blob/main/LICENSE

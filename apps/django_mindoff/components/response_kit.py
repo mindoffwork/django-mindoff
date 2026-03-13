@@ -1,31 +1,32 @@
+"""
+Mindoff Response Kit
+1. mo_response_kit.json_response
+2. mo_response_kit.file_response
+3. mo_response_kit.text_response
+4. mo_response_kit.html_response
+"""
+
 import csv
 import io
-import os
 import logging
 import mimetypes
+import os
+import shutil
 import textwrap
 import traceback
 import uuid
-import shutil
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Union
-
 from django.conf import settings
 from django.http import FileResponse, HttpResponse
-from rest_framework import status
 from rest_framework.response import Response
 from typeguard import typechecked
-
 from .helper_kit import mo_helper_kit
 from .validation_kit import mo_validation_kit
 
 # ----------------
 # Constants
 # ----------------
-CUSTOM_STATUS_CODE_TO_STATUS = {
-    202: "queued",
-}
 MINDOFF_RESPONSES = {}
 RESPONSES_FILE_NAME = "responses.csv"
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -54,7 +55,16 @@ default_json_response = {
 # Classes
 # ----------------
 class MindoffResponseHandler:
-    # -- 1. Json response
+    """Response helper facade for standardized API output contracts.
+
+    Typical usage:
+
+    ```python
+    from django_mindoff.components.response_kit import mo_response_kit
+    return mo_response_kit.json_response(...)
+    ```
+    """
+
     @typechecked
     def json_response(
         self,
@@ -64,6 +74,33 @@ class MindoffResponseHandler:
         data: Union[Dict[str, Any], List[Dict[str, Any]]] = {},
         exception: Exception | None = None,
     ):
+        """Return standardized JSON API envelope using response-code metadata.
+
+        Usage:
+
+        ```python
+        from django_mindoff.components.response_kit import mo_response_kit
+
+        return mo_response_kit.json_response(
+            code="SUCCESS",
+            category="success",
+            data={"id": "abc123"},
+        )
+        ```
+
+        Parameters:
+
+        - `code`: Response code defined in `config/responses.csv`.
+        - `category`: UI/semantic category for clients. One of:
+          `danger`, `warning`, `info`, `success`.
+        - `data`: Response payload body.
+        - `exception`: Optional exception object for debug/log context.
+
+        Behavior:
+
+        - HTTP status and message metadata are resolved from `responses.csv`.
+        - Unknown/empty `code` falls back to `UNEXPECTED_ERR`.
+        """
         json_response_msg = default_json_response.copy()
         if code not in MINDOFF_RESPONSES or code == "":
             e = ValueError(f"Unknown Response code: '{code}'")
@@ -115,7 +152,6 @@ class MindoffResponseHandler:
             status=http_status,
         )
 
-    # -- 2. File response
     def file_response(
         self,
         file_obj: Union[str, io.BytesIO],
@@ -123,11 +159,30 @@ class MindoffResponseHandler:
         filename: str | None = None,
         content_type: str | None = None,
     ):
-        """
-        Return a file download response.
-        - file_obj can be a file path (str) or a BytesIO object.
-        - filename is optional; if not provided, a unique name will be generated.
-        - content_type is auto-detected from filename if not provided.
+        """Return downloadable file response from file path or in-memory bytes.
+
+        Usage:
+
+        ```python
+        from django_mindoff.components.response_kit import mo_response_kit
+        import io
+
+        return mo_response_kit.file_response("exports/orders.csv")
+
+        # OR
+        buffer = io.BytesIO(b"id,total\\n1,30\\n")
+        return mo_response_kit.file_response(
+            buffer,
+            filename="orders.csv",
+            content_type="text/csv",
+        )
+        ```
+
+        Parameters:
+
+        - `file_obj`: File path (`str`) or in-memory bytes (`io.BytesIO`).
+        - `filename`: Optional download filename. Auto-generated for BytesIO if omitted.
+        - `content_type`: Optional MIME type override.
         """
         try:
             if isinstance(file_obj, str):
@@ -136,9 +191,8 @@ class MindoffResponseHandler:
                     open(file_obj, "rb"), content_type=content_type or guessed_type
                 )
                 filename = filename or file_obj.split("/")[-1]
-
             elif isinstance(file_obj, io.BytesIO):
-                file_obj.seek(0)  # ensure pointer is at start
+                file_obj.seek(0)
                 guessed_type, _ = mimetypes.guess_type(filename or "")
                 response = FileResponse(
                     file_obj, content_type=content_type or guessed_type
@@ -163,22 +217,38 @@ class MindoffResponseHandler:
                 code="UNEXPECTED_ERR", category="danger", data=[], exception=e
             )
 
-    # -- 3. Text response
     def text_response(
         self,
         text: str,
         *,
         status_code: int = 200,
     ):
+        """Return plain text HTTP response.
+
+        Usage:
+
+        ```python
+        from django_mindoff.components.response_kit import mo_response_kit
+        return mo_response_kit.text_response("ok", status_code=200)
+        ```
+        """
         return HttpResponse(text, content_type="text/plain", status=status_code)
 
-    # -- 4. HTML response
     def html_response(
         self,
         html: str,
         *,
         status_code: int = 200,
     ):
+        """Return HTML HTTP response.
+
+        Usage:
+
+        ```python
+        from django_mindoff.components.response_kit import mo_response_kit
+        return mo_response_kit.html_response("<h1>Ready</h1>", status_code=200)
+        ```
+        """
         return HttpResponse(html, content_type="text/html", status=status_code)
 
 
@@ -186,8 +256,19 @@ class MindoffResponseHandler:
 # Functions
 # ----------------------------------
 def load_responses_csv(csv_location=None):
+    """Load and validate response code metadata into in-memory cache.
+
+    Source order:
+    1. `config/responses.csv` in project root
+    2. package fallback CSV in framework resources
+
+    Required headers:
+    - `code`
+    - `title`
+    - `description`
+    - `http_status`
+    """
     csv_path = csv_location or _get_csv_path()
-    # --- New Logic Start ---
     if not os.path.exists(csv_path):
         try:
             from .managers import resources as resource_pkg
@@ -225,7 +306,6 @@ def load_responses_csv(csv_location=None):
         header_map = {h.lower(): h for h in reader.fieldnames}
         responses = {}
         seen_codes = set()
-
         for line_num, row in enumerate(reader, start=2):
             row_data = {
                 h: (row[header_map[h]].strip() if row[header_map[h]] else "")
@@ -251,7 +331,6 @@ def load_responses_csv(csv_location=None):
                 is_exception=True,
             )
             derived_status = _derive_status_from_http(http_status)
-
             for k, v in row_data.items():
                 mo_validation_kit.ensure_truthy(
                     value=v, msg=f"Empty '{k}' at line {line_num}", is_exception=True
@@ -267,7 +346,6 @@ def load_responses_csv(csv_location=None):
         fallback_title=default_json_response_title,
         fallback_description=default_json_response_description,
     )
-
     for k, v in defaults.items():
         responses.setdefault(k, v)
     global MINDOFF_RESPONSES
@@ -283,16 +361,12 @@ def _get_csv_path():
 
 
 def _derive_status_from_http(status_code: int) -> str:
-    if status_code in CUSTOM_STATUS_CODE_TO_STATUS:
-        return CUSTOM_STATUS_CODE_TO_STATUS[status_code]
-
     if 200 <= status_code < 300:
         return "ok"
     if 400 <= status_code < 500:
         return "fail"
     if 500 <= status_code < 600:
         return "exception"
-
     raise ValueError(f"Unsupported HTTP status code: {status_code}")
 
 
@@ -303,7 +377,6 @@ def _load_response_defaults(
     fallback_description: str,
 ) -> Dict[str, dict]:
     defaults: Dict[str, dict] = {}
-
     with DEFAULT_RESPONSES_CSV.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -315,8 +388,6 @@ def _load_response_defaults(
                 "title": row["title"],
                 "description": row["description"],
             }
-
-    # always inject the fallback / unexpected error
     defaults[fallback_code] = {
         "http_status": 500,
         "status": _derive_status_from_http(500),
@@ -324,7 +395,6 @@ def _load_response_defaults(
         "title": fallback_title,
         "description": fallback_description,
     }
-
     return defaults
 
 

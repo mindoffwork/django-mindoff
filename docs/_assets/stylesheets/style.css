@@ -1,0 +1,135 @@
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@400;700;900&display=swap");
+:root {
+	--mo-white: #ffffff;
+	--mo-fawn: #faf5ee;
+	--mo-black: #000000;
+	--mo-green: #d8e995;
+	--mo-yellow: #f7ec87;
+}
+
+[data-md-color-scheme="default"] {
+	--md-default-bg-color: var(--mo-fawn);
+	--md-default-fg-color: var(--mo-black);
+	--md-default-fg-color--light: #3d3b37;
+	--md-default-fg-color--lighter: #6b6660;
+	--md-default-fg-color--lightest: #9b948a;
+	--md-code-bg-color: #efeae2;
+	--md-code-fg-color: var(--mo-black);
+	--md-accent-fg-color: #95ab4d;
+}
+
+.md-header,
+.md-tabs {
+	background: var(--mo-white);
+	color: var(--mo-black);
+	border-bottom: 3px solid rgba(0, 0, 0, 0.05);
+	box-shadow: none;
+}
+
+[data-md-color-scheme="default"][data-md-color-primary="black"] .md-header {
+	background-color: #faf5ee80;
+	-webkit-backdrop-filter: blur(12px);
+	backdrop-filter: blur(12px);
+}
+
+[data-md-color-scheme="default"][data-md-color-primary="black"] .md-tabs {
+	background-color: var(--mo-fawn);
+}
+
+.md-typeset mark {
+	background: var(--mo-yellow);
+	color: var(--mo-black);
+}
+
+.md-typeset h1 {
+	font-weight: 900;
+	letter-spacing: -0.05em;
+}
+.md-typeset h2 {
+	font-weight: 700;
+	letter-spacing: -0.02em;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-typeset h5,
+.md-typeset h6 {
+	font-family: "Poppins", sans-serif;
+}
+
+.md-search__form {
+	background-color: transparent;
+	border: 2px solid #00000010;
+	border-radius: 1rem;
+}
+.md-search__input {
+	background-color: #00000005;
+}
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+	background-color: var(--md-default-bg-color);
+	border-radius: 1rem;
+	box-shadow: none;
+	color: var(--md-default-fg-color);
+}
+
+[data-md-toggle="search"]:checked ~ .md-header .md-search__output {
+	box-shadow: none;
+	opacity: 1;
+	margin-top: 0.25rem;
+	border-radius: 8px;
+}
+
+.md-search-result__meta {
+	color: rgba(0, 0, 0, 0.5);
+	font-size: 0.7rem;
+	background-color: var(--mo-fawn);
+}
+
+.md-search__input::placeholder,
+.md-search__input ~ .md-search__icon {
+	color: #00000050;
+}
+
+.md-header__source {
+	width: auto !important;
+	max-width: none !important;
+}
+
+.md-header__source .md-source {
+	width: auto !important;
+}
+
+.md-header__source .md-source__repository {
+	display: none !important;
+}
+
+.md-header__source .md-source__facts {
+	display: none !important;
+}
+
+.md-footer {
+	border-top: 2px solid #00000010;
+	background-color: var(--mo-fawn);
+	color: var(--mo-black);
+}
+.md-footer-meta {
+	background-color: var(--mo-fawn);
+	color: var(--mo-black);
+}
+.md-copyright__highlight {
+	font-family: "Poppins", sans-serif;
+	letter-spacing: 0.025em;
+	font-weight: 500;
+	font-size: 0.64rem;
+	color: var(--mo-black);
+	opacity: 60%;
+}
+
+html .md-footer-meta.md-typeset a {
+	font-family: "Poppins", sans-serif;
+	color: var(--mo-black);
+	opacity: 60%;
+	font-size: 0.64rem;
+}

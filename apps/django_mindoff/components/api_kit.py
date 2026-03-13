@@ -1,29 +1,25 @@
-from rest_framework import status
-from rest_framework.response import Response
-from django.http import JsonResponse
-from rest_framework.views import APIView
-from types import SimpleNamespace
-from functools import wraps
-from redis.exceptions import RedisError
-from .response_kit import mo_response_kit
-from .validation_kit import mo_validation_kit, MindoffValidationError
-from typing import Any, Dict
-from ._helper_kit.validate_schema import validate_schema
-import json
 import threading
-from typing import Any, Dict, List, Union, Optional, Literal, Callable
-from django.urls import reverse
-from ._api_kit.redis import update_progress, get_queue_status, mark_cancelled
-from ._api_kit.queue_process import enqueue_process
-from django_ratelimit.core import is_ratelimited
+from functools import wraps
+from types import SimpleNamespace
+from typing import Literal
 from django.urls import get_resolver
+from django.urls import reverse
+from django_ratelimit.core import is_ratelimited
+from redis.exceptions import RedisError
 from rest_framework.exceptions import (
-    NotAuthenticated,
     AuthenticationFailed,
+    NotAuthenticated,
     PermissionDenied,
     Throttled,
 )
-from ._api_kit.api_router import BaseVersionRouter
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from ._api_kit.api_router import APIVersionRouter
+from ._api_kit.queue_process import enqueue_process
+from ._api_kit.redis import get_queue_status, mark_cancelled, update_progress
+from ._helper_kit.validate_schema import validate_schema
+from .response_kit import mo_response_kit
+from .validation_kit import MindoffValidationError, mo_validation_kit
 
 # ----------------
 # Constants
@@ -38,6 +34,24 @@ _test_force_direct = threading.local()
 # Classes
 # ----------------
 class MindoffAPIMixin(APIView):
+    """
+    Mixin class used to define a Mindoff API.
+
+    Mindoff APIs are built on top of Django Rest Framework's APIView.
+    This class provides common functionality for all Mindoff APIs.
+
+    Usage Example::
+        from django_mindoff.components.api_kit import MindoffAPIMixin
+
+        class MyAPI(MindoffAPIMixin):
+            api_url_name = "my_api"
+            api_name = "My API"
+            api_description = "This is an example API."
+
+            def run(self, request):
+                return Response({"message": "Hello World!"})
+    """
+
     # 1. API Identity
     api_url_name: str = ""
     api_name: str = ""
@@ -62,84 +76,42 @@ class MindoffAPIMixin(APIView):
     # 5. Usage Limits Per User
     api_request_limit: str | None = "30/m"
     queue_detail_api_limit: str | None = "30/m"
-    queue_status_stream_api_limit: int | None = 3
     queue_cancel_api_limit: str | None = "30/m"
     queue_retry_api_limit: str | None = "30/m"
+    queue_status_stream_api_limit: int | None = 3
+
+    def _get_progress_steps_config(self) -> dict:
+        """Return class-level progress_steps config and block runtime instance overrides."""
+        mo_validation_kit.ensure_falsey(
+            "progress_steps" in self.__dict__,
+            msg=(
+                "`progress_steps` must be defined as a class-level API config and "
+                "must not be reassigned on `self` during request execution."
+            ),
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        steps = getattr(self.__class__, "progress_steps", None)
+        return steps if isinstance(steps, dict) else {}
 
     def dispatch(self, request, *args, **kwargs):
+        """Add one line docstring here"""
         try:
             return super().dispatch(request, *args, **kwargs)
         except Exception as exc:
             response = self.handle_exception(exc)
             return self._dispatch_ensure_response_is_rendered(response)
 
-    def _dispatch_ensure_response_is_rendered(self, response):
-        if not hasattr(response, "accepted_renderer"):
-            from rest_framework.renderers import JSONRenderer
-
-            response.accepted_renderer = JSONRenderer()
-            response.accepted_media_type = "application/json"
-            response.renderer_context = self.get_renderer_context()
-        return response
-
     def initial(self, request, *args, **kwargs):
+        """Add one line docstring here"""
         super().initial(request, *args, **kwargs)
         self._initial_validate_request_method(request)
         self._initial_validate_api_rate_limit(request)
         if request.method in ("POST", "PUT"):
             self._initial_validate_request_payload(request)
 
-    def _initial_validate_request_method(self, request):
-        mo_validation_kit.ensure_equal(
-            self.method.upper(),
-            request.method,
-            msg=f"Method '{request.method}' not allowed.",
-            code="INVALID_METHOD",
-        )
-
-    def _initial_validate_api_rate_limit(self, request):
-        if self.api_request_limit:
-            limited = is_ratelimited(
-                request._request,
-                group=self.api_url_name,
-                key="user_or_ip",
-                rate=self.api_request_limit,
-                increment=True,
-            )
-            mo_validation_kit.ensure_falsey(
-                limited,
-                msg="Maximum allowed request limit exceeded by the user for the API.",
-                code="API_RATE_LIMITED",
-            )
-
-    def _initial_validate_request_payload(self, request):
-        payload = request.data if request.data not in (None, "") else {}
-        if self.max_payload_size is not None:
-            content_length = request.META.get("CONTENT_LENGTH")
-            if content_length:
-                size_mb = int(content_length) / (1024 * 1024)
-                mo_validation_kit.ensure_lesser_equal(
-                    round(float(size_mb), 2),
-                    round(float(self.max_payload_size), 2),
-                    msg=f"Payload too large: {size_mb:.2f} MB (Limit: {self.max_payload_size} MB)",
-                    code="PAYLOAD_TOO_LARGE",
-                )
-        if self.payload_validation is not None:
-            if self.payload_schema is None:
-                mo_validation_kit.ensure_falsey(
-                    payload,
-                    msg="This API does not accept a request payload.",
-                    code="PAYLOAD_NOT_ALLOWED",
-                )
-            else:
-                validate_schema(
-                    payload,
-                    self.payload_schema,
-                    max_nesting_depth=self.max_payload_depth,
-                    validation_mode=self.payload_validation,
-                )
-
     def validate_api_configuration(self):
+        """Add one line docstring here"""
         for attr_name in ("authentication_classes", "permission_classes"):
             classes = getattr(self, attr_name)
             mo_validation_kit.ensure_type(
@@ -320,7 +292,8 @@ class MindoffAPIMixin(APIView):
             is_exception=True,
             code="API_CONFIG_ERR",
         )
-        if self.progress_steps is not None:
+        steps_cfg = self._get_progress_steps_config()
+        if steps_cfg:
             mo_validation_kit.ensure_equal(
                 self.process_mode,
                 "queue",
@@ -332,7 +305,7 @@ class MindoffAPIMixin(APIView):
                 is_exception=True,
                 code="API_CONFIG_ERR",
             )
-            _validate_progress_steps(self.progress_steps, self.api_url_name)
+            _validate_progress_steps(steps_cfg, self.api_url_name)
 
     def get(self, request, *args, **kwargs):
         return self._handle_request_logic(request, *args, **kwargs)
@@ -345,6 +318,161 @@ class MindoffAPIMixin(APIView):
 
     def delete(self, request, *args, **kwargs):
         return self._handle_request_logic(request, *args, **kwargs)
+
+    def run(self, request, *args, **kwargs):
+        """Define API business logic in subclasses."""
+        raise NotImplementedError("You must implement run() in your API class")
+
+    def progress_checkpoint(
+        self,
+        request,
+        checkpoint_key: str,
+        *,
+        msg: str | None = None,
+    ):
+        """
+        Record progress for a queue task at a checkpoint, updating the percent
+        and label while validating the checkpoint key and checking for cancellation.
+
+        Usage:
+
+        ```python
+        class CreateOrderAPI(MindoffAPIMixin):
+            process_mode = "queue"
+            progress_steps = {
+                "validate": {"label": "Validated input", "percent": 10},
+                "process": {"label": "Processed data", "percent": 60},
+                "finalize": {"label": "Finalized response", "percent": 90},
+            }
+
+            def run(self, request, *args, **kwargs):
+                self.progress_checkpoint(request, "validate")
+                self.progress_checkpoint(request, "process", msg="Rows processed")
+                self.progress_checkpoint(request, "finalize")
+                return mo_response_kit.json_response(
+                    code="SUCCESS",
+                    category="success",
+                )
+        ```
+
+        Parameters:
+
+        - `request` (`Any`): Current request object. Queue context is read from
+          `request.queue_task_uuid`.
+        - `checkpoint_key` (`str`): Key in class-level `progress_steps` mapped to a
+          step config containing `label` and `percent`.
+        - `msg` (`str | None`, default=`None`): Optional progress message.
+          When omitted, configured step `label` is used.
+
+        Possible responses:
+
+        - Returns `None` when request is not running in queue context.
+        - Updates queue progress when checkpoint key is valid.
+        - Raises `MindoffValidationError` when queue cancellation is requested.
+        - Raises validation error when checkpoint key is not configured.
+
+        Notes:
+
+        - Intended for `process_mode="queue"` APIs.
+        - `progress_steps` should follow:
+          `{"step_key": {"label": "...", "percent": int}}`.
+        - Use it at meaningful checkpoints so clients can show progress between queued and completed.
+        """
+        queue_task_uuid = getattr(request, "queue_task_uuid", None)
+        if not queue_task_uuid:
+            return
+        steps = self._get_progress_steps_config()
+        mo_validation_kit.ensure_truthy(
+            checkpoint_key in steps,
+            msg=(
+                f"progress_checkpoint called with unknown key '{checkpoint_key}'. "
+                f"Available keys: {list(steps.keys())}"
+            ),
+            is_exception=True,
+            code="API_CONFIG_ERR",
+        )
+        step_cfg = steps[checkpoint_key]
+        percent = step_cfg["percent"]
+        label = step_cfg["label"]
+        message = msg if msg is not None else label
+        redis_state = get_queue_status(str(queue_task_uuid))
+        if _is_cancel_requested(redis_state):
+            mark_cancelled(str(queue_task_uuid))
+            raise MindoffValidationError(
+                message="Queue task was cancelled",
+                code="QUEUE_TASK_CANCELLED",
+                category="warning",
+                data={"queue_id": str(queue_task_uuid), "status": "cancelled"},
+            )
+        update_progress(
+            queue_task_uuid,
+            progress=percent,
+            step=label,
+            message=message,
+        )
+
+    def handle_exception(self, exc):
+        """Add one line docstring here"""
+        return _resolve_api_exception(exc)
+
+    def _dispatch_ensure_response_is_rendered(self, response):
+        if not hasattr(response, "accepted_renderer"):
+            from rest_framework.renderers import JSONRenderer
+
+            response.accepted_renderer = JSONRenderer()
+            response.accepted_media_type = "application/json"
+            response.renderer_context = self.get_renderer_context()
+        return response
+
+    def _initial_validate_request_method(self, request):
+        mo_validation_kit.ensure_equal(
+            self.method.upper(),
+            request.method,
+            msg=f"Method '{request.method}' not allowed.",
+            code="INVALID_METHOD",
+        )
+
+    def _initial_validate_api_rate_limit(self, request):
+        if self.api_request_limit:
+            limited = is_ratelimited(
+                request._request,
+                group=self.api_url_name,
+                key="user_or_ip",
+                rate=self.api_request_limit,
+                increment=True,
+            )
+            mo_validation_kit.ensure_falsey(
+                limited,
+                msg="Maximum allowed request limit exceeded by the user for the API.",
+                code="API_RATE_LIMITED",
+            )
+
+    def _initial_validate_request_payload(self, request):
+        payload = request.data if request.data not in (None, "") else {}
+        if self.max_payload_size is not None:
+            content_length = request.META.get("CONTENT_LENGTH")
+            if content_length:
+                size_mb = int(content_length) / (1024 * 1024)
+                mo_validation_kit.ensure_lesser_equal(
+                    round(float(size_mb), 2),
+                    round(float(self.max_payload_size), 2),
+                    msg=f"Payload too large: {size_mb:.2f} MB (Limit: {self.max_payload_size} MB)",
+                    code="PAYLOAD_TOO_LARGE",
+                )
+        if self.payload_validation is not None:
+            if self.payload_schema is None:
+                mo_validation_kit.ensure_falsey(
+                    payload,
+                    msg="This API does not accept a request payload.",
+                    code="PAYLOAD_NOT_ALLOWED",
+                )
+            else:
+                validate_schema(
+                    payload,
+                    self.payload_schema,
+                    max_nesting_depth=self.max_payload_depth,
+                    validation_mode=self.payload_validation,
+                )
 
     def _handle_request_logic(self, request, *args, **kwargs):
         effective_mode = (
@@ -400,129 +528,25 @@ class MindoffAPIMixin(APIView):
                     "status_stream_url": status_stream_url,
                     "cancel_url": cancel_url,
                     "retry_url": retry_url,
-                    "progress_steps": (
-                        self.progress_steps
-                        if isinstance(self.progress_steps, dict)
-                        else {}
-                    )
-                    or {},
+                    "progress_steps": (self._get_progress_steps_config()) or {},
                 },
             )
 
         return self.run(request, *args, **kwargs)
-
-    def run(self, request, *args, **kwargs):
-        raise NotImplementedError("You must implement run() in your API class")
-
-    def progress_checkpoint(
-        self,
-        request,
-        checkpoint_key: str,
-        *,
-        msg: str | None = None,
-    ):
-        queue_task_uuid = getattr(request, "queue_task_uuid", None)
-        if not queue_task_uuid:
-            return
-        steps = self.progress_steps or {}
-        mo_validation_kit.ensure_truthy(
-            checkpoint_key in steps,
-            msg=(
-                f"progress_checkpoint called with unknown key '{checkpoint_key}'. "
-                f"Available keys: {list(steps.keys())}"
-            ),
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        step_cfg = steps[checkpoint_key]
-        percent = step_cfg["percent"]
-        label = step_cfg["label"]
-        message = msg if msg is not None else label
-        redis_state = get_queue_status(str(queue_task_uuid))
-        if _is_cancel_requested(redis_state):
-            mark_cancelled(str(queue_task_uuid))
-            raise MindoffValidationError(
-                message="Queue task was cancelled",
-                code="QUEUE_TASK_CANCELLED",
-                category="warning",
-                data={"queue_id": str(queue_task_uuid), "status": "cancelled"},
-            )
-        update_progress(
-            queue_task_uuid,
-            progress=percent,
-            step=label,
-            message=message,
-        )
-
-    def handle_exception(self, exc):
-        if isinstance(exc, NotAuthenticated):
-            return mo_response_kit.json_response(
-                code="NOT_AUTHENTICATED", category="danger"
-            )
-        if isinstance(exc, AuthenticationFailed):
-            return mo_response_kit.json_response(
-                code="AUTHENTICATION_FAILED", category="danger"
-            )
-        if isinstance(exc, PermissionDenied):
-            return mo_response_kit.json_response(
-                code="PERMISSION_DENIED", category="danger"
-            )
-        if isinstance(exc, Throttled):
-            return mo_response_kit.json_response(
-                code="RATE_LIMITED", category="warning"
-            )
-        code = getattr(exc, "code", None) or "UNEXPECTED_ERR"
-        category = getattr(exc, "category", None) or "danger"
-        data = getattr(exc, "data", None) or []
-        if isinstance(exc, MindoffValidationError):
-            return mo_response_kit.json_response(
-                code=code, category=category, data=data
-            )
-        return mo_response_kit.json_response(
-            code=code,
-            category=category,
-            data=data,
-            exception=exc,
-        )
 
 
 # ----------------
 # Functions
 # ----------------
 def api_guardian(func):
+    """Add Full Scale Docstring here"""
+
     @wraps(func)
     def wrapper(request, *args, **kwargs):
         try:
             return func(request, *args, **kwargs)
-        except MindoffValidationError as exc:
-            return mo_response_kit.json_response(
-                code=exc.code,
-                category=exc.category,
-                data=exc.data,
-            )
         except Exception as exc:
-            if isinstance(exc, NotAuthenticated):
-                return mo_response_kit.json_response(
-                    code="NOT_AUTHENTICATED", category="danger"
-                )
-            if isinstance(exc, AuthenticationFailed):
-                return mo_response_kit.json_response(
-                    code="AUTHENTICATION_FAILED", category="danger"
-                )
-            if isinstance(exc, PermissionDenied):
-                return mo_response_kit.json_response(
-                    code="PERMISSION_DENIED", category="danger"
-                )
-            if isinstance(exc, Throttled):
-                return mo_response_kit.json_response(
-                    code="RATE_LIMITED", category="warning"
-                )
-            return mo_response_kit.json_response(
-                code="UNEXPECTED_ERR",
-                category="danger",
-                data=[],
-                exception=exc,
-            )
+            return _resolve_api_exception(exc)
 
     return wrapper
 
@@ -650,11 +674,39 @@ def _validate_progress_steps(steps: dict, api_url_name: str):
         )
 
 
+def _resolve_api_exception(exc: Exception):
+    if isinstance(exc, NotAuthenticated):
+        return mo_response_kit.json_response(
+            code="NOT_AUTHENTICATED", category="danger"
+        )
+    if isinstance(exc, AuthenticationFailed):
+        return mo_response_kit.json_response(
+            code="AUTHENTICATION_FAILED", category="danger"
+        )
+    if isinstance(exc, PermissionDenied):
+        return mo_response_kit.json_response(
+            code="PERMISSION_DENIED", category="danger"
+        )
+    if isinstance(exc, Throttled):
+        return mo_response_kit.json_response(code="RATE_LIMITED", category="warning")
+    code = getattr(exc, "code", None) or "UNEXPECTED_ERR"
+    category = getattr(exc, "category", None) or "danger"
+    data = getattr(exc, "data", None) or []
+    if isinstance(exc, MindoffValidationError):
+        return mo_response_kit.json_response(code=code, category=category, data=data)
+    return mo_response_kit.json_response(
+        code=code,
+        category=category,
+        data=data,
+        exception=exc,
+    )
+
+
 # ----------------
 # Entry Point
 # ----------------
 mo_api_kit = SimpleNamespace(
     api_guardian=api_guardian,
     MindoffAPIMixin=MindoffAPIMixin,
-    BaseVersionRouter=BaseVersionRouter,
+    APIVersionRouter=APIVersionRouter,
 )

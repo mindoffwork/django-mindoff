@@ -134,9 +134,9 @@ def _create_api_flow(local_apps, selected_app=None):
 def _choose_create_command():
     options = {
         "1": ("app", "createapp"),
-        "2": ("model", "createmodel"),
-        "3": ("foreign-key", "create_model_field"),
-        "4": ("api", "createapi"),
+        "2": ("api", "createapi"),
+        "3": ("model", "createmodel"),
+        "4": ("foreign-key", "create_model_field"),
     }
     name_to_command = dict(options.values())
 

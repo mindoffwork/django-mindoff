@@ -1,7 +1,7 @@
 from django_mindoff.components.api_kit import mo_api_kit
 
 
-class SampleRouterClassName(mo_api_kit.BaseVersionRouter):
+class SampleRouterClassName(mo_api_kit.APIVersionRouter):
     VERSION_MAP = {
         mo_api_kit.__str__
     }

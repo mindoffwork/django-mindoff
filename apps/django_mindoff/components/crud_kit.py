@@ -1,21 +1,27 @@
+"""
+Mindoff CRUD Kit
+1. mo_crud_kit.create
+2. mo_crud_kit.update
+3. mo_crud_kit.read
+"""
+
 import warnings
 from itertools import islice
-from types import SimpleNamespace
 from typing import Any, Dict, List, Tuple, Type, Union
 import polars as pl
+from typeguard import typechecked
+from django.conf import settings
 from django.core.paginator import EmptyPage, Paginator
 from django.db import models
-from typeguard import typechecked
+from django.db.models import F
+from django.db.models import CharField
+from django.db.models.functions import Cast
 from ._crud_kit.column_validator import ColumnValidator
 from ._crud_kit.crud_processor import CRUDProcessor
 from ._crud_kit.foreign_key_validator import ForeignKeyValidator
 from ._crud_kit.row_validator import RowValidator
 from .polars_kit import mo_polars_kit
-from .validation_kit import mo_validation_kit, MindoffValidationError
-from django.db.models import F
-from django.db.models.functions import Cast
-from django.db.models import CharField
-from django.conf import settings
+from .validation_kit import mo_validation_kit
 
 # ----------------
 # Constants
@@ -27,6 +33,22 @@ ERROR_COL = getattr(settings, "POLARS_VALIDATOR_ERROR_COL", None) or "__error__i
 # Classes
 # --------------
 class MindoffCRUDHandler:
+    """Model-aware bulk data operations over Polars frames.
+
+    Exposes high-throughput CRUD-style helpers that operate on
+    `{DjangoModel: DataFrame|LazyFrame}` mappings.
+
+    Available methods:
+
+    - `mo_crud_kit.create(...)`
+    - `mo_crud_kit.read(...)`
+    - `mo_crud_kit.update(...)`
+
+    Note:
+
+    - `delete()` is not exposed in `mo_crud_kit` yet.
+    """
+
     @typechecked
     def create(
         self,
@@ -36,6 +58,54 @@ class MindoffCRUDHandler:
         is_validate: bool = True,
         batch_size: int = 1000,
     ) -> Tuple[str, Dict, Dict]:
+        """Create rows from model-to-frame mappings with optional validation pipeline.
+
+        Usage:
+
+        ```python
+        from django_mindoff.components.crud_kit import mo_crud_kit
+
+        status, valid_model_frms, invalid_model_frms = mo_crud_kit.create(
+            {
+                OrderModel: order_df,
+                OrderItemModel: order_item_df,
+            },
+            is_partial=False,
+            is_validate=True,
+            batch_size=1000,
+        )
+        ```
+
+        Parameters:
+
+        - `model_frms` (`dict[type[models.Model], pl.DataFrame|pl.LazyFrame]`):
+          Input model-frame mapping for bulk insert.
+        - `is_partial` (`bool, default=False`):
+          If `True`, allows partial save when only a subset of rows are valid.
+        - `is_validate` (`bool, default=True`):
+          If `True`, runs column, row, and foreign-key validation before insert.
+        - `batch_size` (`int, default=1000`):
+          Batch size used by the underlying write process.
+
+        Varieties:
+
+        - Validation mode:
+          `is_validate=True` runs `ColumnValidator -> RowValidator -> ForeignKeyValidator`.
+        - Partial-save mode:
+          `is_partial=False` fails if any invalid rows exist;
+          `is_partial=True` saves valid rows and returns invalid rows separately.
+
+        Possible responses:
+
+        - Returns `("ok", valid_model_frms, {})` when all rows are valid and inserted.
+        - Returns `("partial_ok", valid_model_frms, invalid_model_frms)` when partial mode is enabled and some rows are invalid.
+        - Returns `("fail", valid_model_frms, invalid_model_frms)` when validation fails and no write should proceed.
+
+        Notes:
+
+        - Invalid rows contain an error column (`POLARS_VALIDATOR_ERROR_COL` or `__error__info`).
+        - `is_validate=False` skips safety checks and may persist unsafe data.
+        """
         model_frms = mo_polars_kit.sync_model_frms_type(model_frms)
         if is_validate:
             # 1. Column validation
@@ -93,6 +163,46 @@ class MindoffCRUDHandler:
         is_lazy: bool = False,
         batch_size: int = 0,
     ) -> tuple[pl.DataFrame | pl.LazyFrame, dict[str, Any]]:
+        """Read queryset data into Polars with streaming/pagination variants.
+
+        Usage:
+
+        ```python
+        from django_mindoff.components.crud_kit import mo_crud_kit
+
+        frm, stats = mo_crud_kit.read(
+            OrderModel.objects.filter(is_active=True).values(),
+            page_number=1,
+            is_lazy=False,
+            batch_size=100,
+        )
+        ```
+
+        Parameters:
+
+        - `qs` (`models.QuerySet`):
+          Queryset that must use `.values()` output.
+        - `page_number` (`int|None, default=None`):
+          When provided, enables pagination mode.
+          When `None`, uses streaming mode.
+        - `is_lazy` (`bool, default=False`):
+          If `True`, returns `pl.LazyFrame`; otherwise returns `pl.DataFrame`.
+        - `batch_size` (`int, default=0`):
+          Chunk/page size. Auto-resolved when `0`.
+
+        Varieties:
+
+        - Streaming mode (`page_number=None`): reads full dataset in chunks.
+        - Pagination mode (`page_number=<n>`): reads one page and returns paging metadata.
+        - Materialization mode: eager (`DataFrame`) or lazy (`LazyFrame`).
+
+        Possible responses:
+
+        - Returns `(frm, stats)` where `frm` is `DataFrame`/`LazyFrame` and `stats` includes:
+          `mode`, `batch_size`, `total_count`, `total_pages`, `current_page`, `has_next`, `has_previous`.
+        - Returns empty frame with zeroed stats for empty querysets.
+        - Raises validation error if queryset is not `.values()`-based.
+        """
         # 1. Validate and Normalize
         mo_validation_kit.ensure(
             issubclass(qs._iterable_class, models.query.ValuesIterable),
@@ -178,9 +288,61 @@ class MindoffCRUDHandler:
         batch_size: int = 1000,
         is_temp_table: bool = True,
     ):
+        """Upsert rows from model-to-frame mappings with optional staged merge strategy.
+
+        Usage:
+
+        ```python
+        from django_mindoff.components.crud_kit import mo_crud_kit
+
+        status, valid_model_frms, invalid_model_frms = mo_crud_kit.update(
+            {
+                OrderModel: order_updates_df,
+            },
+            is_partial=True,
+            is_validate=True,
+            batch_size=1000,
+            is_temp_table=True,
+        )
+        ```
+
+        Parameters:
+
+        - `model_frms` (`dict[type[models.Model], pl.DataFrame|pl.LazyFrame]`):
+          Input model-frame mapping for bulk update/upsert.
+        - `is_partial` (`bool, default=False`):
+          If `True`, allows valid rows to proceed even when invalid rows exist.
+        - `is_validate` (`bool, default=True`):
+          If `True`, applies model-based column/row/FK validation before update.
+        - `batch_size` (`int, default=1000`):
+          Batch size used for missing-column fetch and update processing.
+        - `is_temp_table` (`bool, default=True`):
+          If `True`, writes to staging table then merges;
+          if `False`, performs direct dialect-specific upsert.
+
+        Varieties:
+
+        - Validation mode:
+          enabled (`is_validate=True`) or skipped (`is_validate=False`).
+        - Partial mode:
+          fail-fast (`is_partial=False`) or partial success (`is_partial=True`).
+        - Upsert mode:
+          staging merge (`is_temp_table=True`) or direct upsert (`is_temp_table=False`).
+
+        Possible responses:
+
+        - Returns `("ok", valid_model_frms, {})` when all rows are valid and updated.
+        - Returns `("partial_ok", valid_model_frms, invalid_model_frms)` when partial mode is enabled and some rows are invalid.
+        - Returns `("fail", valid_model_frms, invalid_model_frms)` when validation blocks update.
+
+        Notes:
+
+        - Missing DB columns are auto-fetched using primary key before validation.
+        - Invalid rows include model-aware error details in error column.
+        """
         model_frms = _update__fill_missing_columns(model_frms, batch_size=batch_size)
         if is_validate:
-            # Step 1: Column validation
+            # 1. Column validation
             column_validator = ColumnValidator(
                 model_frms=model_frms,
                 is_remove_extra_columns=True,
@@ -190,11 +352,11 @@ class MindoffCRUDHandler:
             if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
                 return "fail", valid_model_frms, invalid_model_frms
 
-            # Step 2: Row validation
+            # 2. Row validation
             row_validator = RowValidator(valid_model_frms)
             row_validated_frms = row_validator.run()
 
-            # Step 3: Foreign key validation
+            # 3. Foreign key validation
             fk_validator = ForeignKeyValidator(row_validated_frms)
             fk_validated_frms = fk_validator.validate()
             frm_dict_valid_invalid_splitter = _ModelFrmsValidInvalidSplitter(
@@ -202,7 +364,7 @@ class MindoffCRUDHandler:
             )
             valid_model_frms, invalid_model_frms = frm_dict_valid_invalid_splitter.run()
 
-            # Step 4: Decide partial save
+            # 4. Decide partial save
             if mo_polars_kit.is_model_frms_empty(valid_model_frms):
                 return "fail", valid_model_frms, invalid_model_frms
             if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
@@ -221,7 +383,7 @@ class MindoffCRUDHandler:
             status = "ok"
             valid_model_frms, invalid_model_frms = model_frms, {}
 
-        # Step 5: Perform CRUD operation
+        # 5. Perform CRUD operation
         crud_processor = CRUDProcessor(valid_model_frms)
         _ = crud_processor.update(is_temp_table=is_temp_table, batch_size=batch_size)
         return status, valid_model_frms, invalid_model_frms
@@ -246,7 +408,6 @@ class _ModelFrmsValidInvalidSplitter:
         return self._split_valid_invalid(invalid_ids)
 
     def _normalize_frms(self, model_frms):
-        """Ensure all DataFrames have __error__info column."""
         normalized = {}
         for model, frm in model_frms.items():
             frm_schema = (
@@ -258,7 +419,6 @@ class _ModelFrmsValidInvalidSplitter:
         return normalized
 
     def _build_relations(self, models_list: List[Type[models.Model]]):
-        """Extract (child, fk_col, parent, pk_col) for FK/OneToOne relations."""
         relations = []
         for model in models_list:
             for f in model._meta.concrete_fields:
@@ -275,7 +435,6 @@ class _ModelFrmsValidInvalidSplitter:
         return relations
 
     def _collect_initial_invalid_ids(self):
-        """Collect initial invalid IDs from rows with non-null __error__info."""
         return {
             m: frm.filter(pl.col(ERROR_COL).is_not_null())
             .select(pl.col(m._meta.pk.db_column or m._meta.pk.name))
@@ -284,7 +443,6 @@ class _ModelFrmsValidInvalidSplitter:
         }
 
     def _propagate_invalid_ids(self, invalid_ids):
-        """Cascade invalid IDs across parent-child relations."""
         queue = [
             m for m, ids in invalid_ids.items() if not mo_polars_kit.is_frm_empty(ids)
         ]
@@ -309,7 +467,6 @@ class _ModelFrmsValidInvalidSplitter:
         return invalid_ids
 
     def _propagate_to_parent(self, invalid_ids, child, parent, fk_col, pk_col):
-        """Mark parent IDs invalid if child rows are invalid."""
         new_invalid = (
             self.model_frms[child]
             .join(
@@ -329,7 +486,6 @@ class _ModelFrmsValidInvalidSplitter:
         )
 
     def _propagate_to_child(self, invalid_ids, child, parent, fk_col, pk_col):
-        """Mark child IDs invalid if parent rows are invalid."""
         new_invalid = (
             self.model_frms[child]
             .join(invalid_ids[parent], left_on=fk_col, right_on=pk_col, how="inner")
@@ -346,7 +502,6 @@ class _ModelFrmsValidInvalidSplitter:
         )
 
     def _split_valid_invalid(self, invalid_ids):
-        """Split into valid and invalid frms based on invalid IDs."""
         valid_model_frms, invalid_model_frms = {}, {}
         for m, frm in self.model_frms.items():
             pk = m._meta.pk.db_column or m._meta.pk.name
@@ -384,7 +539,6 @@ def _read__build_stats(
     has_next: bool,
     has_previous: bool,
 ) -> dict[str, Any]:
-    """Return a consistent stats dictionary."""
     return {
         "mode": mode,
         "batch_size": batch_size,
@@ -402,9 +556,7 @@ def _update__fill_missing_columns(
     batch_size: int,
 ) -> Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]]:
     updated_model_frames = {}
-
     for model_cls, frm in model_frms.items():
-        # 1. Find Missing Columns and primary key
         df_cols = set(frm.columns)
         model_fields = {f.column or f.name for f in model_cls._meta.concrete_fields}
         missing_cols = list(model_fields - df_cols)
@@ -420,8 +572,6 @@ def _update__fill_missing_columns(
         if not missing_cols:
             updated_model_frames[model_cls] = frm
             continue
-
-        # 2. Generate Missing Frame
         schema = {pk_field: frm.schema[pk_field], **dict.fromkeys(missing_cols, None)}
         base_missing_df = (
             pl.LazyFrame(schema=schema)
@@ -431,15 +581,11 @@ def _update__fill_missing_columns(
         missing_df = __update__fetch_missing_chunks(
             model_cls, frm, pk_field, missing_cols, batch_size, base_missing_df
         )
-
-        # 3. Cut off if no missing data to Merge
         if mo_polars_kit.is_frm_empty(missing_df):
             for col in missing_cols:
                 frm = frm.with_columns(pl.lit(None).alias(col))
             updated_model_frames[model_cls] = frm
             continue
-
-        # 4. Check again and Final merge
         overlap = set(frm.columns) & set(missing_df.columns) - {pk_field}
         mo_validation_kit.ensure_falsey(
             overlap,
@@ -497,7 +643,6 @@ def __update__fetch_missing_chunks(
         collected_chunks.append(chunk_df)
     if not collected_chunks:
         return base_missing_df
-
     return pl.concat(collected_chunks, rechunk=False)
 
 

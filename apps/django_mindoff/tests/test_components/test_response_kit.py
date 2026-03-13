@@ -1,30 +1,11 @@
-"""
-VALID:
-1. json_response - code ok
-2. json_response - code fail
-3. json_response - category -- success, warning, info, danger
-4. json_response - exception hide if debug false and show if debug true
-5. @api_guardian - catch and throw exception
-6. mo_response_kit.file_response - trigger download of file from disk
-7. mo_response_kit.file_response - trigger download of file from memory
-8. html_response - trigger html response
-9. text_response - trigger text response
-INVALID:
-1. json_response - Error Code Missing / Incorrect
-2. json_response - Error Category Missing / Incorrect
-"""
-
 import csv
 import io
 import logging
 import uuid
 from copy import deepcopy
-from pathlib import Path
-
 import pytest
 from django.http import FileResponse, HttpResponse
 from typeguard import TypeCheckError
-
 from ...components.response_kit import (
     MINDOFF_RESPONSES,
     load_responses_csv,
@@ -33,7 +14,7 @@ from ...components.response_kit import (
 from ...components.api_kit import mo_api_kit
 from ...components.tdd_kit import MindoffTestCase
 
-default_data = [{"a": 1}, {"b": 2}]
+
 CSV_HEADERS_VALID = ["code", "title", "description", "http_status"]
 CSV_DATA_VALID = [
     ["UNEXPECTED_ERR", "Different Title", "An Unexpected Error has occurred.", "500"],
@@ -67,6 +48,7 @@ CSV_DATA_VALID = [
     ["ERR004", "Server Error", "An unexpected server error occurred.", "500"],
     ["ERR005", "Database Error", "A database error occurred.", "500"],
 ]
+default_data = [{"a": 1}, {"b": 2}]
 
 
 class TestJsonResponse(MindoffTestCase):
@@ -129,6 +111,7 @@ class TestJsonResponse(MindoffTestCase):
         category,
         exception,
     ):
+        """ACCEPTANCE: Returns expected JSON payload for valid code/category combinations."""
         csv_path = self._write_csv(tmp_path, CSV_HEADERS_VALID, CSV_DATA_VALID)
         load_responses_csv(csv_path)
         assert len(MINDOFF_RESPONSES) > 0
@@ -177,6 +160,7 @@ class TestJsonResponse(MindoffTestCase):
     def test_json_response_invalid(
         self, settings, capsys, caplog, is_debug, code, expected_error_code, category
     ):
+        """REJECTION: Rejects invalid input and returns a safe error response when applicable."""
         settings.DEBUG = is_debug
 
         if category != "danger":
@@ -202,6 +186,7 @@ class TestJsonResponse(MindoffTestCase):
                     assert any("Traceback" in rec.message for rec in caplog.records)
 
     def test_load_responses_csv_fallback_logic(self, tmp_path, monkeypatch):
+        """BOUNDARY: Uses internal fallback CSV when the target CSV path is missing."""
         fake_config_dir = tmp_path / "config"
         fake_config_dir.mkdir()
         target_csv_path = fake_config_dir / "responses.csv"
@@ -245,6 +230,7 @@ class TestJsonResponse(MindoffTestCase):
 
 class TestFileResponse(MindoffTestCase):
     def test_from_disk_valid(self, tmp_path):
+        """ACCEPTANCE: Serves a disk file as an attachment with expected content."""
         test_file = tmp_path / "sample.txt"
         test_file.write_text("hello world")
         response = mo_response_kit.file_response(str(test_file))
@@ -257,6 +243,7 @@ class TestFileResponse(MindoffTestCase):
         assert content == b"hello world"
 
     def test_from_memory_with_filename_valid(self):
+        """ACCEPTANCE: Serves in-memory file data using the provided filename."""
         file_data = io.BytesIO(b"hello memory")
         response = mo_response_kit.file_response(file_data, filename="mem.txt")
         assert isinstance(response, FileResponse)
@@ -265,6 +252,7 @@ class TestFileResponse(MindoffTestCase):
         assert content == b"hello memory"
 
     def test_from_memory_no_filename_valid(self, monkeypatch):
+        """BOUNDARY: Generates a default filename when in-memory data has no filename."""
         monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(int=0))
         file_data = io.BytesIO(b"hello no name")
         response = mo_response_kit.file_response(file_data)
@@ -274,6 +262,7 @@ class TestFileResponse(MindoffTestCase):
         assert content == b"hello no name"
 
     def test_wrong_type_invalid(self):
+        """REJECTION: Returns an error payload for unsupported file input types."""
         response = mo_response_kit.file_response(123)
         response = response.data
         assert response["message"]["code"] == "UNEXPECTED_ERR"
@@ -291,6 +280,7 @@ class TestHtmlResponse(MindoffTestCase):
         ],
     )
     def test_html_response_valid(self, html, status_code):
+        """ACCEPTANCE: Returns an HTML response with matching status and body."""
         response = mo_response_kit.html_response(html, status_code=status_code)
         assert isinstance(response, HttpResponse)
         assert response.status_code == status_code
@@ -308,6 +298,7 @@ class TestTextResponse(MindoffTestCase):
         ],
     )
     def test_text_response_valid(self, text, status_code):
+        """ACCEPTANCE: Returns a plain-text response with matching status and body."""
         response = mo_response_kit.text_response(text, status_code=status_code)
         assert isinstance(response, HttpResponse)
         assert response.status_code == status_code
@@ -317,6 +308,8 @@ class TestTextResponse(MindoffTestCase):
 
 class TestExceptionHandler(MindoffTestCase):
     def test_exception_handler_valid(self, rf):
+        """ACCEPTANCE: api_guardian passes through successful view responses."""
+
         @mo_api_kit.api_guardian
         def view(request):
             return mo_response_kit.json_response(
@@ -331,6 +324,7 @@ class TestExceptionHandler(MindoffTestCase):
 
     @pytest.mark.parametrize("is_debug", [True, False])
     def test_exception_handler_invalid(self, rf, settings, capsys, caplog, is_debug):
+        """REJECTION: api_guardian converts raised validation errors into fail responses."""
         from ...components.validation_kit import mo_validation_kit
 
         @mo_api_kit.api_guardian
@@ -340,10 +334,10 @@ class TestExceptionHandler(MindoffTestCase):
         settings.DEBUG = is_debug
         request = rf.get("/")
         response = view(request)
-        assert response.status_code == 500
+        assert response.status_code == 400
         result = response.data
-        assert result["status"] == "exception"
-        assert result["message"]["code"] == "UNEXPECTED_ERR"
+        assert result["status"] == "fail"
+        assert result["message"]["code"] == "VALIDATION_ERR"
         if is_debug == True:
             assert "ValueError" in result["message"]["description"]
             captured = capsys.readouterr()

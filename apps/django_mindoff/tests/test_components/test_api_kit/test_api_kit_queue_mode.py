@@ -1,17 +1,12 @@
 import gzip
 import base64
 import json
-import time
 import uuid
-import shutil
-from urllib.parse import urlparse
 from typing import cast
 from unittest.mock import MagicMock, patch
-
 import pytest
 from django.contrib.auth import get_user_model
 from django.urls import reverse
-
 from ....components.tdd_kit import MindoffTestCase
 from ....components._api_kit.queue_process import (
     _COMPRESSED_RESPONSE_FLAG,
@@ -45,10 +40,8 @@ from ....components._api_kit.redis import (
     mark_running,
     update_progress,
 )
-
-# Re-use helpers written for direct-mode tests
 from .test_api_kit_direct_mode import (
-    _api_templates,  # session-scoped fixture re-export
+    _api_templates,
     _create_test_api,
     _modify_api_attribute,
     _modify_api_attributes,
@@ -58,16 +51,7 @@ from .test_api_kit_direct_mode import (
 User = get_user_model()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# In-memory Redis stub
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 class _InMemoryRedis:
-    """
-    Minimal Redis stub sufficient for all queue tests.
-    Supports: hset, hgetall, expire, persist, incr, decr, flushdb, ping.
-    """
 
     def __init__(self):
         self.hashes: dict[str, dict[str, str]] = {}
@@ -110,52 +94,11 @@ class _InMemoryRedis:
         return value
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared DB-task factory
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _make_db_task(
-    api_url_name: str,
-    job_status: str = "queued",
-    owner_id: str = "test_owner",
-    error=None,
-    response_code: int | None = None,
-):
-    """Create a minimal MOQueue row suitable for worker tests."""
-    from apps.django_mindoff.models import MOQueue
-
-    return MOQueue.objects.create(
-        id=uuid.uuid4(),
-        owner_id=owner_id,
-        api_url_name=api_url_name,
-        job_status=job_status,
-        response_code=response_code,
-        request={
-            "method": "GET",
-            "data": {},
-            "query_params": {},
-            "args": [],
-            "kwargs": {},
-        },
-        error=error,
-    )
-
-
-def _decompress(compressed_payload: dict) -> dict:
-    """Decompress a gzip+base64 response blob back to a plain dict."""
-    raw = base64.b64decode(compressed_payload["data"].encode("ascii"))
-    return json.loads(gzip.decompress(raw))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. Enqueue / dispatch acceptance
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @pytest.mark.django_db(transaction=True)
 class TestQueueEnqueueAcceptance(MindoffTestCase):
-    """HTTP-layer tests for triggering queue-mode APIs."""
+
+    def _make_api(self, name):
+        return _create_test_api(self._app, name, self._dir, self._tmpl)
 
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
@@ -164,14 +107,9 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
         self._dir = temp_dir_path
         self._tmpl = _api_templates
 
-    def _make_api(self, name):
-        return _create_test_api(self._app, name, self._dir, self._tmpl)
-
-    # ── Response shape ────────────────────────────────────────────────────
-
     @patch("apps.django_mindoff.components.api_kit.enqueue_process")
     def test_returns_queue_id_and_urls(self, mock_enqueue):
-        """ACCEPTANCE: Queue mode returns queue_id and queue operation URLs."""
+        """ACCEPTANCE: Validates returns queue id and urls."""
         queue_id = str(uuid.uuid4())
         mock_enqueue.return_value = queue_id
         api_url_name = self._make_api("test_enqueue_shape_api")
@@ -197,7 +135,7 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
 
     @patch("apps.django_mindoff.components.api_kit.enqueue_process")
     def test_returns_progress_steps_in_queued_response(self, mock_enqueue):
-        """ACCEPTANCE: Queue mode returns declared API progress_steps in QUEUED response."""
+        """ACCEPTANCE: Validates returns progress steps in queued response."""
         queue_id = str(uuid.uuid4())
         mock_enqueue.return_value = queue_id
         api_url_name = self._make_api("test_enqueue_shape_steps_api")
@@ -218,11 +156,9 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
         assert body["message"]["code"] == "QUEUED"
         assert body["data"]["progress_steps"] == steps
 
-    # ── DB record ─────────────────────────────────────────────────────────
-
     @patch("apps.django_mindoff.components.api_kit.enqueue_process")
     def test_returns_queue_service_unavailable_when_backend_is_down(self, mock_enqueue):
-        """REJECTION: Queue mode returns 503 when queue infra is unavailable."""
+        """ACCEPTANCE: Validates returns queue service unavailable when backend is down."""
         mock_enqueue.side_effect = ConnectionError("Connection refused")
         api_url_name = self._make_api("test_enqueue_queue_unavailable_api")
         _modify_api_attribute(
@@ -241,7 +177,7 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     @patch("apps.django_mindoff.components._api_kit.queue_process.init_queue")
     def test_creates_db_record_with_correct_fields(self, mock_init, mock_send):
-        """ACCEPTANCE: A MOQueue row is created with the correct job_status / method / api_url_name."""
+        """ACCEPTANCE: Validates creates db record with correct fields."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -260,20 +196,16 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
 
         queue_id = resp.json()["data"]["queue_id"]
         obj = MOQueue.objects.get(id=queue_id)
-        # Field is now job_status (renamed from status)
         assert obj.job_status == "queued"
         assert obj.api_url_name == api_url_name
         assert obj.request["method"] == "GET"
-        # response_code is null on creation
         assert obj.response_code is None
         mock_init.assert_called_once()
         mock_send.assert_called_once()
 
-    # ── progress_steps stored in Redis on enqueue ─────────────────────────
-
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     def test_enqueue_does_not_store_progress_steps_in_redis(self, _mock_send):
-        """ACCEPTANCE: Redis runtime state omits API progress_steps after enqueue."""
+        """ACCEPTANCE: Validates enqueue does not store progress steps in redis."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -299,12 +231,10 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
 
         assert "steps" not in state
 
-    # ── Idempotency ───────────────────────────────────────────────────────
-
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     @patch("apps.django_mindoff.components._api_kit.queue_process.init_queue")
     def test_idempotency_returns_same_id(self, mock_init, mock_send):
-        """ACCEPTANCE: Identical requests return the same queue_id (no duplicates)."""
+        """ACCEPTANCE: Validates idempotency returns same id."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -327,7 +257,7 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
         mock_send.assert_called_once()
 
     def test_idempotency_ignores_cancelled_task(self):
-        """BOUNDARY: Cancelled task is NOT reused by idempotency; a new task is created."""
+        """ACCEPTANCE: Validates idempotency ignores cancelled task."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -346,9 +276,7 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
             ):
                 r1 = self.client.get(reverse(api_url_name))
                 q1_id = r1.json()["data"]["queue_id"]
-                # Cancel it via the model field (now job_status)
                 MOQueue.objects.filter(id=q1_id).update(job_status="cancelled")
-
                 r2 = self.client.get(reverse(api_url_name))
                 q2_id = r2.json()["data"]["queue_id"]
 
@@ -357,7 +285,7 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     @patch("apps.django_mindoff.components._api_kit.queue_process.init_queue")
     def test_duplicates_allowed_when_flag_set(self, mock_init, mock_send):
-        """ACCEPTANCE: allow_duplicate_queue=True creates separate rows per request."""
+        """REJECTION: Validates duplicates allowed when flag set."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -377,10 +305,8 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
         assert r1.json()["data"]["queue_id"] != r2.json()["data"]["queue_id"]
         assert MOQueue.objects.filter(api_url_name=api_url_name).count() == 2
 
-    # ── File upload rejection ─────────────────────────────────────────────
-
     def test_rejects_file_upload(self):
-        """REJECTION: Queue mode returns 400 when files are attached."""
+        """REJECTION: Validates rejects file upload."""
         from django.core.files.uploadedfile import SimpleUploadedFile
 
         api_url_name = self._make_api("test_enqueue_no_files_api")
@@ -398,13 +324,7 @@ class TestQueueEnqueueAcceptance(MindoffTestCase):
         assert resp.status_code == 400
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. progress_steps schema validation
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 class TestProgressStepsValidation:
-    """Unit tests for validate_api_configuration() with various progress_steps values."""
 
     def _make_mixin(self, **overrides):
         from apps.django_mindoff.components.api_kit import MindoffAPIMixin
@@ -422,7 +342,7 @@ class TestProgressStepsValidation:
         return ConcreteAPI()
 
     def test_valid_progress_steps_passes(self):
-        """ACCEPTANCE: Well-formed progress_steps passes validation."""
+        """ACCEPTANCE: Validates valid progress steps passes."""
         mixin = self._make_mixin(
             progress_steps={
                 "validate": {"label": "Validating", "percent": 10},
@@ -438,20 +358,20 @@ class TestProgressStepsValidation:
             _validate_progress_steps(mixin.progress_steps, mixin.api_url_name)
 
     def test_none_progress_steps_is_valid(self):
-        """BOUNDARY: None progress_steps is always valid (steps are optional)."""
+        """BOUNDARY: Validates none progress steps is valid."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from typing import Any
 
         _validate_progress_steps(cast(Any, None), "some_api")
 
     def test_empty_dict_progress_steps_is_valid(self):
-        """BOUNDARY: Empty dict progress_steps is valid."""
+        """BOUNDARY: Validates empty dict progress steps is valid."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
 
         _validate_progress_steps({}, "some_api")
 
     def test_single_step_is_valid(self):
-        """BOUNDARY: A single step with percent 1–99 is valid."""
+        """ACCEPTANCE: Validates single step is valid."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
 
         _validate_progress_steps(
@@ -460,7 +380,7 @@ class TestProgressStepsValidation:
 
     @pytest.mark.parametrize("bad_pct", [0, 100, -1, 101])
     def test_percent_out_of_range_raises(self, bad_pct):
-        """REJECTION: percent outside 1-99 is rejected."""
+        """REJECTION: Validates percent out of range raises."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
@@ -470,7 +390,7 @@ class TestProgressStepsValidation:
             )
 
     def test_non_increasing_percents_raise(self):
-        """REJECTION: Steps with non-strictly-increasing percents are rejected."""
+        """REJECTION: Validates non increasing percents raise."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
@@ -484,7 +404,7 @@ class TestProgressStepsValidation:
             )
 
     def test_equal_percents_raise(self):
-        """REJECTION: Two steps with the same percent are rejected."""
+        """REJECTION: Validates equal percents raise."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
@@ -498,7 +418,7 @@ class TestProgressStepsValidation:
             )
 
     def test_non_dict_top_level_raises(self):
-        """REJECTION: progress_steps must be a dict, not a list."""
+        """REJECTION: Validates non dict top level raises."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
         from typing import Any
@@ -509,7 +429,7 @@ class TestProgressStepsValidation:
             )
 
     def test_missing_label_raises(self):
-        """REJECTION: Step missing 'label' key is rejected."""
+        """REJECTION: Validates missing label raises."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
@@ -517,7 +437,7 @@ class TestProgressStepsValidation:
             _validate_progress_steps({"a": {"percent": 20}}, "some_api")
 
     def test_missing_percent_raises(self):
-        """REJECTION: Step missing 'percent' key is rejected."""
+        """REJECTION: Validates missing percent raises."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
@@ -525,7 +445,7 @@ class TestProgressStepsValidation:
             _validate_progress_steps({"a": {"label": "Step A"}}, "some_api")
 
     def test_empty_label_raises(self):
-        """REJECTION: Empty or whitespace-only label is rejected."""
+        """REJECTION: Validates empty label raises."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
@@ -533,7 +453,7 @@ class TestProgressStepsValidation:
             _validate_progress_steps({"a": {"label": "   ", "percent": 10}}, "some_api")
 
     def test_non_int_percent_raises(self):
-        """REJECTION: percent must be int, not float or string."""
+        """REJECTION: Validates non int percent raises."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
         from typing import Any
@@ -544,7 +464,7 @@ class TestProgressStepsValidation:
             )
 
     def test_empty_key_raises(self):
-        """REJECTION: Empty string key in progress_steps is rejected."""
+        """REJECTION: Validates empty key raises."""
         from apps.django_mindoff.components.api_kit import _validate_progress_steps
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
@@ -552,7 +472,7 @@ class TestProgressStepsValidation:
             _validate_progress_steps({"": {"label": "Step", "percent": 10}}, "some_api")
 
     def test_progress_steps_on_direct_mode_api_raises(self):
-        """REJECTION: progress_steps on a direct-mode API raises API_CONFIG_ERR."""
+        """REJECTION: Validates progress steps on direct mode api raises."""
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
         mixin = self._make_mixin(
@@ -573,14 +493,8 @@ class TestProgressStepsValidation:
         assert "queue" in str(exc_info.value).lower() or exc_info.value is not None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. progress_checkpoint (new key-based API)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @pytest.mark.django_db(transaction=True)
 class TestProgressCheckpoint(MindoffTestCase):
-    """Verifies progress_checkpoint() with the new key-based API."""
 
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
@@ -589,30 +503,31 @@ class TestProgressCheckpoint(MindoffTestCase):
         self._dir = temp_dir_path
         self._tmpl = _api_templates
 
-    def _make_api(self, name):
-        return _create_test_api(self._app, name, self._dir, self._tmpl)
-
     def test_noop_without_queue_task_uuid(self):
-        """BOUNDARY: progress_checkpoint is a no-op when queue_task_uuid is absent."""
+        """ACCEPTANCE: Validates noop without queue task uuid."""
         from apps.django_mindoff.components.api_kit import MindoffAPIMixin
 
-        mixin = MindoffAPIMixin()
-        mixin.progress_steps = {"s": {"label": "Step", "percent": 50}}
+        class _TestAPI(MindoffAPIMixin):
+            progress_steps = {"s": {"label": "Step", "percent": 50}}
+
+        mixin = _TestAPI()
         fake_request = MagicMock(spec=[])
         mixin.progress_checkpoint(fake_request, "s")
 
     def test_updates_redis_with_correct_step_and_percent(self):
-        """ACCEPTANCE: Calling checkpoint_key updates Redis with the correct label/percent."""
+        """ACCEPTANCE: Validates updates redis with correct step and percent."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.components.api_kit import MindoffAPIMixin
 
         fake_redis = _InMemoryRedis()
         qid = str(uuid.uuid4())
-        mixin = MindoffAPIMixin()
-        mixin.progress_steps = {
-            "validate": {"label": "Validating", "percent": 15},
-            "fetch": {"label": "Fetching", "percent": 60},
-        }
+        class _TestAPI(MindoffAPIMixin):
+            progress_steps = {
+                "validate": {"label": "Validating", "percent": 15},
+                "fetch": {"label": "Fetching", "percent": 60},
+            }
+
+        mixin = _TestAPI()
 
         fake_request = MagicMock()
         fake_request.queue_task_uuid = qid
@@ -629,14 +544,16 @@ class TestProgressCheckpoint(MindoffTestCase):
         assert state["progress"]["current_message"] == "Validating"
 
     def test_custom_msg_overrides_default_label_message(self):
-        """ACCEPTANCE: msg= parameter overrides the default label as current_message."""
+        """BOUNDARY: Validates custom msg overrides default label message."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.components.api_kit import MindoffAPIMixin
 
         fake_redis = _InMemoryRedis()
         qid = str(uuid.uuid4())
-        mixin = MindoffAPIMixin()
-        mixin.progress_steps = {"fetch": {"label": "Fetching", "percent": 40}}
+        class _TestAPI(MindoffAPIMixin):
+            progress_steps = {"fetch": {"label": "Fetching", "percent": 40}}
+
+        mixin = _TestAPI()
         fake_request = MagicMock()
         fake_request.queue_task_uuid = qid
 
@@ -654,14 +571,16 @@ class TestProgressCheckpoint(MindoffTestCase):
         assert int(state["progress"]["percent"]) == 40
 
     def test_same_key_called_multiple_times_updates_message(self):
-        """ACCEPTANCE: Same checkpoint_key can be called repeatedly with different msg values."""
+        """ACCEPTANCE: Validates same key called multiple times updates message."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.components.api_kit import MindoffAPIMixin
 
         fake_redis = _InMemoryRedis()
         qid = str(uuid.uuid4())
-        mixin = MindoffAPIMixin()
-        mixin.progress_steps = {"fetch": {"label": "Fetching", "percent": 40}}
+        class _TestAPI(MindoffAPIMixin):
+            progress_steps = {"fetch": {"label": "Fetching", "percent": 40}}
+
+        mixin = _TestAPI()
         fake_request = MagicMock()
         fake_request.queue_task_uuid = qid
 
@@ -682,12 +601,14 @@ class TestProgressCheckpoint(MindoffTestCase):
 
     @patch("apps.django_mindoff.components.api_kit.update_progress")
     def test_raises_before_update_when_cancelled(self, mock_update):
-        """BOUNDARY: progress_checkpoint raises QUEUE_TASK_CANCELLED before writing when is_cancel=True."""
+        """REJECTION: Validates raises before update when cancelled."""
         from apps.django_mindoff.components.api_kit import MindoffAPIMixin
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
-        mixin = MindoffAPIMixin()
-        mixin.progress_steps = {"s": {"label": "Step", "percent": 50}}
+        class _TestAPI(MindoffAPIMixin):
+            progress_steps = {"s": {"label": "Step", "percent": 50}}
+
+        mixin = _TestAPI()
         fake_request = MagicMock()
         fake_request.queue_task_uuid = str(uuid.uuid4())
 
@@ -702,12 +623,14 @@ class TestProgressCheckpoint(MindoffTestCase):
         mock_update.assert_not_called()
 
     def test_unknown_checkpoint_key_raises_config_error(self):
-        """REJECTION: Using a key not in progress_steps raises API_CONFIG_ERR."""
+        """REJECTION: Validates unknown checkpoint key raises config error."""
         from apps.django_mindoff.components.api_kit import MindoffAPIMixin
         from apps.django_mindoff.components.validation_kit import MindoffValidationError
 
-        mixin = MindoffAPIMixin()
-        mixin.progress_steps = {"valid_key": {"label": "V", "percent": 50}}
+        class _TestAPI(MindoffAPIMixin):
+            progress_steps = {"valid_key": {"label": "V", "percent": 50}}
+
+        mixin = _TestAPI()
         fake_request = MagicMock()
         fake_request.queue_task_uuid = str(uuid.uuid4())
 
@@ -724,7 +647,7 @@ class TestProgressCheckpoint(MindoffTestCase):
         ) == "API_CONFIG_ERR" or "API_CONFIG_ERR" in str(exc)
 
     def test_progress_is_written_during_worker_execution(self):
-        """ACCEPTANCE: progress_checkpoint updates Redis mid-execution in the worker."""
+        """ACCEPTANCE: Validates progress is written during worker execution."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -760,15 +683,12 @@ class TestProgressCheckpoint(MindoffTestCase):
         assert obj.job_status == "completed"
         assert int(final["progress"]["percent"]) == 100
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. Worker execution lifecycle
-# ─────────────────────────────────────────────────────────────────────────────
+    def _make_api(self, name):
+        return _create_test_api(self._app, name, self._dir, self._tmpl)
 
 
 @pytest.mark.django_db(transaction=True)
 class TestQueueWorkerExecution(MindoffTestCase):
-    """Worker state transitions: success, failure, pre-cancel, mid-cancel, missing task."""
 
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
@@ -777,14 +697,11 @@ class TestQueueWorkerExecution(MindoffTestCase):
         self._dir = temp_dir_path
         self._tmpl = _api_templates
 
-    def _make_api(self, name):
-        return _create_test_api(self._app, name, self._dir, self._tmpl)
-
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_failed")
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_completed")
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_running")
     def test_completes_successfully(self, mock_running, mock_completed, mock_failed):
-        """ACCEPTANCE: Successful run() marks task completed with compressed response."""
+        """ACCEPTANCE: Validates completes successfully."""
         api_url_name = self._make_api("test_worker_success_api")
         _modify_api_run_method(
             self._app,
@@ -807,7 +724,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
         mock_failed.assert_not_called()
 
     def test_response_code_stored_on_completion(self):
-        """ACCEPTANCE: worker stores HTTP status code in response_code on completion."""
+        """ACCEPTANCE: Validates response code stored on completion."""
         api_url_name = self._make_api("test_worker_response_code_api")
         _modify_api_run_method(
             self._app,
@@ -825,7 +742,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
         assert obj.response_code == 200
 
     def test_response_code_stored_on_failure(self):
-        """ACCEPTANCE: worker stores HTTP status code in response_code on failure."""
+        """REJECTION: Validates response code stored on failure."""
         api_url_name = self._make_api("test_worker_fail_response_code_api")
         _modify_api_run_method(
             self._app,
@@ -845,7 +762,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_completed")
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_running")
     def test_marks_failed_on_exception(self, mock_running, mock_completed, mock_failed):
-        """REJECTION: Unhandled exception in run() marks task failed and records traceback."""
+        """REJECTION: Validates marks failed on exception."""
         api_url_name = self._make_api("test_worker_fail_api")
         _modify_api_run_method(
             self._app,
@@ -866,7 +783,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_running")
     def test_skips_execution_when_precancelled_in_redis(self, mock_running):
-        """BOUNDARY: Worker skips run() when is_cancel=True is set before it starts."""
+        """ACCEPTANCE: Validates skips execution when precancelled in redis."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -884,7 +801,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_running")
     def test_skips_execution_when_precancelled_in_db(self, mock_running):
-        """BOUNDARY: Worker skips run() when DB obj.job_status is already 'cancelled'."""
+        """ACCEPTANCE: Validates skips execution when precancelled in db."""
         api_url_name = self._make_api("test_worker_precancel_db_api")
         obj = _make_db_task(api_url_name, job_status="cancelled")
 
@@ -908,7 +825,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
         mock_running.assert_not_called()
 
     def test_cancel_flag_preserved_through_mark_running(self):
-        """BOUNDARY: is_cancel flag set before mark_running is NOT cleared by mark_running."""
+        """ACCEPTANCE: Validates cancel flag preserved through mark running."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -927,7 +844,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.mark_completed")
     def test_does_not_complete_when_cancelled_after_run(self, mock_completed):
-        """BOUNDARY: Worker checks is_cancel after run() and does not mark completed."""
+        """ACCEPTANCE: Validates does not complete when cancelled after run."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -957,7 +874,7 @@ class TestQueueWorkerExecution(MindoffTestCase):
         mock_completed.assert_not_called()
 
     def test_cancel_via_progress_checkpoint_marks_task_cancelled(self):
-        """ACCEPTANCE: progress_checkpoint raising QUEUE_TASK_CANCELLED results in cancelled task."""
+        """ACCEPTANCE: Validates cancel via progress checkpoint marks task cancelled."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -991,25 +908,19 @@ class TestQueueWorkerExecution(MindoffTestCase):
         assert obj.response is not None
 
     def test_noop_on_nonexistent_task(self):
-        """BOUNDARY: Worker silently returns for unknown queue_task_uuid."""
+        """BOUNDARY: Validates noop on nonexistent task."""
         execute_queue(str(uuid.uuid4()))
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 5. Cancel and retry lifecycle
-# ─────────────────────────────────────────────────────────────────────────────
+    def _make_api(self, name):
+        return _create_test_api(self._app, name, self._dir, self._tmpl)
 
 
 @pytest.mark.django_db(transaction=True)
 class TestQueueCancelAndRetry(MindoffTestCase):
-    """Cancel and retry state-machine transitions."""
-
-    def _make_task(self, job_status="queued", api_url_name="some_api"):
-        return _make_db_task(api_url_name, job_status=job_status)
 
     @pytest.mark.parametrize("cancellable_status", ["queued", "running"])
     def test_cancel_sets_is_cancel_flag_in_redis(self, cancellable_status):
-        """ACCEPTANCE: cancel_queue_task sets is_cancel=True in Redis without changing job_status."""
+        """ACCEPTANCE: Validates cancel sets is cancel flag in redis."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1029,7 +940,7 @@ class TestQueueCancelAndRetry(MindoffTestCase):
 
     @pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
     def test_cancel_not_cancellable_for_terminal_states(self, terminal):
-        """REJECTION: Cancelling a terminal task returns 'not_cancellable'."""
+        """BOUNDARY: Validates cancel not cancellable for terminal states."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1048,7 +959,7 @@ class TestQueueCancelAndRetry(MindoffTestCase):
         assert result == "not_cancellable"
 
     def test_cancel_uses_db_status_when_redis_expired(self):
-        """BOUNDARY: cancel_queue_task falls back to DB job_status when Redis key is missing."""
+        """ACCEPTANCE: Validates cancel uses db status when redis expired."""
         obj = self._make_task(job_status="completed")
 
         with (
@@ -1069,12 +980,12 @@ class TestQueueCancelAndRetry(MindoffTestCase):
         assert result == "not_cancellable"
 
     def test_cancel_not_found_for_missing_id(self):
-        """BOUNDARY: cancel_queue_task returns 'not_found' for unknown UUID."""
+        """REJECTION: Validates cancel not found for missing id."""
         assert cancel_queue_task(str(uuid.uuid4())) == "not_found"
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     def test_retry_requeues_retriable_task(self, mock_send):
-        """ACCEPTANCE: retry_failed_queue_task resets state and re-dispatches retriable tasks."""
+        """ACCEPTANCE: Validates retry requeues retriable task."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1089,14 +1000,13 @@ class TestQueueCancelAndRetry(MindoffTestCase):
             assert obj.job_status == "queued"
             assert obj.error is None
             assert obj.response is None
-            # response_code must be cleared on retry so the old code is not stale
             assert obj.response_code is None
 
         assert mock_send.call_count == 2
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     def test_retry_does_not_store_progress_steps_in_redis(self, _mock_send):
-        """ACCEPTANCE: Retry requeue keeps Redis runtime-only (no steps key)."""
+        """ACCEPTANCE: Validates retry does not store progress steps in redis."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1113,42 +1023,27 @@ class TestQueueCancelAndRetry(MindoffTestCase):
 
     @pytest.mark.parametrize("non_retriable", ["queued", "running", "completed"])
     def test_retry_not_retriable_for_non_retriable(self, non_retriable):
-        """REJECTION: retry_failed_queue_task returns 'not_retriable' for active/complete tasks."""
+        """ACCEPTANCE: Validates retry not retriable for non retriable."""
         obj = self._make_task(job_status=non_retriable)
         assert retry_failed_queue_task(str(obj.id)) == "not_retriable"
 
     def test_retry_not_found_for_missing_id(self):
-        """BOUNDARY: retry_failed_queue_task returns 'not_found' for unknown UUID."""
+        """REJECTION: Validates retry not found for missing id."""
         assert retry_failed_queue_task(str(uuid.uuid4())) == "not_found"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. Rehydration from DB
-# ─────────────────────────────────────────────────────────────────────────────
+    def _make_task(self, job_status="queued", api_url_name="some_api"):
+        return _make_db_task(api_url_name, job_status=job_status)
 
 
 @pytest.mark.django_db(transaction=True)
 class TestQueueRehydrate(MindoffTestCase):
-    """Verifies rehydrate_queue_state() rebuilds Redis from DB when the key has expired."""
-
-    def _make_task(self, job_status, error=None):
-        from apps.django_mindoff.models import MOQueue
-
-        return MOQueue.objects.create(
-            id=uuid.uuid4(),
-            owner_id="rehydrate_user",
-            api_url_name="some_api",
-            job_status=job_status,
-            request={},
-            error=error,
-        )
 
     @pytest.mark.parametrize(
         "db_status",
         ["queued", "running", "completed", "failed", "cancelled"],
     )
     def test_restores_correct_status_from_db(self, db_status):
-        """ACCEPTANCE: rehydrate_queue_state returns the DB job_status for all possible states."""
+        """ACCEPTANCE: Validates restores correct status from db."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1163,7 +1058,7 @@ class TestQueueRehydrate(MindoffTestCase):
         assert result["job_status"] == db_status
 
     def test_returns_unknown_for_missing_id(self):
-        """BOUNDARY: rehydrate_queue_state returns 'unknown' when UUID is not in DB."""
+        """REJECTION: Validates returns unknown for missing id."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1173,7 +1068,7 @@ class TestQueueRehydrate(MindoffTestCase):
         assert result["job_status"] == "unknown"
 
     def test_trusts_redis_when_it_has_a_newer_timestamp(self):
-        """ACCEPTANCE: When Redis updated_at > DB updated_at, Redis state is used."""
+        """ACCEPTANCE: Validates trusts redis when it has a newer timestamp."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1200,7 +1095,7 @@ class TestQueueRehydrate(MindoffTestCase):
         assert int(result["progress"]["percent"]) == 55
 
     def test_cancel_flag_propagated_from_redis_to_db_on_rehydrate(self):
-        """BOUNDARY: When Redis has is_cancel=True and Redis is fresher, DB is updated to cancelled."""
+        """ACCEPTANCE: Validates cancel flag propagated from redis to db on rehydrate."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1228,7 +1123,7 @@ class TestQueueRehydrate(MindoffTestCase):
         assert obj.job_status == "cancelled"
 
     def test_rehydrate_does_not_restore_steps_into_redis(self):
-        """ACCEPTANCE: Rehydrate rebuilds runtime status only; steps stay out of Redis."""
+        """ACCEPTANCE: Validates rehydrate does not restore steps into redis."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1240,14 +1135,20 @@ class TestQueueRehydrate(MindoffTestCase):
         assert result["job_status"] == "queued"
         assert "steps" not in result
 
+    def _make_task(self, job_status, error=None):
+        from apps.django_mindoff.models import MOQueue
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. Redis layer unit tests
-# ─────────────────────────────────────────────────────────────────────────────
+        return MOQueue.objects.create(
+            id=uuid.uuid4(),
+            owner_id="rehydrate_user",
+            api_url_name="some_api",
+            job_status=job_status,
+            request={},
+            error=error,
+        )
 
 
 class TestRedisLayer:
-    """Unit tests for every Redis state-transition function."""
 
     @pytest.fixture(autouse=True)
     def fake_redis(self):
@@ -1257,13 +1158,8 @@ class TestRedisLayer:
         with patch.object(redis_state, "redis_client", r):
             yield r
 
-    def _now_dt(self):
-        from django.utils import timezone as tz
-
-        return tz.now()
-
     def test_init_queue_creates_queued_state(self):
-        """ACCEPTANCE: init_queue writes job_status=queued and percent=0."""
+        """ACCEPTANCE: Validates init queue creates queued state."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         state = get_queue_status(qid)
@@ -1272,28 +1168,28 @@ class TestRedisLayer:
         assert state["is_cancel"] is False
 
     def test_init_queue_does_not_store_steps_key(self):
-        """ACCEPTANCE: init_queue never stores API progress_steps in Redis state."""
+        """ACCEPTANCE: Validates init queue does not store steps key."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         state = get_queue_status(qid)
         assert "steps" not in state
 
     def test_init_queue_with_no_steps(self):
-        """BOUNDARY: init_queue without steps omits the steps key."""
+        """ACCEPTANCE: Validates init queue with no steps."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         state = get_queue_status(qid)
         assert "steps" not in state
 
     def test_mark_running_sets_running_status(self):
-        """ACCEPTANCE: mark_running transitions job_status to 'running'."""
+        """ACCEPTANCE: Validates mark running sets running status."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         mark_running(qid)
         assert get_queue_status(qid)["job_status"] == "running"
 
     def test_mark_running_preserves_is_cancel_flag(self):
-        """BOUNDARY: mark_running does NOT reset is_cancel to False when it was True."""
+        """ACCEPTANCE: Validates mark running preserves is cancel flag."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         mark_cancel_requested(qid)
@@ -1303,14 +1199,14 @@ class TestRedisLayer:
         assert state["is_cancel"] is True, "is_cancel must survive mark_running"
 
     def test_mark_running_does_not_introduce_steps_key(self):
-        """BOUNDARY: mark_running does not add a steps key to Redis state."""
+        """ACCEPTANCE: Validates mark running does not introduce steps key."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         mark_running(qid)
         assert "steps" not in get_queue_status(qid)
 
     def test_update_progress_writes_correct_values(self):
-        """ACCEPTANCE: update_progress stores percent, step, message correctly."""
+        """ACCEPTANCE: Validates update progress writes correct values."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         update_progress(qid, progress=42, step="my_step", message="halfway there")
@@ -1320,7 +1216,7 @@ class TestRedisLayer:
         assert state["progress"]["current_message"] == "halfway there"
 
     def test_update_progress_preserves_is_cancel_flag(self):
-        """BOUNDARY: update_progress does NOT clear is_cancel when it was True."""
+        """ACCEPTANCE: Validates update progress preserves is cancel flag."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         mark_cancel_requested(qid)
@@ -1332,21 +1228,21 @@ class TestRedisLayer:
         [(-10, 0), (0, 0), (50, 50), (100, 100), (150, 100)],
     )
     def test_update_progress_clamps_percent(self, raw, expected):
-        """BOUNDARY: update_progress clamps progress to [0, 100]."""
+        """ACCEPTANCE: Validates update progress clamps percent."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         update_progress(qid, progress=raw)
         assert int(get_queue_status(qid)["progress"]["percent"]) == expected
 
     def test_update_progress_does_not_introduce_steps_key(self):
-        """BOUNDARY: update_progress does not add a steps key to Redis state."""
+        """ACCEPTANCE: Validates update progress does not introduce steps key."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         update_progress(qid, progress=40, step="Fetching", message="page 1")
         assert "steps" not in get_queue_status(qid)
 
     def test_mark_completed_sets_100_percent(self):
-        """ACCEPTANCE: mark_completed writes job_status=completed and percent=100."""
+        """ACCEPTANCE: Validates mark completed sets 100 percent."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         mark_completed(qid)
@@ -1355,14 +1251,14 @@ class TestRedisLayer:
         assert int(state["progress"]["percent"]) == 100
 
     def test_mark_completed_does_not_introduce_steps_key(self):
-        """BOUNDARY: mark_completed does not add a steps key to Redis state."""
+        """ACCEPTANCE: Validates mark completed does not introduce steps key."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         mark_completed(qid)
         assert "steps" not in get_queue_status(qid)
 
     def test_mark_failed_stores_error_message(self):
-        """ACCEPTANCE: mark_failed writes job_status=failed and error as current_message."""
+        """REJECTION: Validates mark failed stores error message."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         mark_failed(qid, error="Something went wrong")
@@ -1371,7 +1267,7 @@ class TestRedisLayer:
         assert "Something went wrong" in state["progress"]["current_message"]
 
     def test_mark_cancel_requested_sets_is_cancel_only(self):
-        """ACCEPTANCE: mark_cancel_requested sets is_cancel=True without changing job_status."""
+        """ACCEPTANCE: Validates mark cancel requested sets is cancel only."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         original_status = get_queue_status(qid)["job_status"]
@@ -1381,11 +1277,11 @@ class TestRedisLayer:
         assert state["job_status"] == original_status
 
     def test_mark_cancel_requested_noop_when_key_missing(self):
-        """BOUNDARY: mark_cancel_requested on an expired/missing key must not raise."""
+        """REJECTION: Validates mark cancel requested noop when key missing."""
         mark_cancel_requested(str(uuid.uuid4()))
 
     def test_mark_cancelled_sets_terminal_state(self):
-        """ACCEPTANCE: mark_cancelled sets job_status=cancelled and is_cancel=True."""
+        """BOUNDARY: Validates mark cancelled sets terminal state."""
         qid = str(uuid.uuid4())
         init_queue(queue_task_uuid=qid, created_at=self._now_dt())
         mark_cancelled(qid)
@@ -1394,20 +1290,19 @@ class TestRedisLayer:
         assert state["is_cancel"] is True
 
     def test_get_queue_status_returns_unknown_for_missing_key(self):
-        """BOUNDARY: get_queue_status returns 'unknown' when key does not exist."""
+        """REJECTION: Validates get queue status returns unknown for missing key."""
         state = get_queue_status(str(uuid.uuid4()))
         assert state["job_status"] == "unknown"
         assert state["is_cancel"] is False
 
+    def _now_dt(self):
+        from django.utils import timezone as tz
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. Queue detail HTTP view  (GET queue/<job_uuid>/)
-# ─────────────────────────────────────────────────────────────────────────────
+        return tz.now()
 
 
 @pytest.mark.django_db(transaction=True)
 class TestQueueDetailView(MindoffTestCase):
-    """HTTP tests for MindoffQueueDetailView — routes on job_status, returns actual payload."""
 
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
@@ -1416,25 +1311,13 @@ class TestQueueDetailView(MindoffTestCase):
         self._dir = temp_dir_path
         self._tmpl = _api_templates
 
-    def _make_api(self, name):
-        return _create_test_api(self._app, name, self._dir, self._tmpl)
-
-    def _make_task(self, api_url_name, job_status="queued", response_code=None):
-        return _make_db_task(
-            api_url_name, job_status=job_status, response_code=response_code
-        )
-
-    # ── 404 ───────────────────────────────────────────────────────────────
-
     def test_returns_not_found_for_unknown_uuid(self):
-        """BOUNDARY: Detail with a nonexistent UUID returns QUEUE_TASK_NOT_FOUND."""
+        """REJECTION: Validates returns not found for unknown uuid."""
         resp = self.client.get(reverse("mo_queue_detail", args=[str(uuid.uuid4())]))
         assert resp.json()["message"]["code"] == "QUEUE_TASK_NOT_FOUND"
 
-    # ── completed: decompressed payload + response_code ───────────────────
-
     def test_completed_returns_decompressed_payload_with_response_code(self):
-        """ACCEPTANCE: Completed task returns the stored queued API response as-is."""
+        """ACCEPTANCE: Validates completed returns decompressed payload with response code."""
         from apps.django_mindoff.models import MOQueue
 
         api_url_name = self._make_api("test_detail_completed_api")
@@ -1480,7 +1363,7 @@ class TestQueueDetailView(MindoffTestCase):
         assert body["data"] == [{"answer": 42}]
 
     def test_completed_uses_stored_response_code(self):
-        """ACCEPTANCE: Completed task HTTP status comes from stored response_code."""
+        """ACCEPTANCE: Validates completed uses stored response code."""
         from apps.django_mindoff.models import MOQueue
         from apps.django_mindoff.components._api_kit.queue_process import (
             _compress_json_result,
@@ -1519,7 +1402,7 @@ class TestQueueDetailView(MindoffTestCase):
         assert resp.json() == stored_response
 
     def test_completed_unwraps_legacy_status_code_data_shape(self):
-        """ACCEPTANCE: Detail unwraps legacy {'status_code', 'data'} payload to inner response."""
+        """ACCEPTANCE: Validates completed unwraps legacy status code data shape."""
         from apps.django_mindoff.models import MOQueue
         from apps.django_mindoff.components._api_kit.queue_process import (
             _compress_json_result,
@@ -1559,10 +1442,8 @@ class TestQueueDetailView(MindoffTestCase):
         assert resp.status_code == 200
         assert resp.json() == inner_response
 
-    # ── failed ────────────────────────────────────────────────────────────
-
     def test_failed_returns_danger_category_with_response_code(self):
-        """ACCEPTANCE: Failed task returns danger category and stored response_code."""
+        """REJECTION: Validates failed returns danger category with response code."""
         from apps.django_mindoff.models import MOQueue
 
         api_url_name = self._make_api("test_detail_failed_api")
@@ -1590,10 +1471,8 @@ class TestQueueDetailView(MindoffTestCase):
         assert body["data"]["job_status"] == "failed"
         assert "progress_steps" not in body["data"]
 
-    # ── cancelled ─────────────────────────────────────────────────────────
-
     def test_cancelled_returns_queue_task_cancelled_code(self):
-        """ACCEPTANCE: Cancelled task returns QUEUE_TASK_CANCELLED warning."""
+        """ACCEPTANCE: Validates cancelled returns queue task cancelled code."""
         api_url_name = self._make_api("test_detail_cancelled_api")
         obj = self._make_task(api_url_name, job_status="cancelled")
 
@@ -1611,10 +1490,8 @@ class TestQueueDetailView(MindoffTestCase):
         assert body["data"]["job_status"] == "cancelled"
         assert "progress_steps" not in body["data"]
 
-    # ── pending ───────────────────────────────────────────────────────────
-
     def test_pending_returns_queue_task_pending_code(self):
-        """ACCEPTANCE: Pending task returns QUEUE_TASK_PENDING info."""
+        """ACCEPTANCE: Validates pending returns queue task pending code."""
         api_url_name = self._make_api("test_detail_pending_api")
         obj = self._make_task(api_url_name, job_status="pending")
 
@@ -1632,10 +1509,8 @@ class TestQueueDetailView(MindoffTestCase):
         assert body["data"]["job_status"] == "pending"
         assert "progress_steps" not in body["data"]
 
-    # ── running ───────────────────────────────────────────────────────────
-
     def test_running_returns_live_progress(self):
-        """ACCEPTANCE: Running task returns QUEUE_TASK_RUNNING with live Redis progress."""
+        """ACCEPTANCE: Validates running returns live progress."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1664,7 +1539,7 @@ class TestQueueDetailView(MindoffTestCase):
         assert "progress_steps" not in body["data"]
 
     def test_running_does_not_return_progress_steps(self):
-        """ACCEPTANCE: Detail response omits progress_steps even when API defines them."""
+        """ACCEPTANCE: Validates running does not return progress steps."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -1682,7 +1557,6 @@ class TestQueueDetailView(MindoffTestCase):
         obj = self._make_task(api_url_name, job_status="running")
 
         with patch.object(redis_state, "redis_client", fake_redis):
-            # Intentionally no `steps=` in Redis init: detail should still return API steps.
             init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
             mark_running(str(obj.id))
             update_progress(str(obj.id), progress=35, step="validate", message="going")
@@ -1692,10 +1566,8 @@ class TestQueueDetailView(MindoffTestCase):
         assert body["message"]["code"] == "QUEUE_TASK_RUNNING"
         assert "progress_steps" not in body["data"]
 
-    # ── Permission denied ─────────────────────────────────────────────────
-
     def test_returns_permission_denied_for_wrong_user(self):
-        """SECURITY: Detail endpoint returns PERMISSION_DENIED for another user's task."""
+        """REJECTION: Validates returns permission denied for wrong user."""
         from apps.django_mindoff.models import MOQueue
 
         other_user = User.objects.create_user(
@@ -1720,15 +1592,17 @@ class TestQueueDetailView(MindoffTestCase):
 
         assert resp.json()["message"]["code"] == "PERMISSION_DENIED"
 
+    def _make_api(self, name):
+        return _create_test_api(self._app, name, self._dir, self._tmpl)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. Queue list HTTP view  (GET queue/list/)
-# ─────────────────────────────────────────────────────────────────────────────
+    def _make_task(self, api_url_name, job_status="queued", response_code=None):
+        return _make_db_task(
+            api_url_name, job_status=job_status, response_code=response_code
+        )
 
 
 @pytest.mark.django_db(transaction=True)
 class TestQueueListView(MindoffTestCase):
-    """HTTP tests for MindoffQueueListView with all supported filter params."""
 
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
@@ -1737,16 +1611,8 @@ class TestQueueListView(MindoffTestCase):
         self._dir = temp_dir_path
         self._tmpl = _api_templates
 
-    def _make_api(self, name):
-        return _create_test_api(self._app, name, self._dir, self._tmpl)
-
-    def _list(self, **params):
-        return self.client.get(reverse("mo_queue_list"), params)
-
-    # ── Unfiltered ────────────────────────────────────────────────────────
-
     def test_returns_all_tasks_unfiltered(self):
-        """ACCEPTANCE: Plain GET queue/list/ returns all tasks and a count."""
+        """ACCEPTANCE: Validates returns all tasks unfiltered."""
         api = self._make_api("test_list_unfiltered_api")
         _make_db_task(api, job_status="queued")
         _make_db_task(api, job_status="completed")
@@ -1757,23 +1623,19 @@ class TestQueueListView(MindoffTestCase):
         assert body["data"]["count"] >= 2
         assert isinstance(body["data"]["tasks"], list)
 
-    # ── Filter: id ────────────────────────────────────────────────────────
-
     def test_filter_by_id_returns_single_task(self):
-        """ACCEPTANCE: ?id= returns only the matching task."""
+        """ACCEPTANCE: Validates filter by id returns single task."""
         api = self._make_api("test_list_filter_id_api")
         obj = _make_db_task(api, job_status="queued")
-        _make_db_task(api, job_status="queued")  # second task, should be excluded
+        _make_db_task(api, job_status="queued")
 
         resp = self._list(id=str(obj.id))
         body = resp.json()
         assert body["data"]["count"] == 1
         assert body["data"]["tasks"][0]["id"] == str(obj.id)
 
-    # ── Filter: job_status ────────────────────────────────────────────────
-
     def test_filter_by_job_status(self):
-        """ACCEPTANCE: ?job_status= filters by job_status field."""
+        """ACCEPTANCE: Validates filter by job status."""
         api = self._make_api("test_list_filter_status_api")
         _make_db_task(api, job_status="completed")
         _make_db_task(api, job_status="failed")
@@ -1782,10 +1644,8 @@ class TestQueueListView(MindoffTestCase):
         tasks = resp.json()["data"]["tasks"]
         assert all(t["job_status"] == "completed" for t in tasks)
 
-    # ── Filter: owner_id ──────────────────────────────────────────────────
-
     def test_filter_by_owner_id(self):
-        """ACCEPTANCE: ?owner_id= returns only tasks for that owner."""
+        """ACCEPTANCE: Validates filter by owner id."""
         api = self._make_api("test_list_filter_owner_api")
         _make_db_task(api, job_status="queued", owner_id="owner_alpha")
         _make_db_task(api, job_status="queued", owner_id="owner_beta")
@@ -1794,10 +1654,8 @@ class TestQueueListView(MindoffTestCase):
         tasks = resp.json()["data"]["tasks"]
         assert all(t["owner_id"] == "owner_alpha" for t in tasks)
 
-    # ── Filter: user_ref_id ───────────────────────────────────────────────
-
     def test_filter_by_user_ref_id(self):
-        """ACCEPTANCE: ?user_ref_id= returns only tasks for that user."""
+        """ACCEPTANCE: Validates filter by user ref id."""
         from apps.django_mindoff.models import MOQueue
 
         user = User.objects.create_user(
@@ -1812,17 +1670,15 @@ class TestQueueListView(MindoffTestCase):
             job_status="queued",
             request={},
         )
-        _make_db_task(api, job_status="queued")  # no user_ref
+        _make_db_task(api, job_status="queued")
 
         resp = self._list(user_ref_id=str(user.id))
         tasks = resp.json()["data"]["tasks"]
         assert len(tasks) >= 1
         assert all(t["user_ref_id"] == str(user.id) for t in tasks)
 
-    # ── Filter: api_url_name ──────────────────────────────────────────────
-
     def test_filter_by_api_url_name(self):
-        """ACCEPTANCE: ?api_url_name= returns only tasks for that API."""
+        """ACCEPTANCE: Validates filter by api url name."""
         api_a = self._make_api("test_list_filter_api_name_a")
         api_b = self._make_api("test_list_filter_api_name_b")
         _make_db_task(api_a, job_status="queued")
@@ -1832,10 +1688,8 @@ class TestQueueListView(MindoffTestCase):
         tasks = resp.json()["data"]["tasks"]
         assert all(t["api_url_name"] == api_a for t in tasks)
 
-    # ── Serialised fields ─────────────────────────────────────────────────
-
     def test_list_response_includes_response_code_field(self):
-        """ACCEPTANCE: List serialiser exposes response_code on each task."""
+        """ACCEPTANCE: Validates list response includes response code field."""
         api = self._make_api("test_list_response_code_field_api")
         _make_db_task(api, job_status="completed", response_code=200)
 
@@ -1846,7 +1700,7 @@ class TestQueueListView(MindoffTestCase):
         assert completed["response_code"] == 200
 
     def test_list_response_includes_all_columns(self):
-        """ACCEPTANCE: List endpoint returns full MOQueue columns."""
+        """ACCEPTANCE: Validates list response includes all columns."""
         api = self._make_api("test_list_all_columns_api")
         _make_db_task(api, job_status="completed", response_code=200)
 
@@ -1866,7 +1720,7 @@ class TestQueueListView(MindoffTestCase):
         assert "updated_at" in task
 
     def test_list_response_decompresses_compressed_json_payload(self):
-        """ACCEPTANCE: Compressed response JSON is expanded in queue/list output."""
+        """ACCEPTANCE: Validates list response decompresses compressed json payload."""
         api = self._make_api("test_list_decompress_response_api")
         obj = _make_db_task(api, job_status="completed", response_code=200)
         obj.response = _compress_json_result({"status_code": 200, "data": {"ok": True}})
@@ -1878,7 +1732,7 @@ class TestQueueListView(MindoffTestCase):
         assert task["response"] == {"status_code": 200, "data": {"ok": True}}
 
     def test_list_is_paginated_for_large_result_sets(self):
-        """ACCEPTANCE: queue/list returns paginated data with paging metadata."""
+        """ACCEPTANCE: Validates list is paginated for large result sets."""
         api = self._make_api("test_list_pagination_api")
         _make_db_task(api, job_status="queued")
         _make_db_task(api, job_status="running")
@@ -1894,10 +1748,8 @@ class TestQueueListView(MindoffTestCase):
         assert body["has_next"] is False
         assert len(body["tasks"]) == 1
 
-    # ── Combined filters ──────────────────────────────────────────────────
-
     def test_combined_filters(self):
-        """ACCEPTANCE: Multiple query params are AND-ed together."""
+        """ACCEPTANCE: Validates combined filters."""
         api = self._make_api("test_list_combined_filters_api")
         _make_db_task(api, job_status="completed", owner_id="combined_owner")
         _make_db_task(api, job_status="failed", owner_id="combined_owner")
@@ -1911,21 +1763,18 @@ class TestQueueListView(MindoffTestCase):
         assert tasks[0]["job_status"] == "completed"
         assert tasks[0]["owner_id"] == "combined_owner"
 
+    def _make_api(self, name):
+        return _create_test_api(self._app, name, self._dir, self._tmpl)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 10. SSE stream
-# ─────────────────────────────────────────────────────────────────────────────
+    def _list(self, **params):
+        return self.client.get(reverse("mo_queue_list"), params)
 
 
 @pytest.mark.django_db(transaction=True)
 class TestQueueSSEStream(MindoffTestCase):
-    """Tests for the Server-Sent Events status stream."""
-
-    def _make_task(self, api_url_name, job_status="running"):
-        return _make_db_task(api_url_name, job_status=job_status)
 
     def test_stream_returns_not_found_for_unknown_uuid(self):
-        """BOUNDARY: SSE stream with a nonexistent UUID returns QUEUE_TASK_NOT_FOUND."""
+        """REJECTION: Validates stream returns not found for unknown uuid."""
         resp = self.client.get(
             reverse("mo_queue_status_stream", args=[str(uuid.uuid4())])
         )
@@ -1935,7 +1784,7 @@ class TestQueueSSEStream(MindoffTestCase):
             assert body["message"]["code"] == "QUEUE_TASK_NOT_FOUND"
 
     def test_stream_emits_events_and_terminates_on_completed(self):
-        """ACCEPTANCE: SSE stream emits state events and stops after 'completed'."""
+        """BOUNDARY: Validates stream emits events and terminates on completed."""
         from apps.django_mindoff.models import MOQueue
 
         obj = MOQueue.objects.create(
@@ -1998,7 +1847,7 @@ class TestQueueSSEStream(MindoffTestCase):
         assert any(e["job_status"] == "completed" for e in events)
 
     def test_stream_permission_denied_for_wrong_user(self):
-        """SECURITY: SSE stream returns PERMISSION_DENIED for a task owned by another user."""
+        """REJECTION: Validates stream permission denied for wrong user."""
         from apps.django_mindoff.models import MOQueue
 
         owner = User.objects.create_user(
@@ -2017,17 +1866,14 @@ class TestQueueSSEStream(MindoffTestCase):
         if resp["Content-Type"] == "application/json":
             assert resp.json()["message"]["code"] == "PERMISSION_DENIED"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. Internal helper functions
-# ─────────────────────────────────────────────────────────────────────────────
+    def _make_task(self, api_url_name, job_status="running"):
+        return _make_db_task(api_url_name, job_status=job_status)
 
 
 class TestQueueHelpers:
-    """Unit tests for _extract_result, _ensure_json_result, _compress_json_result."""
 
     def test_extract_drf_response(self):
-        """ACCEPTANCE: DRF Response is normalised to its response JSON body."""
+        """ACCEPTANCE: Validates extract drf response."""
         from rest_framework.response import Response as DRFResponse
 
         r = DRFResponse(data={"hello": "world"}, status=201)
@@ -2035,7 +1881,7 @@ class TestQueueHelpers:
         assert result == {"hello": "world"}
 
     def test_extract_json_response(self):
-        """ACCEPTANCE: Django JsonResponse is normalised to its response JSON body."""
+        """ACCEPTANCE: Validates extract json response."""
         from django.http import JsonResponse
 
         r = JsonResponse({"foo": "bar"}, status=200)
@@ -2043,17 +1889,17 @@ class TestQueueHelpers:
         assert result["foo"] == "bar"
 
     def test_extract_plain_dict_passthrough(self):
-        """BOUNDARY: Plain dict passes through _extract_result unchanged."""
+        """ACCEPTANCE: Validates extract plain dict passthrough."""
         data = {"x": 1}
         assert _extract_result(data) == data
 
     def test_ensure_json_result_passes_for_serializable(self):
-        """ACCEPTANCE: Serializable data is returned unchanged."""
+        """ACCEPTANCE: Validates ensure json result passes for serializable."""
         data = {"a": 1, "b": [1, 2], "c": None}
         assert _ensure_json_result(data) == data
 
     def test_ensure_json_result_does_not_raise_for_coercible_types(self):
-        """BOUNDARY: Non-serializable objects are accepted (default=str coerces them)."""
+        """REJECTION: Validates ensure json result does not raise for coercible types."""
 
         class X:
             def __str__(self):
@@ -2063,48 +1909,42 @@ class TestQueueHelpers:
         assert result is not None
 
     def test_compress_decompress_roundtrip(self):
-        """ACCEPTANCE: Compressed → decompressed → original."""
+        """ACCEPTANCE: Validates compress decompress roundtrip."""
         original = {"key": "value", "nested": {"n": 99}}
         compressed = _compress_json_result(original)
         recovered = _decompress(compressed)
         assert recovered == original
 
     def test_compressed_shape(self):
-        """ACCEPTANCE: Compressed result contains the correct flag, codec, and data fields."""
+        """ACCEPTANCE: Validates compressed shape."""
         compressed = _compress_json_result({"status_code": 200, "data": {"x": 1}})
         assert compressed[_COMPRESSED_RESPONSE_FLAG] is True
         assert compressed["codec"] == "gzip+base64"
         assert "data" in compressed
 
     def test_compress_handles_large_payload(self):
-        """BOUNDARY: Compression works for a large payload (1 MB of data)."""
+        """ACCEPTANCE: Validates compress handles large payload."""
         large = {"items": ["x" * 100 for _ in range(10_000)]}
         compressed = _compress_json_result(large)
         recovered = _decompress(compressed)
         assert recovered == large
 
     def test_threshold_compression_skips_small_payload(self):
-        """BOUNDARY: Small payload remains plain when below min-bytes threshold."""
+        """ACCEPTANCE: Validates threshold compression skips small payload."""
         payload = {"a": 1}
         saved = _compress_json_result_if_large(payload, min_bytes=4096)
         assert saved == payload
 
     def test_threshold_compression_compresses_large_payload(self):
-        """ACCEPTANCE: Large payload is compressed once threshold is exceeded."""
+        """ACCEPTANCE: Validates threshold compression compresses large payload."""
         payload = {"items": ["x" * 100 for _ in range(500)]}
         saved = _compress_json_result_if_large(payload, min_bytes=200)
         assert saved[_COMPRESSED_RESPONSE_FLAG] is True
         assert _decode_json_blob(saved) == payload
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 12. Full end-to-end integration pipeline
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @pytest.mark.django_db(transaction=True)
 class TestQueueFullPipeline(MindoffTestCase):
-    """Full lifecycle: enqueue → worker executes → detail endpoint returns result."""
 
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
@@ -2113,13 +1953,8 @@ class TestQueueFullPipeline(MindoffTestCase):
         self._dir = temp_dir_path
         self._tmpl = _api_templates
 
-    def _make_api(self, name):
-        return _create_test_api(self._app, name, self._dir, self._tmpl)
-
-    # ── Happy path ────────────────────────────────────────────────────────
-
     def test_mo_test_api_returns_direct_response_in_queue_mode(self):
-        """INTEGRATION: queue-mode APIs run synchronously via direct-mode override."""
+        """ACCEPTANCE: Validates mo test api returns direct response in queue mode."""
         from apps.django_mindoff.components import tdd_kit as tdd_kit_module
 
         get_api_cls = tdd_kit_module._get_api_cls_attributes
@@ -2150,7 +1985,7 @@ class TestQueueFullPipeline(MindoffTestCase):
                 ),
             ),
         ):
-            response = self.mo_call_api(api_url_name)
+            response = self.mo_mock_call_api(api_url_name)
 
         assert response.status_code == 200
         body = response.json()
@@ -2159,7 +1994,7 @@ class TestQueueFullPipeline(MindoffTestCase):
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     def test_enqueue_execute_detail_with_response(self, _mock_send):
-        """INTEGRATION: Full queue lifecycle — enqueue, execute, detail returns completed + payload."""
+        """ACCEPTANCE: Validates enqueue execute detail with response."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -2180,7 +2015,6 @@ class TestQueueFullPipeline(MindoffTestCase):
         )
 
         with patch.object(redis_state, "redis_client", fake_redis):
-            # 1. Enqueue
             enqueue_resp = self.client.get(reverse(api_url_name))
             assert enqueue_resp.json()["message"]["code"] == "QUEUED"
             queue_id = enqueue_resp.json()["data"]["queue_id"]
@@ -2189,24 +2023,20 @@ class TestQueueFullPipeline(MindoffTestCase):
             assert obj.job_status == "queued"
             assert obj.response_code is None
 
-            # 2. Execute
             execute_queue(queue_id)
             obj.refresh_from_db()
             assert obj.job_status == "completed"
-            assert obj.response_code is not None  # populated by worker
+            assert obj.response_code is not None
 
-            # 3. Detail — returns actual payload using mo_queue_detail URL
             detail_resp = self.client.get(reverse("mo_queue_detail", args=[queue_id]))
             data = detail_resp.json()
 
         assert detail_resp.status_code == int(obj.response_code or 200)
         assert data == {"pipeline": "ok", "value": 123}
 
-    # ── Steps visible end-to-end ──────────────────────────────────────────
-
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     def test_progress_steps_not_visible_via_sse_stream(self, _mock_send):
-        """INTEGRATION: SSE payload excludes API-defined progress_steps."""
+        """ACCEPTANCE: Validates progress steps not visible via sse stream."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
 
         fake_redis = _InMemoryRedis()
@@ -2251,11 +2081,9 @@ class TestQueueFullPipeline(MindoffTestCase):
         assert "job_status" in last_event
         assert "progress" in last_event
 
-    # ── Full cancel flow ──────────────────────────────────────────────────
-
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     def test_cancel_flow_enqueue_cancel_detail_shows_cancelled(self, _mock_send):
-        """INTEGRATION: Enqueue → cancel → execute → detail shows QUEUE_TASK_CANCELLED."""
+        """ACCEPTANCE: Validates cancel flow enqueue cancel detail shows cancelled."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -2273,31 +2101,25 @@ class TestQueueFullPipeline(MindoffTestCase):
             enqueue_resp = self.client.get(reverse(api_url_name))
             queue_id = enqueue_resp.json()["data"]["queue_id"]
 
-            # Cancel via API
             cancel_resp = self.client.post(reverse("mo_queue_cancel", args=[queue_id]))
             assert cancel_resp.json()["message"]["code"] == "SUCCESS"
 
-            # Redis must have is_cancel=True
             state = get_queue_status(queue_id)
             assert state["is_cancel"] is True
 
-            # Worker picks it up — should cancel immediately
             execute_queue(queue_id)
 
         obj = MOQueue.objects.get(id=queue_id)
         assert obj.job_status == "cancelled"
 
-        # Detail endpoint must report cancelled
         with patch.object(redis_state, "redis_client", fake_redis):
             detail_resp = self.client.get(reverse("mo_queue_detail", args=[queue_id]))
 
         assert detail_resp.json()["message"]["code"] == "QUEUE_TASK_CANCELLED"
 
-    # ── Retry after failure ───────────────────────────────────────────────
-
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     def test_retry_clears_response_code_and_requeues(self, _mock_send):
-        """INTEGRATION: Retry clears response_code; detail returns QUEUE_TASK_PENDING until re-executed."""
+        """ACCEPTANCE: Validates retry clears response code and requeues."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -2326,7 +2148,6 @@ class TestQueueFullPipeline(MindoffTestCase):
         assert obj.job_status == "failed"
         assert obj.response_code is not None
 
-        # Retry — response_code must be cleared
         retry_resp = self.client.post(reverse("mo_queue_retry", args=[queue_id]))
         retry_body = retry_resp.json()
         assert retry_body["message"]["code"] == "QUEUED"
@@ -2341,42 +2162,50 @@ class TestQueueFullPipeline(MindoffTestCase):
         assert obj.job_status == "queued"
         assert obj.response_code is None
 
+    def _make_api(self, name):
+        return _create_test_api(self._app, name, self._dir, self._tmpl)
+
 
 class TestQueueProcessUtilityCoverage:
+
     def test_queue_request_repr(self):
+        """ACCEPTANCE: Validates queue request repr."""
         req = QueueRequest(method="post", data={"x": 1})
         assert repr(req) == "<QueueRequest method=POST>"
 
     def test_extract_response_code_paths(self):
+        """ACCEPTANCE: Validates extract response code paths."""
         from django.http import JsonResponse
         from rest_framework.response import Response as DRFResponse
         from ....components.response_kit import MINDOFF_RESPONSES
 
         assert _extract_response_code(DRFResponse({"ok": True}, status=201)) == 201
         assert _extract_response_code(JsonResponse({"ok": True}, status=202)) == 202
-        assert (
-            _extract_response_code(
-                {"message": {"code": "INVALID_METHOD"}, "data": {"detail": "x"}}
-            )
-            == int(MINDOFF_RESPONSES["INVALID_METHOD"]["http_status"])
-        )
+        assert _extract_response_code(
+            {"message": {"code": "INVALID_METHOD"}, "data": {"detail": "x"}}
+        ) == int(MINDOFF_RESPONSES["INVALID_METHOD"]["http_status"])
         assert _extract_response_code({"message": {"code": "UNKNOWN_CODE"}}) == 200
 
     def test_ensure_json_result_raises_on_circular_reference(self):
+        """REJECTION: Validates ensure json result raises on circular reference."""
         payload = {}
         payload["self"] = payload
         with pytest.raises(ValueError, match="JSON-serializable"):
             _ensure_json_result(payload)
 
     def test_compression_helpers_edge_cases(self):
+        """BOUNDARY: Validates compression helpers edge cases."""
         assert _compress_json_result_if_large(None, min_bytes=10) is None
         compressed = _compress_json_result({"x": "y"})
         assert _is_compressed_json_blob(compressed) is True
-        assert _compress_json_result_if_large(compressed, min_bytes=999999) == compressed
+        assert (
+            _compress_json_result_if_large(compressed, min_bytes=999999) == compressed
+        )
         out = _compress_json_result_if_large({"items": ["x" * 50]}, min_bytes="bad")
         assert _is_compressed_json_blob(out) is True
 
     def test_decode_json_blob_edge_cases(self):
+        """BOUNDARY: Validates decode json blob edge cases."""
         compressed = _compress_json_result({"x": 1})
         compressed.pop("data", None)
         assert _decode_json_blob(compressed) == compressed
@@ -2388,22 +2217,26 @@ class TestQueueProcessUtilityCoverage:
         assert _decode_json_blob(invalid) == invalid
 
     def test_get_json_compression_min_bytes_invalid_setting(self, settings):
+        """REJECTION: Validates get json compression min bytes invalid setting."""
         settings.MINDOFF_QUEUE_RESPONSE_COMPRESS_MIN_BYTES = "not_an_int"
         assert _get_json_compression_min_bytes("response", default=123) == 123
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.get_queue_status")
     def test_safe_get_queue_status_returns_unknown_on_exception(self, mock_get):
+        """REJECTION: Validates safe get queue status returns unknown on exception."""
         mock_get.side_effect = RuntimeError("redis down")
         state = _safe_get_queue_status("abc")
         assert state == {"job_status": "unknown", "is_cancel": False}
 
     def test_parse_updated_at_none(self):
+        """BOUNDARY: Validates parse updated at none."""
         assert _parse_updated_at(None) is None
 
     @pytest.mark.django_db(transaction=True)
     @patch("apps.django_mindoff.components._api_kit.queue_process.execute_queue.send")
     @patch("apps.django_mindoff.components._api_kit.queue_process.init_queue")
     def test_enqueue_process_authenticated_owner(self, mock_init, mock_send):
+        """ACCEPTANCE: Validates enqueue process authenticated owner."""
         from django.test import RequestFactory
         from apps.django_mindoff.models import MOQueue
 
@@ -2434,6 +2267,7 @@ class TestQueueProcessUtilityCoverage:
 
     @pytest.mark.django_db(transaction=True)
     def test_sync_redis_from_db_failed_with_non_dict_error(self):
+        """REJECTION: Validates sync redis from db failed with non dict error."""
         from apps.django_mindoff.models import MOQueue
 
         obj = MOQueue.objects.create(
@@ -2446,13 +2280,16 @@ class TestQueueProcessUtilityCoverage:
         )
         with (
             patch("apps.django_mindoff.components._api_kit.queue_process.init_queue"),
-            patch("apps.django_mindoff.components._api_kit.queue_process.mark_failed") as mf,
+            patch(
+                "apps.django_mindoff.components._api_kit.queue_process.mark_failed"
+            ) as mf,
         ):
             _sync_redis_from_db(obj)
         mf.assert_called_once_with(str(obj.id), error="failed")
 
     @pytest.mark.django_db(transaction=True)
     def test_sync_redis_from_db_cancelled_branch(self):
+        """ACCEPTANCE: Validates sync redis from db cancelled branch."""
         from apps.django_mindoff.models import MOQueue
 
         obj = MOQueue.objects.create(
@@ -2464,13 +2301,16 @@ class TestQueueProcessUtilityCoverage:
         )
         with (
             patch("apps.django_mindoff.components._api_kit.queue_process.init_queue"),
-            patch("apps.django_mindoff.components._api_kit.queue_process.mark_cancelled") as mc,
+            patch(
+                "apps.django_mindoff.components._api_kit.queue_process.mark_cancelled"
+            ) as mc,
         ):
             _sync_redis_from_db(obj)
         mc.assert_called_once_with(str(obj.id))
 
     @pytest.mark.django_db(transaction=True)
     def test_sync_db_from_redis_branches(self):
+        """ACCEPTANCE: Validates sync db from redis branches."""
         from apps.django_mindoff.models import MOQueue
 
         obj = MOQueue.objects.create(
@@ -2501,6 +2341,7 @@ class TestQueueProcessUtilityCoverage:
 
     @pytest.mark.django_db(transaction=True)
     def test_sync_db_from_redis_cancelled_branch(self):
+        """ACCEPTANCE: Validates sync db from redis cancelled branch."""
         from apps.django_mindoff.models import MOQueue
 
         obj = MOQueue.objects.create(
@@ -2524,6 +2365,7 @@ class TestQueueProcessUtilityCoverage:
 
     @pytest.mark.django_db(transaction=True)
     def test_rehydrate_returns_redis_state_when_only_redis_exists(self):
+        """ACCEPTANCE: Validates rehydrate returns redis state when only redis exists."""
         with patch(
             "apps.django_mindoff.components._api_kit.queue_process._safe_get_queue_status",
             return_value={"job_status": "running", "is_cancel": False},
@@ -2533,6 +2375,7 @@ class TestQueueProcessUtilityCoverage:
 
     @pytest.mark.django_db(transaction=True)
     def test_rehydrate_handles_redis_id_mismatch_and_db_preferred_fallback(self):
+        """REJECTION: Validates rehydrate handles redis id mismatch and db preferred fallback."""
         task = _make_db_task("test_api", job_status="queued")
         with (
             patch(
@@ -2571,6 +2414,7 @@ class TestQueueProcessUtilityCoverage:
 
     @pytest.mark.django_db(transaction=True)
     def test_cancel_queue_task_not_cancellable_for_unknown_nonterminal_status(self):
+        """REJECTION: Validates cancel queue task not cancellable for unknown nonterminal status."""
         task = _make_db_task("test_api", job_status="queued")
         with patch(
             "apps.django_mindoff.components._api_kit.queue_process._safe_get_queue_status",
@@ -2580,6 +2424,7 @@ class TestQueueProcessUtilityCoverage:
 
     @patch("apps.django_mindoff.components._api_kit.queue_process.redis_client")
     def test_dramatiq_healthcheck_writes_status(self, mock_redis):
+        """ACCEPTANCE: Validates dramatiq healthcheck writes status."""
         assert dramatiq_healthcheck("probe-1") == "ok"
         mock_redis.hset.assert_called_once()
         mock_redis.expire.assert_called_once()
@@ -2587,6 +2432,7 @@ class TestQueueProcessUtilityCoverage:
 
 @pytest.mark.django_db(transaction=True)
 class TestQueueWorkerExtraCoverage(MindoffTestCase):
+
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
         app_name, temp_dir_path = self.mo_mock_app(is_return_path=True)
@@ -2594,10 +2440,8 @@ class TestQueueWorkerExtraCoverage(MindoffTestCase):
         self._dir = temp_dir_path
         self._tmpl = _api_templates
 
-    def _make_api(self, name):
-        return _create_test_api(self._app, name, self._dir, self._tmpl)
-
     def test_execute_queue_validation_error_non_cancel_marks_failed(self):
+        """REJECTION: Validates execute queue validation error non cancel marks failed."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -2623,6 +2467,7 @@ class TestQueueWorkerExtraCoverage(MindoffTestCase):
         assert decoded.get("code") == "VALIDATION_ERR"
 
     def test_execute_queue_handles_non_dict_snapshot(self):
+        """ACCEPTANCE: Validates execute queue handles non dict snapshot."""
         from apps.django_mindoff.components._api_kit import redis as redis_state
         from apps.django_mindoff.models import MOQueue
 
@@ -2648,3 +2493,37 @@ class TestQueueWorkerExtraCoverage(MindoffTestCase):
 
         task.refresh_from_db()
         assert task.job_status == "completed"
+
+    def _make_api(self, name):
+        return _create_test_api(self._app, name, self._dir, self._tmpl)
+
+
+def _make_db_task(
+    api_url_name: str,
+    job_status: str = "queued",
+    owner_id: str = "test_owner",
+    error=None,
+    response_code: int | None = None,
+):
+    from apps.django_mindoff.models import MOQueue
+
+    return MOQueue.objects.create(
+        id=uuid.uuid4(),
+        owner_id=owner_id,
+        api_url_name=api_url_name,
+        job_status=job_status,
+        response_code=response_code,
+        request={
+            "method": "GET",
+            "data": {},
+            "query_params": {},
+            "args": [],
+            "kwargs": {},
+        },
+        error=error,
+    )
+
+
+def _decompress(compressed_payload: dict) -> dict:
+    raw = base64.b64decode(compressed_payload["data"].encode("ascii"))
+    return json.loads(gzip.decompress(raw))

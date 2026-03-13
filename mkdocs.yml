@@ -1,0 +1,91 @@
+site_name: Django Mindoff
+site_description: Fast, structured, and scalable API development with django-mindoff
+site_url: https://mindoffwork.github.io/django-mindoff/
+repo_name: mindoffwork/django-mindoff
+repo_url: https://github.com/mindoffwork/django-mindoff
+
+nav:
+  - Getting Started:
+      - Introduction: index.md
+      - Release Notes: release_notes.md
+  - Developer Guide:
+      - Overview: developer_guide/index.md
+      - Installation & Configuration: developer_guide/installation-configuration.md
+      - App and Model Setup: developer_guide/app-and-model-setup.md
+      - API Development: developer_guide/api-development.md
+      - Queue Mode API: developer_guide/queued-api-processing.md
+      - Responses: developer_guide/responses.md
+      - Validations: developer_guide/validations.md
+      - Data Operations (CRUD): developer_guide/data-operations-crud.md
+      - Test-Driven Development: developer_guide/test-driven-development.md
+      - Polars Utilities: developer_guide/polars-utilities.md
+      - Helper Utilities: developer_guide/helper-utilities.md
+      # - Deployment: developer_guide/deployment.md
+  - Architecture:
+      - Overview: architecture/index.md
+      - Management Kit: architecture/management-kit.md
+      - API Kit: architecture/api-kit.md
+      - Response Kit: architecture/response-kit.md
+      - Validation Kit: architecture/validation-kit.md
+      - CRUD Kit: architecture/crud-kit.md
+      - TDD Kit: architecture/tdd-kit.md
+      - Polars Kit: architecture/polars-kit.md
+      - Helper Kit: architecture/helper-kit.md
+  - Community:
+      - Overview: community/index.md
+      - Contribution Guide: community/contribution-guide.md
+      - Issues & Discussions: community/issues-discussions.md
+      - Code of Conduct: community/code-of-conduct.md
+
+theme:
+  name: material
+  logo: _assets/MindOff_Logo_YellowRounded_192x192.png
+  favicon: _assets/MindOff_Logo_YellowRounded_192x192.png
+  font:
+    text: Ubuntu
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+  palette:
+    - scheme: default
+      primary: black
+      accent: amber
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      check_paths: true
+      base_path:
+        - .
+        - docs
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+hooks:
+  - docs/_hooks/main.py
+
+extra_css:
+  - _assets/stylesheets/style.css
+
+extra:
+  generator: false
+copyright: "©️ 2026 Mindoff.work"

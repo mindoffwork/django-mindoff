@@ -1,8 +1,8 @@
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-SECRET_KEY = "ci-secret-key"
+sec_key = "ci-secret-key"
+SECRET_KEY = sec_key
 DEBUG = True
 ALLOWED_HOSTS = []
 
@@ -66,6 +66,4 @@ MINDOFF_LOG_ERRORS_IN_DEBUG = False
 MINDOFF_TRACEBACK_DIRS = ["apps", "config"]
 MINDOFF_USE_VIEW_CACHE = False
 MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT = "120/m"
-
-# Dummy Redis placeholder (not used in CI yet)
 REDIS_URL = "redis://localhost:6379/0"

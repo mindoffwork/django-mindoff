@@ -2,7 +2,7 @@ from django.conf import settings
 from ..response_kit import mo_response_kit
 
 
-class BaseVersionRouter:
+class APIVersionRouter:
     VERSION_MAP: dict = {}
 
     def __call__(self, request, *args, **kwargs):
