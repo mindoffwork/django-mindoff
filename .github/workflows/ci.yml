@@ -174,17 +174,11 @@ jobs:
 
             // Map label → changelog category heading
             const labelToCategory = {
+              "bug":            "Fixes",
               "feature":        "Features",
-              "bug":            "Bug Fixes",
-              "fix":            "Bug Fixes",
-              "docs":           "Documentation",
-              "chore":          "Chores",
-              "refactor":       "Refactoring",
-              "performance":    "Performance",
-              "test":           "Tests",
-              "ci":             "CI/CD",
-              "breaking change":"Breaking Changes",
-              "security":       "Security",
+              "enhancement":    "Enhancements",
+              "documentation":  "Documentation",
+              "internal":       "Internal",
             };
 
             const allowedLabels = Object.keys(labelToCategory);
@@ -192,7 +186,7 @@ jobs:
             const category      = matchedLabel ? labelToCategory[matchedLabel] : "Miscellaneous";
 
             // Build the new entry line
-            const entry = `- ${title}. PR [#${number}](${prUrl}) by [@${author}](https://github.com/${author})`;
+            const entry = `- ${title} ([#${number}](${prUrl}))`;
 
             let changelog = fs.readFileSync("CHANGELOG.md", "utf8");
 
