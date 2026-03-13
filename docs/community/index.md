@@ -1,16 +1,7 @@
 # Community
 
-django-mindoff is built with the goal of making Django REST API development faster and more structured.
+`django-mindoff` is built with the goal of making Django REST API development faster and more structured, and the community is where that goal gets sharpened through real-world feedback. This section is the practical guide for contributing, asking questions, and collaborating with other developers utilizing the framework.
 
-We welcome contributions, discussions, and feedback from developers using the framework.
+Before contributing, please go through the [Developer Guide](../developer_guide/index.md) and [Architecture](../architecture/index.md) to gain enough knowledge to effectively help out the community.
 
-## Ways to Participate
-
-- Contribute code or documentation
-- Report bugs or suggest improvements
-- Ask questions or discuss ideas with the community
-
-## Community Resources
-
-- [Contribution Guide](contribution-guide.md)
-- [Issues & Discussions](issues-discussions.md)
+{{ COMMUNITY_MENU }}
