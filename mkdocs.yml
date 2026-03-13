@@ -34,8 +34,6 @@ nav:
   - Community:
       - Overview: community/index.md
       - Contribution Guide: community/contribution-guide.md
-      - Issues & Discussions: community/issues-discussions.md
-      - Code of Conduct: community/code-of-conduct.md
 
 theme:
   name: material

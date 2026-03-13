@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to Django Mindoff.
 
-Contributions help improve the framework and make it more useful for developers building Django REST APIs. By joining hands, we can make `django-mindoff` more secure, better, faster, simpler, and easier for all.
+Contributions help improve the framework and make it more useful for developers building Django REST APIs. By joining hands, we can make `django-mindoff` more secure, better, faster, and simpler for all.
 
 ## Ways to Contribute
 
@@ -10,23 +10,58 @@ Contributions help improve the framework and make it more useful for developers 
 - 🐛 Fix bugs and security concerns.
 - ⚡ Improve or optimize the codebase, including performance.
 - 📝 Improve documentation, fill gaps, or resolve inconsistencies.
-- 🚨 Open Issues to request features, report bugs, or highlight documentation gaps.
-- 💬 Use Discussions to answer questions or share what you built with django-mindoff.
+- 🚨 Open Issues to report bugs, or highlight documentation gaps.
+- 💬 Use Discussions to request features, ask/answer questions or share what you built with django-mindoff.
 
-<div class="admonition warning">
-  <p class="admonition-title">Note on Security Issues</p>
-  <p>If you discover a security vulnerability, do not open a public issue. Please follow the <a href="security.md">Security Policy</a>.</p>
-</div>
+Django Mindoff follows linear versioning system where only the latest version is actively supported. Before opening any issue, discussion or pull requests:
 
-## Before You Start
+    - Search the GitHub repository for related items to avoid duplicates.
+    - Make sure you're using the latest version of `django-mindoff` package.
 
-Before beginning work on a contribution:
+## Code of Conduct
 
-1. Check existing Issues to see if the problem is already reported.
-2. If you plan to add a feature and want it included in the project, consider opening a discussion first.
-3. Keep pull requests focused, small and centered around one thing at a time.
+**Be respectful, open-minded and constructive**.
 
-## Development Setup
+- Treat other contributors and maintainers with respect.
+- Focus on improving the project, not winning arguments.
+- Provide helpful feedback and assume good intent.
+- Harassment, hostility, or dismissive behavior will not be tolerated.
+
+Disagreements about design or implementation are normal in software development. Keep discussions technical, respectful, and solution-oriented. Maintainers may moderate discussions, issues, or pull requests that do not follow these principles.
+
+## Issues & Discussions
+
+### Issues
+
+Open an Issue only when something is broken or needs correction.
+
+Examples:
+
+- Bugs or incorrect behavior
+- Security concerns
+- Incorrect documentation
+- Compatibility problems with upcoming Django or Python versions
+
+When reporting a bug, follow the issue template carefully.
+
+You can also contribute by confirming bugs, sharing reproducible examples, or submitting a pull request that fixes the issue.
+
+### Discussions
+
+Use Discussions for everything that is not a bug.
+
+Examples:
+
+- Feature ideas
+- Questions about usage
+- Architectural ideas
+- Sharing projects built with django-mindoff
+
+Django Mindoff's features are curated by the Maintainers. Reasonable feature ideas that align with the project's principles are welcome. Open feature ideas in **Discussions (not Issues)** and tag them with the `feature` label.
+
+Avoid requesting changes to the behavior of existing features unless they are required for security reasons or to ensure compatibility with future versions of core dependencies.
+
+## Development
 
 ### 1. Fork or Clone the Repository
 
@@ -114,7 +149,7 @@ internal/ci-changelog-step
 
 ### 6. Commit Message Guidelines
 
-Use [Gitmoji](https://gitmoji.dev) codes in commit messages that matches the change type. keep the text short and action-oriented. Please favor clarity over creativity.
+Use [Gitmoji](https://gitmoji.dev) codes in commit messages that match the change type. Keep the text short and action-oriented. Please favor clarity over creativity and squashed commits over a long commit history.
 
 Example:
 
@@ -122,7 +157,7 @@ Example:
 :sparkles: Add bulk update validation
 ```
 
-### 7. Push Changes and Open a Pull Request
+### 7. Open a Pull Request
 
 1. Push your branch: `git push origin <branch-name>`
 
