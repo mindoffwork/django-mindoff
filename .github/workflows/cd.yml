@@ -11,12 +11,30 @@ concurrency:
 
 jobs:
   # ─────────────────────────────────────────────
+  # 0. Validate release tag format (vX.Y.Z)
+  # ─────────────────────────────────────────────
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check tag format
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "[INFO] Release tag: $TAG"
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "[ERROR] Tag '$TAG' does not match required format vX.Y.Z — aborting."
+            exit 1
+          fi
+          echo "[INFO] Tag format is valid."
+
+  # ─────────────────────────────────────────────
   # 1. Replace "Recent Changes" with version tag
   #    in CHANGELOG.md and push to root
   # ─────────────────────────────────────────────
   version-changelog:
     name: Version changelog
     runs-on: ubuntu-latest
+    needs: validate-tag
     if: github.event.release.target_commitish == 'root'
     permissions:
       contents: write
@@ -29,10 +47,8 @@ jobs:
       - name: Replace "Recent Changes" with release version
         run: |
           VERSION="${GITHUB_REF#refs/tags/}"
-          DATE=$(date +"%Y-%m-%d")
-          # Replace the first occurrence of "## Recent Changes"
-          sed -i "s/^## Recent Changes$/## ${VERSION} — ${DATE}/" CHANGELOG.md
-          echo "[INFO] Replaced 'Recent Changes' with '${VERSION} — ${DATE}'"
+          sed -i "s/^## Recent Changes$/## ${VERSION}/" CHANGELOG.md
+          echo "[INFO] Replaced 'Recent Changes' with '${VERSION}'"
 
       - name: Commit versioned changelog
         run: |
@@ -51,11 +67,12 @@ jobs:
     needs: version-changelog
     permissions:
       id-token: write
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: root
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@v5
         with:
@@ -67,6 +84,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install build twine
 
+      - name: Sync pyproject.toml version with release tag
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PROJECT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "[INFO] Tag: $TAG_VERSION  |  pyproject.toml: $PROJECT_VERSION"
+
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "[WARN] Version mismatch — updating pyproject.toml to $TAG_VERSION"
+            sed -i "s/^version = \".*\"/version = \"${TAG_VERSION}\"/" pyproject.toml
+
+            UPDATED=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+            if [ "$UPDATED" != "$TAG_VERSION" ]; then
+              echo "[ERROR] Failed to update version in pyproject.toml — aborting."
+              exit 1
+            fi
+
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add pyproject.toml
+            git commit -m "🔖 Bump version to ${TAG_VERSION} to match release tag"
+            git push
+            echo "[INFO] pyproject.toml updated and pushed."
+          else
+            echo "[INFO] Versions match — no update needed."
+          fi
+
       - name: Remove old build artifacts
         run: rm -rf dist/ build/ *.egg-info
 
@@ -76,17 +119,37 @@ jobs:
       - name: Validate distribution metadata
         run: python -m twine check dist/*
 
-      - name: Verify version matches release tag
-        run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          PROJECT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          echo "[INFO] Tag: $TAG_VERSION  |  pyproject.toml: $PROJECT_VERSION"
-          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
-            echo "[ERROR] Version mismatch — aborting."
-            exit 1
-          fi
-
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/
+
+  # ─────────────────────────────────────────────
+  # 3. Revert changelog if publish fails
+  # ─────────────────────────────────────────────
+  revert-changelog:
+    name: Revert changelog on failure
+    runs-on: ubuntu-latest
+    needs: publish
+    if: failure()
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: root
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Revert versioned heading back to "Recent Changes"
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          sed -i "s/^## ${VERSION}$/## Recent Changes/" CHANGELOG.md
+          echo "[INFO] Reverted '${VERSION}' back to 'Recent Changes'"
+
+      - name: Commit revert
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "⏪ Revert changelog — release ${GITHUB_REF#refs/tags/} failed"
+          git push
