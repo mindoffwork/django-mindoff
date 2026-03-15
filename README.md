@@ -11,33 +11,43 @@ Django Mindoff is an architectural framework that manages the structure and mech
 ## Key Features
 
 1. **Project Setup That Just Works**
+
    Start a new API project with guided CLI commands for init, create, delete, and nuke. Projects start ready to run with a sensible structure, so developers can begin building APIs immediately without worrying about project layout.
 
 2. **Fully Managed APIs**
+
    Define request method, access control, payload rules, rate limits, and execution mode in a single API definition. Mindoff enforces these rules automatically, handling validation, security checks, and execution flow behind the scenes.
 
 3. **API Versioning That Stays Manageable**
+
    Ship and evolve versioned APIs using a built‑in routing structure. APIs are automatically organized so new versions stay clean while existing clients continue working without disruption.
 
 4. **Queue-Ready APIs**
+
    Run APIs synchronously or as background processes when needed. Simply switch `process_mode` to `"queue"` and Mindoff handles queue orchestration, status tracking, progress updates, cancellation, and retries.
 
 5. **Validation in One Line**
+
    Use simple validation helpers that keep API logic clean and cognitively light. With aggregation support, multiple validation errors can be captured together and returned in a structured response.
 
 6. **Consistent Responses, Every Time**
+
    Return responses through a unified response structure using response endpoints. Messages stay professional, consistent, and predictable across the entire API surface.
 
 7. **Vectorized Model Validation & Bulk Writes**
+
    Pass a `model_frame` (DataFrame or LazyFrame) to `create` or `update` and Mindoff validates it automatically against the Django model. Validation runs in a vectorized, loop‑free pipeline and valid rows are written directly to the model's table with high efficiency.
 
 8. **Querysets to DataFrames, Instantly**
+
    Provide a Django queryset and Mindoff converts the results into a DataFrame or LazyFrame. Data is returned with built‑in pagination and streaming support, making large reads predictable and efficient.
 
 9. **Optimized Polars Utilities for DataFrame & LazyFrame**
+
    Run checks, conversions, and transformations seamlessly across both DataFrame and LazyFrame with Mindoff’s Polars utilities. Operations run natively in vectorized form and stay tuned for performance and efficiency, keeping data pipelines smooth and predictable.
 
 10. **Tests With Almost No Setup**
+
     Write API tests using declarative test mixins that talk to the API automatically.
     Focus on verifying behavior instead of crafting request calls and basic assertions, which are handled automatically by Mindoff.
 
@@ -130,4 +140,4 @@ This project uses the same BSD 3-Clause License as the Django project. See the [
 
 [requirements-guide]: https://mindoffwork.github.io/django-mindoff/architecture/management-kit/#default-package-set-installed-by-init
 [developer-guide]: https://mindoffwork.github.io/django-mindoff/developer_guide/
-[project-license]: https://github.com/mindoffwork/django-mindoff/blob/main/LICENSE
+[project-license]: https://github.com/mindoffwork/django-mindoff/blob/root/LICENSE

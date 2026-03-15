@@ -25,7 +25,7 @@
 - 🔧 Update CI/CD workflows, PR title lint, and changelog automation
 - ♻️ Remove deprecated manager features (organize init/py, build)
 
-## v0.1.3 - 2026-02-22
+## v0.1.3
 
 ### Fixes
 
@@ -35,7 +35,7 @@
 
 - 🔧 Update CI workflow
 
-## v0.1.2 - 2026-02-22
+## v0.1.2
 
 ### Features
 
