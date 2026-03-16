@@ -47,6 +47,7 @@ class MindoffAPIMixin(APIView):
             api_url_name = "my_api"
             api_name = "My API"
             api_description = "This is an example API."
+            method = "get"
 
             def run(self, request):
                 return Response({"message": "Hello World!"})
@@ -112,7 +113,18 @@ class MindoffAPIMixin(APIView):
 
     def validate_api_configuration(self):
         """Add one line docstring here"""
+        required_attrs = ("api_url_name", "api_name", "api_description", "method")
+        for attr in required_attrs:
+            mo_validation_kit.ensure_truthy(
+                hasattr(self, attr),
+                msg=f"`{attr}` must be defined on the API class.",
+                is_exception=True,
+                code="API_CONFIG_ERR",
+            )
+
         for attr_name in ("authentication_classes", "permission_classes"):
+            if not hasattr(self, attr_name):
+                continue
             classes = getattr(self, attr_name)
             mo_validation_kit.ensure_type(
                 classes,
@@ -207,21 +219,25 @@ class MindoffAPIMixin(APIView):
             is_exception=True,
             code="API_CONFIG_ERR",
         )
-        mo_validation_kit.ensure_type(
-            self.allow_duplicate_queue,
-            bool,
-            msg="`allow_duplicate_queue` must be boolean",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        mo_validation_kit.ensure_in(
-            type(self.payload_schema),
-            (list, dict, type(None)),
-            msg="`payload_schema` must be list | dict | None",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
+        if hasattr(self, "allow_duplicate_queue"):
+            mo_validation_kit.ensure_type(
+                self.allow_duplicate_queue,
+                bool,
+                msg="`allow_duplicate_queue` must be boolean",
+                is_exception=True,
+                code="API_CONFIG_ERR",
+            )
+        if hasattr(self, "payload_schema"):
+            mo_validation_kit.ensure_in(
+                type(self.payload_schema),
+                (list, dict, type(None)),
+                msg="`payload_schema` must be list | dict | None",
+                is_exception=True,
+                code="API_CONFIG_ERR",
+            )
         for attr in ("max_payload_size", "max_payload_depth"):
+            if not hasattr(self, attr):
+                continue
             value = getattr(self, attr)
             if value is not None:
                 mo_validation_kit.ensure_type(
@@ -241,19 +257,22 @@ class MindoffAPIMixin(APIView):
                     is_exception=True,
                     code="API_CONFIG_ERR",
                 )
-        mo_validation_kit.ensure_in(
-            self.payload_validation,
-            ("strict", "basic", None),
-            msg="`payload_validation` must be 'strict', 'basic' or None",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
+        if hasattr(self, "payload_validation"):
+            mo_validation_kit.ensure_in(
+                self.payload_validation,
+                ("strict", "basic", None),
+                msg="`payload_validation` must be 'strict', 'basic' or None",
+                is_exception=True,
+                code="API_CONFIG_ERR",
+            )
         for attr in (
             "api_request_limit",
             "queue_detail_api_limit",
             "queue_cancel_api_limit",
             "queue_retry_api_limit",
         ):
+            if not hasattr(self, attr):
+                continue
             value = getattr(self, attr)
             if value is not None:
                 mo_validation_kit.ensure_type(
@@ -270,42 +289,45 @@ class MindoffAPIMixin(APIView):
                     is_exception=True,
                     code="API_CONFIG_ERR",
                 )
-        if self.queue_status_stream_api_limit is not None:
-            mo_validation_kit.ensure_type(
-                self.queue_status_stream_api_limit,
-                int,
-                msg="`queue_status_stream_api_limit` must be int | None",
-                is_exception=True,
-                code="API_CONFIG_ERR",
-            )
-            mo_validation_kit.ensure_greater_equal(
-                self.queue_status_stream_api_limit,
-                0,
-                msg="`queue_status_stream_api_limit` must be >= 0",
-                is_exception=True,
-                code="API_CONFIG_ERR",
-            )
-        mo_validation_kit.ensure_in(
-            self.process_mode,
-            ALLOWED_PROCESS_MODES,
-            msg=f"`process_mode` must be one of {ALLOWED_PROCESS_MODES}",
-            is_exception=True,
-            code="API_CONFIG_ERR",
-        )
-        steps_cfg = self._get_progress_steps_config()
-        if steps_cfg:
-            mo_validation_kit.ensure_equal(
+        if hasattr(self, "queue_status_stream_api_limit"):
+            if self.queue_status_stream_api_limit is not None:
+                mo_validation_kit.ensure_type(
+                    self.queue_status_stream_api_limit,
+                    int,
+                    msg="`queue_status_stream_api_limit` must be int | None",
+                    is_exception=True,
+                    code="API_CONFIG_ERR",
+                )
+                mo_validation_kit.ensure_greater_equal(
+                    self.queue_status_stream_api_limit,
+                    0,
+                    msg="`queue_status_stream_api_limit` must be >= 0",
+                    is_exception=True,
+                    code="API_CONFIG_ERR",
+                )
+        if hasattr(self, "process_mode"):
+            mo_validation_kit.ensure_in(
                 self.process_mode,
-                "queue",
-                msg=(
-                    f"`progress_steps` is defined on `{self.api_url_name}` but "
-                    f"`process_mode` is '{self.process_mode}'. "
-                    f"`progress_steps` is only valid for queue-mode APIs."
-                ),
+                ALLOWED_PROCESS_MODES,
+                msg=f"`process_mode` must be one of {ALLOWED_PROCESS_MODES}",
                 is_exception=True,
                 code="API_CONFIG_ERR",
             )
-            _validate_progress_steps(steps_cfg, self.api_url_name)
+        if hasattr(self, "progress_steps"):
+            steps_cfg = self._get_progress_steps_config()
+            if steps_cfg:
+                mo_validation_kit.ensure_equal(
+                    self.process_mode,
+                    "queue",
+                    msg=(
+                        f"`progress_steps` is defined on `{self.api_url_name}` but "
+                        f"`process_mode` is '{self.process_mode}'. "
+                        f"`progress_steps` is only valid for queue-mode APIs."
+                    ),
+                    is_exception=True,
+                    code="API_CONFIG_ERR",
+                )
+                _validate_progress_steps(steps_cfg, self.api_url_name)
 
     def get(self, request, *args, **kwargs):
         return self._handle_request_logic(request, *args, **kwargs)

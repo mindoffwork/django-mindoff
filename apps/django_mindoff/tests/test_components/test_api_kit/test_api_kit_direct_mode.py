@@ -107,6 +107,29 @@ class TestAPIConfigurationValidation(MindoffTestCase):
         _reload_api_modules(self._app, api_name)
         self._assert_config_error("`allow_duplicate_queue` must be boolean")
 
+    def test_config_skips_missing_optional_attributes(self, monkeypatch):
+        """BOUNDARY: Validates config skips missing optional attributes."""
+        api_name = "test_missing_optional_attrs_api"
+        self._make_api(api_name)
+        for attr in (
+            "allow_duplicate_queue",
+            "payload_schema",
+            "payload_validation",
+            "api_request_limit",
+        ):
+            monkeypatch.delattr(MindoffAPIMixin, attr, raising=False)
+        clear_url_caches()
+        _reload_api_modules(self._app, api_name)
+        errors = run_checks()
+        matching = [
+            e
+            for e in errors
+            if e.id == self.EXPECTED_CHECK_ID and api_name in e.msg
+        ]
+        assert not matching, (
+            f"Unexpected config errors: {[(e.id, e.msg) for e in errors]}"
+        )
+
     @pytest.mark.parametrize(
         ("attribute", "value", "error_message"),
         [
@@ -1143,10 +1166,26 @@ def _modify_api_attributes(
         else:
             value_str = str(value)
 
-        pattern = rf"(\s+{attribute}\s*:\s*[^=]+=\s*)(.+?)(\s*(?:#|$))"
-        content = re.sub(
-            pattern, rf"\g<1>{value_str}\g<3>", content, flags=re.MULTILINE
-        )
+        typed_pattern = rf"(\s+{attribute}\s*:\s*[^=]+=\s*)(.+?)(\s*(?:#|$))"
+        untyped_pattern = rf"(\s+{attribute}\s*=\s*)(.+?)(\s*(?:#|$))"
+
+        if re.search(typed_pattern, content, flags=re.MULTILINE):
+            content = re.sub(
+                typed_pattern, rf"\g<1>{value_str}\g<3>", content, flags=re.MULTILINE
+            )
+        elif re.search(untyped_pattern, content, flags=re.MULTILINE):
+            content = re.sub(
+                untyped_pattern, rf"\g<1>{value_str}\g<3>", content, flags=re.MULTILINE
+            )
+        else:
+            insert_at = re.search(r"^ {4}def\s+\w+\(", content, flags=re.MULTILINE)
+            insert_pos = insert_at.start() if insert_at else len(content)
+            line = f"    {attribute} = {value_str}\n"
+            prefix = content[:insert_pos]
+            suffix = content[insert_pos:]
+            if prefix and not prefix.endswith("\n"):
+                prefix += "\n"
+            content = prefix + line + ("\n" if not line.endswith("\n\n") else "") + suffix
 
     api_file.write_text(content)
 

@@ -19,4 +19,4 @@ class TestSampleAPIView(MindoffTestCase):
             api_url_name=self.api_url_name,
             response=response
         )
-        # ----- 🚩 Add Assertions/Logic Here -----------
+        # ----- 👇 Add Assertions/Logic Here -----------

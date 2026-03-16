@@ -45,7 +45,7 @@ Override only the attributes and add test methods as needed for your endpoint be
 --8<-- "apps/django_mindoff/components/managers/resources/test_api_class.txt"
 ```
 
-**`mo_mock_call_api` Parameter Reference**
+**Parameter Reference for `mo_mock_call_api`**
 
 | Input          | Purpose                                   | Typical values   |
 | -------------- | ----------------------------------------- | ---------------- |
@@ -55,7 +55,7 @@ Override only the attributes and add test methods as needed for your endpoint be
 | `headers`      | Request headers, auth, custom metadata.   | dict or `None`   |
 | `url_kwargs`   | URL kwargs such as version segments.      | `{"version": 1}` |
 
-**`mo_assert_api_response` Parameter Reference**
+**Parameter Reference `mo_assert_api_response`**
 
 | Input                    | Purpose                              | Typical values                              |
 | ------------------------ | ------------------------------------ | ------------------------------------------- |

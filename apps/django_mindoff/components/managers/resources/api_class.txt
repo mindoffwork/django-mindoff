@@ -7,13 +7,16 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 
 
 class MindOffSampleAPI(MindoffAPIMixin):
+    # Documentation Reference:
+    # https://django.mindoff.work/latest-release/developer_guide/api-development/
+
     api_url_name: str = "{{API_URL_NAME}}"
     api_name: str = "{{API_HUMAN_NAME}}"
     api_description: str = "{{API_HUMAN_NAME}} API"
     method: Literal["get", "post", "put", "delete"] = "get"
 
     def run(self, request, *args, **kwargs):
-        # ----- 🚩 Add API Logic Here -----------
+        # ----- 👇 Add API Logic Here -----------
 
         return mo_response_kit.json_response(
             code="SUCCESS", category="success", data={}
