@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - root
+  release:
+    types: [published]
 
 concurrency:
   group: root-stability-${{ github.ref }}

@@ -2,8 +2,10 @@ name: CD
 
 on:
   workflow_run:
-    workflows: ["PR CI"]
+    workflows: ["Root CI"]
     types: [completed]
+    branches:
+      - "v*"
 
 concurrency:
   group: cd-${{ github.run_id }}
