@@ -131,6 +131,6 @@ From here, shape the `run()` method around your real business logic and output. 
 
 This project uses the same BSD 3-Clause License as the Django project. See the [LICENSE][project-license] file for full terms.
 
-[requirements-guide]: https://django.mindoff.work/latest-release/developer_guide/architecture/management-kit/#default-package-set-installed-by-init
+[requirements-guide]: https://django.mindoff.work/latest-release/architecture/management-kit/#default-package-set-installed-by-init
 [developer-guide]: https://django.mindoff.work/latest-release/developer_guide/
 [project-license]: https://github.com/mindoffwork/django-mindoff/blob/root/LICENSE
