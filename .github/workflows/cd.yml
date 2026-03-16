@@ -1,23 +1,25 @@
 name: CD
 
 on:
-  release:
-    types:
-      - published
+  workflow_run:
+    workflows: ["PR CI"]
+    types: [completed]
 
 concurrency:
-  group: cd-${{ github.ref }}
+  group: cd-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
-  # 1. Validate release tag format (vX.Y.Z)
   validate-tag:
     name: Validate release tag
     runs-on: ubuntu-latest
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
     steps:
       - name: Check tag format
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
+          TAG="${{ github.event.workflow_run.head_branch }}"
           echo "[INFO] Release tag: $TAG"
           if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "[ERROR] Tag '$TAG' does not match required format vX.Y.Z — aborting."
@@ -25,23 +27,21 @@ jobs:
           fi
           echo "[INFO] Tag format is valid."
 
-  # 2. Replace "Recent Changes" with version tag
   version-changelog:
     name: Version changelog
     runs-on: ubuntu-latest
     needs: validate-tag
-    if: github.event.release.target_commitish == 'root'
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: root
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: Replace "Recent Changes" with release version
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
+          VERSION="${{ github.event.workflow_run.head_branch }}"
           sed -i "s/^## Recent Changes$/## ${VERSION}/" CHANGELOG.md
           echo "[INFO] Replaced 'Recent Changes' with '${VERSION}'"
 
@@ -50,10 +50,9 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
-          git commit -m "📝 Update changelog for release: ${GITHUB_REF#refs/tags/}"
+          git commit -m "📝 Update changelog for release: ${{ github.event.workflow_run.head_branch }}"
           git push
 
-  # 3. Build & publish to PyPI
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
@@ -62,7 +61,7 @@ jobs:
       id-token: write
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: root
           token: ${{ secrets.PAT_TOKEN }}
@@ -79,7 +78,8 @@ jobs:
 
       - name: Sync pyproject.toml version with release tag
         run: |
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          TAG_VERSION="${{ github.event.workflow_run.head_branch }}"
+          TAG_VERSION="${TAG_VERSION#v}"
           PROJECT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           echo "[INFO] Tag: $TAG_VERSION  |  pyproject.toml: $PROJECT_VERSION"
 
@@ -117,7 +117,6 @@ jobs:
         with:
           packages-dir: dist/
 
-  # 4. Revert changelog if publish fails
   revert-changelog:
     name: Revert changelog on failure
     runs-on: ubuntu-latest
@@ -126,14 +125,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: root
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: Revert versioned heading back to "Recent Changes"
         run: |
-          VERSION="${GITHUB_REF#refs/tags/}"
+          VERSION="${{ github.event.workflow_run.head_branch }}"
           sed -i "s/^## ${VERSION}$/## Recent Changes/" CHANGELOG.md
           echo "[INFO] Reverted '${VERSION}' back to 'Recent Changes'"
 
@@ -142,5 +141,5 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
-          git commit -m "⏪ Revert changelog — release ${GITHUB_REF#refs/tags/} failed"
+          git commit -m "⏪ Revert changelog — release ${{ github.event.workflow_run.head_branch }} failed"
           git push

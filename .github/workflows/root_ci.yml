@@ -1,20 +1,19 @@
-name: PR CI
+name: Root CI
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+  push:
     branches:
       - root
-  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: root-stability-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   smoke-minimal:
     name: Smoke (minimal install)
     runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
     steps:
       - uses: actions/checkout@v6
 
@@ -34,6 +33,7 @@ jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    if: github.actor != 'github-actions[bot]'
     services:
       redis:
         image: redis
@@ -80,40 +80,3 @@ jobs:
         with:
           name: coverage-py${{ matrix.python-version }}
           path: coverage.xml
-
-  lint-pr-title:
-    name: Lint PR title
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check PR title and label
-        uses: actions/github-script@v8
-        with:
-          script: |
-            const title = context.payload.pull_request.title;
-            const labels = context.payload.pull_request.labels.map(l => l.name);
-
-            const titleRegex = /^\p{Emoji_Presentation}\s+[A-Z][a-z]+/u;
-            if (!titleRegex.test(title)) {
-              core.setFailed(
-                `PR title "${title}" does not match the required format.\n` +
-                `Expected: {emoji} {Sentence starting with a capitalised Verb}\n` +
-                `Example:  ✨ Add user authentication`
-              );
-            }
-
-            const allowedLabels = [
-              "bug",
-              "feature",
-              "enhancement",
-              "documentation",
-              "internal",
-            ];
-
-            const hasAllowed = labels.some(l => allowedLabels.includes(l));
-            if (!hasAllowed) {
-              core.setFailed(
-                `PR must have at least one of the allowed labels:\n` +
-                allowedLabels.join(", ") + "\n" +
-                `Current labels: ${labels.join(", ") || "(none)"}`
-              );
-            }

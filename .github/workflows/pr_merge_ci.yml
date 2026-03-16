@@ -60,7 +60,7 @@ jobs:
             if (!changelog.includes(recentHeader)) {
               const titleLine = "<h1>Release Notes</h1>";
               if (changelog.includes(titleLine)) {
-                const titleIdx = changelog.indexOf(titleLine);
+                const titleIdx  = changelog.indexOf(titleLine);
                 const insertPos = changelog.indexOf("\n", titleIdx + titleLine.length);
                 changelog =
                   changelog.slice(0, insertPos + 1) +
