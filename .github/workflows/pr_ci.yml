@@ -2,7 +2,7 @@ name: PR CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    types: [opened, synchronize, reopened, edited]
     branches:
       - root
   workflow_dispatch:
