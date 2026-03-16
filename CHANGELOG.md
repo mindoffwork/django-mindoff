@@ -21,10 +21,8 @@
 - 📝 Update README formatting and structure
 
 ### Internal
-- 👷 Update GitHub workflows to resolve concurrency issues ([#15](https://github.com/mindoffwork/django-mindoff/pull/15))
-- 👷 Update GitHub workflows and add `Root CI` ([#14](https://github.com/mindoffwork/django-mindoff/pull/14))
-- 🐛 Fix token issue to write protected branch by actions ([#12](https://github.com/mindoffwork/django-mindoff/pull/12))
 
+- 👷 Update GitHub workflows and add `Root CI` ([#14](https://github.com/mindoffwork/django-mindoff/pull/14))
 - 🔧 Update CI/CD workflows, PR title lint, and changelog automation
 - ♻️ Remove deprecated manager features (organize init/py, build)
 
