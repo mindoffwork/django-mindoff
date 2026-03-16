@@ -4,12 +4,10 @@ on:
   push:
     branches:
       - root
-  release:
-    types: [published]
 
 concurrency:
-  group: root-stability-${{ github.ref }}
-  cancel-in-progress: true
+  group: root-stability-${{ github.sha }}
+  cancel-in-progress: false # never cancel a stability run mid-flight
 
 jobs:
   smoke-minimal:
@@ -18,17 +16,14 @@ jobs:
     if: github.actor != 'github-actions[bot]'
     steps:
       - uses: actions/checkout@v6
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           cache: pip
-
       - name: Install minimal package
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-
       - name: CLI smoke check
         run: django-mindoff init --help
 
@@ -51,24 +46,19 @@ jobs:
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v6
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[internal]"
           pip install pytest-cov
-
       - name: Django system checks
         run: python manage.py check --settings=apps.django_mindoff.tests.settings
-
       - name: Run migrations
         run: python manage.py migrate --noinput --settings=apps.django_mindoff.tests.settings
-
       - name: Run tests with coverage (min 90%)
         run: |
           pytest \
@@ -76,7 +66,6 @@ jobs:
             --cov=apps.django_mindoff \
             --cov-report=xml \
             --cov-fail-under=90
-
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:

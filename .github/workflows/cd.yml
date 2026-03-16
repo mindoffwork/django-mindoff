@@ -1,27 +1,21 @@
 name: CD
 
 on:
-  workflow_run:
-    workflows: ["Root CI"]
-    types: [completed]
-    branches:
-      - "v*"
+  release:
+    types: [published]
 
 concurrency:
-  group: cd-${{ github.run_id }}
+  group: cd-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   validate-tag:
     name: Validate release tag
     runs-on: ubuntu-latest
-    if: |
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'v')
     steps:
       - name: Check tag format
         run: |
-          TAG="${{ github.event.workflow_run.head_branch }}"
+          TAG="${{ github.ref_name }}"
           echo "[INFO] Release tag: $TAG"
           if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "[ERROR] Tag '$TAG' does not match required format vX.Y.Z — aborting."
@@ -40,19 +34,17 @@ jobs:
         with:
           ref: root
           token: ${{ secrets.PAT_TOKEN }}
-
       - name: Replace "Recent Changes" with release version
         run: |
-          VERSION="${{ github.event.workflow_run.head_branch }}"
+          VERSION="${{ github.ref_name }}"
           sed -i "s/^## Recent Changes$/## ${VERSION}/" CHANGELOG.md
           echo "[INFO] Replaced 'Recent Changes' with '${VERSION}'"
-
       - name: Commit versioned changelog
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
-          git commit -m "📝 Update changelog for release: ${{ github.event.workflow_run.head_branch }}"
+          git commit -m "📝 Update changelog for release: ${{ github.ref_name }}"
           git push
 
   publish:
@@ -67,20 +59,17 @@ jobs:
         with:
           ref: root
           token: ${{ secrets.PAT_TOKEN }}
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
           cache: pip
-
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
           pip install build twine
-
       - name: Sync pyproject.toml version with release tag
         run: |
-          TAG_VERSION="${{ github.event.workflow_run.head_branch }}"
+          TAG_VERSION="${{ github.ref_name }}"
           TAG_VERSION="${TAG_VERSION#v}"
           PROJECT_VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           echo "[INFO] Tag: $TAG_VERSION  |  pyproject.toml: $PROJECT_VERSION"
@@ -104,16 +93,12 @@ jobs:
           else
             echo "[INFO] Versions match — no update needed."
           fi
-
       - name: Remove old build artifacts
         run: rm -rf dist/ build/ *.egg-info
-
       - name: Build package
         run: python -m build
-
       - name: Validate distribution metadata
         run: python -m twine check dist/*
-
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
@@ -131,17 +116,15 @@ jobs:
         with:
           ref: root
           token: ${{ secrets.PAT_TOKEN }}
-
       - name: Revert versioned heading back to "Recent Changes"
         run: |
-          VERSION="${{ github.event.workflow_run.head_branch }}"
+          VERSION="${{ github.ref_name }}"
           sed -i "s/^## ${VERSION}$/## Recent Changes/" CHANGELOG.md
           echo "[INFO] Reverted '${VERSION}' back to 'Recent Changes'"
-
       - name: Commit revert
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md
-          git commit -m "⏪ Revert changelog — release ${{ github.event.workflow_run.head_branch }} failed"
+          git commit -m "⏪ Revert changelog — release ${{ github.ref_name }} failed"
           git push

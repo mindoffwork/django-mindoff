@@ -15,6 +15,7 @@ jobs:
   smoke-minimal:
     name: Smoke (minimal install)
     runs-on: ubuntu-latest
+    if: github.event.action != 'labeled' && github.event.action != 'unlabeled' && github.event.action != 'edited'
     steps:
       - uses: actions/checkout@v6
 
@@ -34,6 +35,7 @@ jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    if: github.event.action != 'labeled' && github.event.action != 'unlabeled' && github.event.action != 'edited'
     services:
       redis:
         image: redis
@@ -86,7 +88,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check PR title and label
-        uses: actions/github-script@v8
+        uses: actions/github-script@v7
         with:
           script: |
             const title = context.payload.pull_request.title;
