@@ -1,6 +1,6 @@
 <h1>Django Mindoff</h1>
 
-[![Coverage Status](https://codecov.io/gh/mindoffwork/django-mindoff/branch/main/graph/badge.svg)](https://codecov.io/gh/mindoffwork/django-mindoff)
+[![Coverage Status](https://codecov.io/gh/mindoffwork/django-mindoff/branch/root/graph/badge.svg)](https://codecov.io/gh/mindoffwork/django-mindoff)
 [![PyPI version](https://img.shields.io/pypi/v/django-mindoff.svg?logo=pypi&logoColor=white)](https://pypi.org/project/django-mindoff/)
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/mindoffwork/django-mindoff/actions/workflows/ci.yml)
 

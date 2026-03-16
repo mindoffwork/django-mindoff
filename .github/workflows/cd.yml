@@ -10,9 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ─────────────────────────────────────────────
-  # 0. Validate release tag format (vX.Y.Z)
-  # ─────────────────────────────────────────────
+  # 1. Validate release tag format (vX.Y.Z)
   validate-tag:
     name: Validate release tag
     runs-on: ubuntu-latest
@@ -27,10 +25,7 @@ jobs:
           fi
           echo "[INFO] Tag format is valid."
 
-  # ─────────────────────────────────────────────
-  # 1. Replace "Recent Changes" with version tag
-  #    in CHANGELOG.md and push to root
-  # ─────────────────────────────────────────────
+  # 2. Replace "Recent Changes" with version tag
   version-changelog:
     name: Version changelog
     runs-on: ubuntu-latest
@@ -42,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: root
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Replace "Recent Changes" with release version
         run: |
@@ -58,9 +53,7 @@ jobs:
           git commit -m "📝 Update changelog for release: ${GITHUB_REF#refs/tags/}"
           git push
 
-  # ─────────────────────────────────────────────
-  # 2. Build & publish to PyPI
-  # ─────────────────────────────────────────────
+  # 3. Build & publish to PyPI
   publish:
     name: Publish to PyPI
     runs-on: ubuntu-latest
@@ -72,7 +65,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: root
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
 
       - uses: actions/setup-python@v5
         with:
@@ -124,9 +117,7 @@ jobs:
         with:
           packages-dir: dist/
 
-  # ─────────────────────────────────────────────
-  # 3. Revert changelog if publish fails
-  # ─────────────────────────────────────────────
+  # 4. Revert changelog if publish fails
   revert-changelog:
     name: Revert changelog on failure
     runs-on: ubuntu-latest
@@ -138,7 +129,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: root
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Revert versioned heading back to "Recent Changes"
         run: |
