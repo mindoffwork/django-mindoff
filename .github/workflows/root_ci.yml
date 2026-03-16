@@ -15,7 +15,6 @@ jobs:
   smoke-minimal:
     name: Smoke (minimal install)
     runs-on: ubuntu-latest
-    if: github.actor != 'github-actions[bot]'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
@@ -32,7 +31,6 @@ jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    if: github.actor != 'github-actions[bot]'
     services:
       redis:
         image: redis
