@@ -13,7 +13,7 @@ class MindOffSampleAPI(MindoffAPIMixin):
     method: Literal["get", "post", "put", "delete"] = "get"
 
     def run(self, request, *args, **kwargs):
-        # ----- 🚩 Add your API Logic Here -----------
+        # ----- 🚩 Add API Logic Here -----------
 
         return mo_response_kit.json_response(
             code="SUCCESS", category="success", data={}

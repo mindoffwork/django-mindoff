@@ -5,31 +5,18 @@ from typing import Literal
 
 @pytest.mark.django_db(transaction=True)
 class TestSampleAPIView(MindoffTestCase):
+    # Documentation Reference:
+    # https://django.mindoff.work/latest-release/developer_guide/test-driven-development/
+
     api_url_name = "{{API_URL_NAME}}"
 
     def test_acceptance_api_success(self):
-        user: callable | None = self.mo_mock_user()
-        payload: dict | list | None = None
-        url_kwargs: dict | None = {"version": 1}
-        query_params: dict | None = None
-        headers: dict | None = None
-        expected_status_code: int = 200
-        expected_response_type: Literal["json", "plain", "html", "binary", "others"] = (
-            "json"
-        )
-
         response = self.mo_mock_call_api(
             self.api_url_name,
-            user=user,
-            payload=payload,
-            url_kwargs=url_kwargs,
-            query_params=query_params,
-            headers=headers,
-            is_queue_response=True,
+            url_kwargs={"version": 1}
         )
         self.mo_assert_api_response(
             api_url_name=self.api_url_name,
-            response=response,
-            expected_status_code=expected_status_code,
-            expected_response_type=expected_response_type,
+            response=response
         )
+        # ----- 🚩 Add Assertions/Logic Here -----------

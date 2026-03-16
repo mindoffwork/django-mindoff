@@ -45,21 +45,25 @@ Override only the attributes and add test methods as needed for your endpoint be
 --8<-- "apps/django_mindoff/components/managers/resources/test_api_class.txt"
 ```
 
-**Core Test Inputs**
+**`mo_mock_call_api` Parameter Reference**
 
-| Input                    | Purpose                                       | Typical values                              |
-| ------------------------ | --------------------------------------------- | ------------------------------------------- |
-| `api_url_name`           | Route identifier used by test helpers.        | `<app>__<api>`                              |
-| `payload`                | Request body for `POST`/`PUT` APIs.           | dict                                        |
-| `query_params`           | Query string values for `GET` or filters.     | dict or `None`                              |
-| `headers`                | Request headers, auth, custom metadata.       | dict or `None`                              |
-| `url_kwargs`             | URL kwargs such as version segments.          | `{"version": 1}`                            |
-| `expected_status_code`   | HTTP status assertion target.                 | `200`, `400`, `401`                         |
-| `expected_response_type` | Response envelope type assertion.             | `json`, `plain`, `html`, `binary`, `others` |
-| `is_queue_response`      | Queue-mode acknowledgment vs direct response. | `True` or `False`                           |
+| Input          | Purpose                                   | Typical values   |
+| -------------- | ----------------------------------------- | ---------------- |
+| `api_url_name` | Route identifier used by test helpers.    | `<app>__<api>`   |
+| `payload`      | Request body for `POST`/`PUT` APIs.       | dict             |
+| `query_params` | Query string values for `GET` or filters. | dict or `None`   |
+| `headers`      | Request headers, auth, custom metadata.   | dict or `None`   |
+| `url_kwargs`   | URL kwargs such as version segments.      | `{"version": 1}` |
 
-For direct APIs, set `is_queue_response=False`.
-For queue-mode APIs, set `is_queue_response=True`.
+**`mo_assert_api_response` Parameter Reference**
+
+| Input                    | Purpose                              | Typical values                              |
+| ------------------------ | ------------------------------------ | ------------------------------------------- |
+| `api_url_name`           | URL name used in assertion messages. | `<app>__<api>`                              |
+| `expected_status_code`   | HTTP status assertion target.        | `200`, `400`, `401`                         |
+| `expected_response_type` | Response envelope type assertion.    | `json`, `plain`, `html`, `binary`, `others` |
+
+Note: `mo_mock_call_api(...)` always forces queue-mode APIs to run in direct mode during tests for deterministic responses.
 
 ### 2. Example Usage
 
@@ -71,30 +75,21 @@ class TestCreateOrderAPIView(MindoffTestCase):
     api_url_name = "orders__create_order" # Same as API Class
 
     def test_acceptance_api_success(self):
-        user = self.mo_mock_user()
-        payload = {
-            "customer_id": "cst_123",
-            "items": [
-                {"sku": "SKU-001", "qty": 2},
-                {"sku": "SKU-002", "qty": 1},
-            ],
-        }
-        url_kwargs = {"version": 1}
-        expected_status_code = 200
-        expected_response_type = "json"
-
         response = self.mo_mock_call_api(
             self.api_url_name,
-            user=user,
-            payload=payload,
-            url_kwargs=url_kwargs,
-            is_queue_response=False,
+            user=self.mo_mock_user(),
+            payload={
+                "customer_id": "cst_123",
+                "items": [
+                    {"sku": "SKU-001", "qty": 2},
+                    {"sku": "SKU-002", "qty": 1},
+                ],
+            },
+            url_kwargs={"version": 1}
         )
         self.mo_assert_api_response(
             api_url_name=self.api_url_name,
-            response=response,
-            expected_status_code=expected_status_code,
-            expected_response_type=expected_response_type,
+            response=response
         )
 ```
 
@@ -140,8 +135,8 @@ pytest apps/<app_name>/tests/test_views.py -q
 
 - `NoReverseMatch` for `api_url_name`  
   Confirm `api_url_name` matches the route name in `apps/<app_name>/urls.py`.
-- Test expects direct response but receives queue payload  
-  Verify `is_queue_response` matches API `process_mode`.
+- Test expects queue-style response  
+  `mo_mock_call_api(...)` forces queue-mode APIs to direct mode during tests.
 - Failing auth/permission assertions  
   Ensure test user and headers align with API `authentication_classes` and `permission_classes`.
 - Version routing failures in `test_views.py`  
