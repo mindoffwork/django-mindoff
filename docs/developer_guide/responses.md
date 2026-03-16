@@ -62,7 +62,7 @@ Practical rules:
 - `http_status` must be within `200..599`.
 - If a code is missing/unknown, the handler falls back to `UNEXPECTED_ERR`.
 
-<div class="admonition warning">
+<div class="admonition tip">
 <p class="admonition-title">Keep response codes centralized</p>
 <p>The django-mindoff project ships with a standard set of response codes. Do not remove or alter the default codes as they are used by Mindoff's Core features. However, feel free to update their title, description, and http_status as the developer feels fit for the project.</p>
 <p>Do not hardcode title/description in endpoint code. Add or update codes in <code>config/responses.csv</code> so behavior stays consistent across APIs.</p>

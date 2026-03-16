@@ -8,7 +8,7 @@ For API-builder-facing helper usage, see [Developer Guide - Helper Utilities](..
 
 <div class="admonition warning">
 <p class="admonition-title">Stability Warning</p>
-<p><code>mo_helper_kit</code> is not part of the core offering and is currently experimental and subject to change without any prior notice. Refer to this page to keep informed on development with helper utilities.</p>
+<p><code>mo_helper_kit</code> is not feature-complete yet and is currently experimental and subject to change without any prior notice. Refer to this page to keep informed on development with helper utilities.</p>
 </div>
 
 ## Architecture & Intent
@@ -22,12 +22,12 @@ This separation keeps simple utility functions independent from mutation safety 
 
 ## Core Runtime Components
 
-| Component | Responsibility | Examples |
-| --- | --- | --- |
-| **`mo_helper_kit` namespace** | Public callable surface used across kits/managers. | `pascal_to_snake`, `get_exact_traceback` |
-| **URL/API introspection helpers** | Resolve API classes/attributes from URL names and version maps. | `get_api_class_from_url_name` |
-| **Traceback filter helper** | Extract project-owned traceback lines only. | `get_exact_traceback` |
-| **`file_guardian` decorator** | File mutation rollback guard for manager workflows. | `@mo_helper_kit.file_guardian` |
+| Component                         | Responsibility                                                  | Examples                                 |
+| --------------------------------- | --------------------------------------------------------------- | ---------------------------------------- |
+| **`mo_helper_kit` namespace**     | Public callable surface used across kits/managers.              | `pascal_to_snake`, `get_exact_traceback` |
+| **URL/API introspection helpers** | Resolve API classes/attributes from URL names and version maps. | `get_api_class_from_url_name`            |
+| **Traceback filter helper**       | Extract project-owned traceback lines only.                     | `get_exact_traceback`                    |
+| **`file_guardian` decorator**     | File mutation rollback guard for manager workflows.             | `@mo_helper_kit.file_guardian`           |
 
 ## Public Helper Surface
 

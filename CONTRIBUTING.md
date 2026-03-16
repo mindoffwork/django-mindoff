@@ -4,4 +4,4 @@ Thanks for your interest in contributing to Django Mindoff. The contribution gui
 
 Please review the contribution guide here:
 
-`https://django.mindoff.work/latest/community/contribution-guide/`
+`https://django.mindoff.work/latest-release/community/contribution-guide/`

@@ -79,7 +79,7 @@ The list below is auto-synced from code at docs build time:
 
 `django-mindoff` is installed after the base list as a separate install step.
 
-<div class="admonition info">
+<div class="admonition tip">
 <p class="admonition-title">Optional Packages</p>
 <p><code>optional_packages</code> exists in the flow, but is currently empty unless extended. Optional packages are open to be extended for modders.</p>
 </div>

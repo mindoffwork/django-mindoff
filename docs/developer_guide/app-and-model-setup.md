@@ -114,7 +114,7 @@ In the interactive menu, select:
 
 - `4` for `foreign-key`
 
-<div class="admonition info">
+<div class="admonition tip">
 <p class="admonition-title">Optional Foreign Key Creation</p>
 <p>Foreign-key creation is optional in this flow. The main advantage is that django-mindoff automatically handles the cross-reference imports, naming conventions of the relations, and reverse keys for an enhanced developer experience.</p>
 </div>

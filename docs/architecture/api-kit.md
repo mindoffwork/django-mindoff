@@ -122,8 +122,8 @@ Used when `process_mode="queue"`.
 2. **Queue enqueue path:** Queue connectivity failures are mapped to `QUEUE_SERVICE_UNAVAILABLE`.
 3. **`api_guardian` decorator:** Function-based wrapper that catches exceptions and normalizes responses.
 
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
+<div class="admonition danger">
+<p class="admonition-title">`api_guardian` may not work reliabily</p>
 <p><code>api_guardian</code> is internal and considered unstable. It may change or be removed in a future release without being treated as a major-version breaking change. It only normalizes exceptions. It does <em>not</em> provide the full <code>MindoffAPIMixin</code> lifecycle (no <code>initial()</code> guard pipeline, no class configuration checks, no queue-mode helper surface).</p>
 </div>
 

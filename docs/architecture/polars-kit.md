@@ -8,7 +8,7 @@ For usage-focused examples, see [Developer Guide - Polars Utilities](../develope
 
 <div class="admonition warning">
 <p class="admonition-title">Stability Warning</p>
-<p><code>mo_polars_kit</code> is not part of the core offering and is currently experimental and subject to change without any prior notice. Refer to this page to keep informed on development with Polars utilities.</p>
+<p><code>mo_polars_kit</code> is not feature-complete yet and is currently experimental and subject to change without any prior notice. Refer to this page to keep informed on development with Polars utilities.</p>
 </div>
 
 ## Architecture & Intent
@@ -22,12 +22,12 @@ Together they support ingestion (`json_to_frame`), normalization (`sync_model_fr
 
 ## Core Runtime Components
 
-| Component | Responsibility | Examples |
-| --- | --- | --- |
-| **`MindoffPolarsKit`** | Public utility surface for emptiness checks, frame normalization, null transforms, and row counts. | `is_frm_empty`, `frm_fill_null` |
-| **Batch transform engine** | Shared map/sink-map execution path for column mutation. | `_apply_batch_transform` |
-| **Payload flattener** | Converts nested JSON payloads into table-like Polars frames. | `PayloadFlattener.flatten()` |
-| **Model-frame builder** | Maps flattened path outputs to Django model classes. | `build_model_frms` |
+| Component                  | Responsibility                                                                                     | Examples                        |
+| -------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------- |
+| **`MindoffPolarsKit`**     | Public utility surface for emptiness checks, frame normalization, null transforms, and row counts. | `is_frm_empty`, `frm_fill_null` |
+| **Batch transform engine** | Shared map/sink-map execution path for column mutation.                                            | `_apply_batch_transform`        |
+| **Payload flattener**      | Converts nested JSON payloads into table-like Polars frames.                                       | `PayloadFlattener.flatten()`    |
+| **Model-frame builder**    | Maps flattened path outputs to Django model classes.                                               | `build_model_frms`              |
 
 ## Frame Utility Architecture (`mo_polars_kit`)
 

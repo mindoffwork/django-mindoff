@@ -27,7 +27,7 @@ Validation at request boundaries prevents invalid states from reaching business 
 - Structured validation error: default mode raises `MindoffValidationError`.
 - Aggregated errors: accumulate with `is_aggregate=True`, then call `finalize(...)`.
 
-<div class="admonition info">
+<div class="admonition tip">
 <p class="admonition-title">Choose one strategy per endpoint branch</p>
 <p>Mixing immediate and aggregate validation in the same branch can make error contracts hard to reason about. Keep one clear strategy for each API path.</p>
 </div>

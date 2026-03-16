@@ -4,7 +4,7 @@
 
 <div class="admonition warning">
 <p class="admonition-title">Stability Warning</p>
-<p>`mo_helper_kit` is not part of the core offering and is currently experimental and subject to change without any prior notice. Refer to this page to keep informed on development with helper utilities.</p>
+<p>`mo_helper_kit` is not feature-complete yet and is currently experimental and subject to change without any prior notice. Refer to this page to keep informed on development with helper utilities.</p>
 </div>
 
 ## Implementation

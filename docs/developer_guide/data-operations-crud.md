@@ -94,7 +94,7 @@ What this gives you:
 
 <div class="admonition warning">
 <p class="admonition-title">Validate before write</p>
-<p><code>mo_crud_kit</code> is built for validated tabular data. Keep request-level validation in API code before CRUD execution.</p>
+<p><code>mo_crud_kit</code> is built for validated tabular data. If you choose to skip the inbuilt validation + serialization, cover request-level validation in API code before sending it to CRUD Kit.</p>
 </div>
 
 ### 2. Limitations

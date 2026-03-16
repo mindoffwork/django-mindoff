@@ -52,7 +52,7 @@ dramatiq django_mindoff.components._api_kit.queue_process
 
 Once Redis and the worker are running, queue mode is enabled by setting `process_mode = "queue"` on the API class.
 
-<div class="admonition warning">
+<div class="admonition failure">
 <p class="admonition-title">Queue mode does not support file uploads</p>
 <p>Multipart or file uploads are blocked when <code>process_mode="queue"</code>.</p>
 </div>

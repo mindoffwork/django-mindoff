@@ -1,22 +1,43 @@
+/* =============================================================================
+   IMPORTS
+   ============================================================================= */
+
 @import url("https://fonts.googleapis.com/css2?family=Poppins:wght@400;700;900&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@400&display=swap");
+
+/* =============================================================================
+   DESIGN TOKENS
+   ============================================================================= */
+
 :root {
 	--mo-white: #ffffff;
 	--mo-fawn: #faf5ee;
 	--mo-black: #000000;
 	--mo-green: #d8e995;
 	--mo-yellow: #f7ec87;
+	--mo-red: #d85757;
+	--mo-turquoise: #86d0c9;
 }
+
+/* =============================================================================
+   COLOR SCHEME — DEFAULT
+   ============================================================================= */
 
 [data-md-color-scheme="default"] {
 	--md-default-bg-color: var(--mo-fawn);
 	--md-default-fg-color: var(--mo-black);
 	--md-default-fg-color--light: #3d3b37;
-	--md-default-fg-color--lighter: #6b6660;
-	--md-default-fg-color--lightest: #9b948a;
-	--md-code-bg-color: #efeae2;
+	--md-default-fg-color--lighter: #797979;
+	--md-default-fg-color--lightest: rgba(0, 0, 0, 0.1);
+	--md-code-bg-color: #00000009;
 	--md-code-fg-color: var(--mo-black);
-	--md-accent-fg-color: #95ab4d;
+	--md-accent-fg-color: #5a5a5a;
+	--md-typeset-a-color: rgba(0, 0, 0, 0.5);
 }
+
+/* =============================================================================
+   HEADER & TABS
+   ============================================================================= */
 
 .md-header,
 .md-tabs {
@@ -36,19 +57,188 @@
 	background-color: var(--mo-fawn);
 }
 
-.md-typeset mark {
-	background: var(--mo-yellow);
+/* Header logo */
+.md-header__button.md-logo {
+	margin: 0;
+	padding: 0.25rem;
+	position: fixed;
+	top: 0;
+	left: 0;
+	background-color: var(--mo-yellow);
+	border-right: 0.188rem solid;
+	border-bottom: 0.188rem solid;
+	border-color: rgba(0, 0, 0, 0.05);
+	border-bottom-right-radius: 1.15rem;
+	width: fit-content;
+}
+
+.md-header__button.md-logo:hover {
+	opacity: 1;
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+	display: block;
+	height: 2.35rem;
+	width: auto;
+}
+
+/* Header title */
+.md-header__title {
+	font-family: "Poppins", sans-serif;
+}
+
+[dir="ltr"] .md-header__title {
+	margin-left: 0;
+	margin-right: 0.4rem;
+}
+
+@media (min-width: 1024px) {
+	[dir="ltr"] .md-header__title {
+		margin-left: 2.5rem;
+	}
+}
+
+/* Header source */
+.md-header__source {
+	width: auto !important;
+	max-width: none !important;
+}
+
+.md-header__source .md-source {
+	width: auto !important;
+}
+
+.md-header__source .md-source__repository,
+.md-header__source .md-source__facts {
+	display: none !important;
+}
+
+/* Tabs layout */
+.md-tabs__list {
+	justify-content: center;
+}
+
+.md-tabs__item {
+	height: auto;
+	padding-left: 0;
+	padding-right: 0;
+}
+
+.md-tabs__item .md-tabs__link {
+	color: var(--mo-black);
+	font-weight: 500;
+	letter-spacing: 0.075em;
+	text-transform: uppercase;
+	font-size: 0.6rem;
+	font-family: "Poppins", sans-serif;
+	opacity: 0.5;
+	margin-top: 0;
+	padding-right: 2rem;
+	padding-top: 0.75rem;
+	padding-bottom: 0.75rem;
+}
+
+.md-tabs__item--active .md-tabs__link,
+.md-tabs__item:hover .md-tabs__link {
+	color: var(--mo-black);
+	opacity: 1;
+}
+
+/* Tab icons via Material Symbols */
+.md-tabs__link {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+}
+
+.md-tabs__link::before {
+	content: "";
+	font-family: "Material Symbols Outlined", sans-serif;
+	font-weight: normal;
+	font-style: normal;
+	font-size: 1.25rem;
+	line-height: 1;
+	letter-spacing: normal;
+	text-transform: none;
+	display: inline-block;
+	white-space: nowrap;
+	word-wrap: normal;
+	direction: ltr;
+	font-feature-settings: "liga";
+	-webkit-font-feature-settings: "liga";
+	-webkit-font-smoothing: antialiased;
+	scale: 75%;
+}
+
+.md-tabs__link[href*="developer_guide/"]::before {
+	content: "code";
+}
+.md-tabs__link[href*="architecture/"]::before {
+	content: "architecture";
+}
+.md-tabs__link[href*="community/"]::before {
+	content: "groups";
+}
+
+.md-tabs__item:first-child
+	.md-tabs__link:not([href*="developer_guide/"]):not(
+		[href*="architecture/"]
+	):not([href*="community/"])::before {
+	content: "home";
+}
+
+/* =============================================================================
+   NAVIGATION
+   ============================================================================= */
+.md-nav__link {
+	margin-top: 0.9em;
+}
+
+.md-nav__item .md-nav__link,
+.md-nav__item .md-nav__link code {
+	color: var(--mo-black);
+	opacity: 0.6;
+}
+
+.md-nav__item .md-nav__link:hover,
+.md-nav__item .md-nav__link:hover code {
+	color: var(--mo-black);
+	opacity: 1;
+}
+
+.md-nav__item .md-nav__link:hover .md-ellipsis {
+	background-color: var(--mo-yellow);
+	border-radius: 2px;
+}
+
+.md-nav__item--section:first-child > .md-nav__link,
+.md-nav__item .md-nav__link--active,
+.md-nav__item .md-nav__link--active code,
+.md-nav__item--active > .md-nav__link,
+.md-nav__item--active > .md-nav__link code {
+	opacity: 1;
 	color: var(--mo-black);
 }
 
-.md-typeset h1 {
-	font-weight: 900;
-	letter-spacing: -0.05em;
+.md-nav__item .md-nav__link--active .md-ellipsis {
+	background-color: var(--mo-green);
+	border-radius: 2px;
 }
-.md-typeset h2 {
-	font-weight: 700;
-	letter-spacing: -0.02em;
+
+.md-sidebar--primary .md-nav__item .md-nav__link,
+.md-sidebar--primary .md-nav__item .md-nav__link code {
+	font-family: "Poppins", sans-serif;
 }
+
+.md-sidebar--primary .md-nav__item .md-nav__item .md-nav__link {
+	font-size: 0.65rem;
+	letter-spacing: 0.025em;
+}
+
+/* =============================================================================
+   TYPOGRAPHY
+   ============================================================================= */
 
 .md-typeset h1,
 .md-typeset h2,
@@ -59,14 +249,212 @@
 	font-family: "Poppins", sans-serif;
 }
 
+.md-typeset h1 {
+	font-weight: 900;
+	margin-bottom: 1rem;
+}
+
+.md-typeset h2 {
+	font-weight: 700;
+}
+
+/* Lead paragraph — first <p> following an <h1> */
+.md-typeset h1 + p {
+	font-family: "Ubuntu", sans-serif;
+	font-weight: 200;
+	font-size: 0.925rem;
+	letter-spacing: 0.015em;
+	line-height: 1.6;
+}
+
+.md-typeset mark {
+	background: var(--mo-yellow);
+	color: var(--mo-black);
+}
+
+/* Links */
+.md-typeset a {
+	color: var(--mo-black);
+	overflow-wrap: break-word;
+	border-bottom: 0.125rem solid rgb(0 0 0 / 0.5);
+	opacity: 0.6;
+	transition-duration: 200ms;
+}
+
+.md-typeset a:hover {
+	color: var(--mo-black);
+	border-bottom: 0.125rem solid rgb(0 0 0 / 1);
+	opacity: 1;
+	transition-duration: 200ms;
+	background-color: var(--mo-yellow);
+}
+
+.md-typeset .headerlink {
+	border-bottom: none;
+}
+
+.md-typeset a:has(img) {
+	opacity: 1;
+	border-bottom: none;
+}
+
+.md-typeset a:hover:has(img),
+.md-typeset .headerlink:hover {
+	background-color: transparent;
+	border-bottom: none;
+}
+
+/* Code blocks */
+.md-typeset pre > code {
+	border-radius: 0.5rem;
+	padding-top: 1em;
+	padding-bottom: 1em;
+}
+
+/* Admonitions */
+.md-typeset .admonition,
+.md-typeset details {
+	background-color: var(--md-admonition-bg-color);
+	border: 2px solid;
+	border-radius: 0.5rem;
+	border-color: rgba(var(--md-default-fg-color--lightest), 0.5);
+	box-shadow: none;
+	color: var(--md-admonition-fg-color);
+	display: flow-root;
+	font-size: 0.7rem;
+	margin: 1.5625em 0;
+	padding: 0 0.6rem;
+	page-break-inside: avoid;
+	overflow: hidden;
+}
+
+/* Admonitions yellow family (warning/important/note) */
+.md-typeset .admonition.warning,
+.md-typeset details.warning,
+.md-typeset .admonition.note,
+.md-typeset details.note,
+.md-typeset .admonition.important,
+.md-typeset details.important {
+	border-color: rgba(0, 0, 0, 0.05);
+}
+.md-typeset .warning > .admonition-title,
+.md-typeset .warning > summary,
+.md-typeset .note > .admonition-title,
+.md-typeset .note > summary,
+.md-typeset .important > .admonition-title,
+.md-typeset .important > summary {
+	background-color: rgba(255, 192, 83, 0.2);
+	border-bottom: 2px solid rgba(0, 0, 0, 0.05);
+}
+.md-typeset .warning > .admonition-title:before,
+.md-typeset .warning > summary:before,
+.md-typeset .note > .admonition-title:before,
+.md-typeset .note > summary:before,
+.md-typeset .important > .admonition-title:before,
+.md-typeset .important > summary:before {
+	background-color: rgb(255, 192, 83);
+}
+
+/* Admonitions turquoise family (info/tip/question) */
+.md-typeset .admonition.info,
+.md-typeset details.info,
+.md-typeset .admonition.tip,
+.md-typeset details.tip,
+.md-typeset .admonition.question,
+.md-typeset details.question {
+	border-color: rgba(0, 0, 0, 0.05);
+}
+.md-typeset .info > .admonition-title,
+.md-typeset .info > summary,
+.md-typeset .tip > .admonition-title,
+.md-typeset .tip > summary,
+.md-typeset .question > .admonition-title,
+.md-typeset .question > summary {
+	background-color: rgba(134, 208, 201, 0.12);
+	border-bottom: 2px solid rgba(0, 0, 0, 0.05);
+}
+.md-typeset .info > .admonition-title:before,
+.md-typeset .info > summary:before,
+.md-typeset .tip > .admonition-title:before,
+.md-typeset .tip > summary:before,
+.md-typeset .question > .admonition-title:before,
+.md-typeset .question > summary:before {
+	background-color: rgba(134, 208, 201, 1);
+}
+
+/* Admonitions green family (success/example/quote) */
+.md-typeset .admonition.success,
+.md-typeset details.success,
+.md-typeset .admonition.example,
+.md-typeset details.example,
+.md-typeset .admonition.quote,
+.md-typeset details.quote {
+	border-color: rgba(0, 0, 0, 0.05);
+}
+.md-typeset .success > .admonition-title,
+.md-typeset .success > summary,
+.md-typeset .example > .admonition-title,
+.md-typeset .example > summary,
+.md-typeset .quote > .admonition-title,
+.md-typeset .quote > summary {
+	background-color: rgba(216, 233, 149, 0.12);
+	border-bottom: 2px solid rgba(0, 0, 0, 0.05);
+}
+.md-typeset .success > .admonition-title:before,
+.md-typeset .success > summary:before,
+.md-typeset .example > .admonition-title:before,
+.md-typeset .example > summary:before,
+.md-typeset .quote > .admonition-title:before,
+.md-typeset .quote > summary:before {
+	background-color: rgba(216, 233, 149, 1);
+}
+
+/* Admonitions red family (danger/failure/bug) */
+.md-typeset .admonition.danger,
+.md-typeset details.danger,
+.md-typeset .admonition.failure,
+.md-typeset details.failure,
+.md-typeset .admonition.bug,
+.md-typeset details.bug {
+	border-color: rgba(0, 0, 0, 0.05);
+}
+.md-typeset .danger > .admonition-title,
+.md-typeset .danger > summary,
+.md-typeset .failure > .admonition-title,
+.md-typeset .failure > summary,
+.md-typeset .bug > .admonition-title,
+.md-typeset .bug > summary {
+	background-color: rgba(216, 87, 87, 0.12);
+	border-bottom: 2px solid rgba(0, 0, 0, 0.05);
+}
+.md-typeset .danger > .admonition-title:before,
+.md-typeset .danger > summary:before,
+.md-typeset .failure > .admonition-title:before,
+.md-typeset .failure > summary:before,
+.md-typeset .bug > .admonition-title:before,
+.md-typeset .bug > summary:before {
+	background-color: rgba(216, 87, 87, 1);
+}
+
+/* =============================================================================
+   SEARCH
+   ============================================================================= */
+
 .md-search__form {
 	background-color: transparent;
 	border: 2px solid #00000010;
 	border-radius: 1rem;
 }
+
 .md-search__input {
 	background-color: #00000005;
 }
+
+.md-search__input::placeholder,
+.md-search__input ~ .md-search__icon {
+	color: #00000050;
+}
+
 [data-md-toggle="search"]:checked ~ .md-header .md-search__form {
 	background-color: var(--md-default-bg-color);
 	border-radius: 1rem;
@@ -78,46 +466,70 @@
 	box-shadow: none;
 	opacity: 1;
 	margin-top: 0.25rem;
-	border-radius: 8px;
+	border-radius: 16px;
+	border: 2px solid #9f9f9f;
 }
 
 .md-search-result__meta {
 	color: rgba(0, 0, 0, 0.5);
 	font-size: 0.7rem;
 	background-color: var(--mo-fawn);
+	font-style: italic;
 }
 
-.md-search__input::placeholder,
-.md-search__input ~ .md-search__icon {
-	color: #00000050;
+.md-search-result__item {
+	box-shadow: 0 2px rgba(0, 0, 0, 0.05);
 }
 
-.md-header__source {
-	width: auto !important;
-	max-width: none !important;
+.md-search-result__item:last-child {
+	box-shadow: none;
 }
 
-.md-header__source .md-source {
-	width: auto !important;
+/* =============================================================================
+   CODE COPY BUTTON
+   ============================================================================= */
+
+.md-code__nav {
+	background-color: transparent;
+	border-radius: 6px;
 }
 
-.md-header__source .md-source__repository {
-	display: none !important;
+.md-code__button {
+	color: var(--mo-black);
+	height: 1.25em;
+	outline-color: var(--mo-black);
+	opacity: 0.5;
+	width: 1.25em;
 }
 
-.md-header__source .md-source__facts {
-	display: none !important;
+.md-code__nav:hover,
+.md-code__nav:active,
+.md-code__nav:focus {
+	background-color: var(--mo-white);
+	border-radius: 6px;
 }
+
+:hover > * > .md-code__button,
+.md-code__button:hover {
+	color: var(--mo-black);
+	opacity: 1;
+}
+
+/* =============================================================================
+   FOOTER
+   ============================================================================= */
 
 .md-footer {
 	border-top: 2px solid #00000010;
 	background-color: var(--mo-fawn);
 	color: var(--mo-black);
 }
+
 .md-footer-meta {
 	background-color: var(--mo-fawn);
 	color: var(--mo-black);
 }
+
 .md-copyright__highlight {
 	font-family: "Poppins", sans-serif;
 	letter-spacing: 0.025em;
@@ -132,4 +544,87 @@ html .md-footer-meta.md-typeset a {
 	color: var(--mo-black);
 	opacity: 60%;
 	font-size: 0.64rem;
+}
+
+/* =============================================================================
+   UTILITIES & MISC
+   ============================================================================= */
+
+.md-dialog {
+	border-radius: 16px;
+}
+
+.md-top {
+	border-radius: 16px;
+	box-shadow: var(--md-shadow-z2);
+	color: rgba(0, 0, 0, 0.5);
+	background-color: #faf5ee80;
+	-webkit-backdrop-filter: blur(12px);
+	backdrop-filter: blur(12px);
+	border: 2px solid rgba(0, 0, 0, 0.05);
+}
+
+.md-top:hover {
+	background-color: var(--mo-white);
+	color: var(--mo-black);
+}
+
+/* =============================================================================
+   RESPONSIVE — MOBILE / TABLET
+   ============================================================================= */
+
+/* Drawer nav — up to 76.2344em */
+@media screen and (max-width: 76.2344em) {
+	.md-nav--primary .md-nav__item {
+		font-family: "Poppins", sans-serif;
+		font-weight: 500;
+		letter-spacing: 0.075em;
+		font-size: 0.7rem;
+	}
+
+	.md-nav--primary .md-nav__link {
+		margin-top: 0;
+		padding: 0.8rem;
+	}
+
+	.md-nav--primary .md-nav__title[for="__drawer"],
+	html
+		[data-md-color-primary="black"]
+		.md-nav--primary
+		.md-nav__title[for="__drawer"] {
+		background-color: var(--mo-fawn);
+		color: var(--md-black);
+		font-weight: 900;
+		border-bottom: 2px solid var(--md-default-fg-color--lightest);
+	}
+
+	.md-nav--primary .md-nav__title ~ .md-nav__list > :first-child,
+	.md-nav--primary .md-nav__item {
+		border-top: 2px solid var(--md-default-fg-color--lightest);
+	}
+
+	.md-nav--primary .md-nav__title ~ .md-nav__list > :last-child {
+		border-bottom: 2px solid var(--md-default-fg-color--lightest);
+	}
+
+	.md-nav--primary .md-nav__link .md-nav__icon {
+		font-size: 1rem;
+		height: 1rem;
+		width: 1rem;
+	}
+
+	[dir="ltr"] .md-sidebar--primary {
+		border-right: 2px solid var(--md-default-fg-color--lightest);
+	}
+}
+
+/* Source block — up to 59.9844em */
+@media screen and (max-width: 59.9844em) {
+	.md-nav__source,
+	[data-md-color-primary="black"] .md-nav__source {
+		background-color: var(--mo-black);
+		color: var(--mo-fawn);
+		display: block;
+		padding: 0 0.2rem;
+	}
 }

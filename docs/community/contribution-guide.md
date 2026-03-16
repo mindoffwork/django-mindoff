@@ -197,7 +197,7 @@ Pick the label that best matches the main change in your branch. Do not choose m
 
 ### 3. PR Description
 
-<div class="admonition info">
+<div class="admonition question">
   <p class="admonition-title">When it's Optional</p>
   <p>PR Descriptions are optional if the title itself is self-explanatory or if you are the reviewer of the PR you're creating.</p>
 </div>
@@ -239,7 +239,7 @@ That said, modern tools like AI can be a huge help when used wisely. They speed 
 
 If you're using AI or similar tools, always review, understand, and test your changes before submitting a PR. Make sure your submissions are spot-on and genuinely useful for the project and easy on the reviewer.
 
-<div class="admonition warning">
-  <p class="admonition-title">Important Note</p>
+<div class="admonition failure">
+  <p class="admonition-title">Rejection Note</p>
   <p>Pull requests, Issues or Discussion threads that do not follow this guide properly may get rejected, closed or removed from the repo without any review or notice.</p>
 </div>

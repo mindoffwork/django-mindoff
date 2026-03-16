@@ -184,9 +184,9 @@ Validation behavior is controlled by `payload_validation`:
 - `basic`: missing keys are ignored, but existing keys are validated
 - `None`: skip schema validation
 
-<div class="admonition info">
-<p class="admonition-title">Extra keys are allowed</p>
-<p><code>payload_schema</code> only validates keys it knows about; extra keys are accepted in all modes.</p>
+<div class="admonition question">
+<p class="admonition-title">Are extra keys allowed?</p>
+<p><code>payload_schema</code> only validates keys it knows about. Extra keys are accepted in all modes.</p>
 </div>
 
 Use `max_payload_size` and `max_payload_depth` to guard against large or deeply nested payloads.
@@ -203,7 +203,7 @@ authentication_classes = [TokenAuthentication]
 permission_classes = [IsAuthenticated]
 ```
 
-<div class="admonition warning">
+<div class="admonition danger">
 <p class="admonition-title">Session authentication is not recommended</p>
 <p><code>django-mindoff</code> is API-first. Prefer token-based authentication for API workflows; use session authentication only when your API design intentionally requires it.</p>
 </div>
