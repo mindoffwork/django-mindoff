@@ -307,6 +307,24 @@ class TestInitManager:
         creator._install_packages()
         assert len(run_calls) == 2
 
+    def test_get_base_packages_falls_back_to_installed_metadata(
+        self, tmp_path, monkeypatch
+    ):
+        """BOUNDARY: Validates base packages fallback to installed metadata."""
+        monkeypatch.setattr(
+            init_manager.importlib_metadata,
+            "requires",
+            lambda name: [
+                "django>=5.0",
+                "djangorestframework>=3.15.0,<4.0; extra == 'internal'",
+            ],
+        )
+        creator = init_manager.DjangoProjectCreator()
+        creator.project_root = tmp_path
+        packages = creator._get_base_packages()
+        assert "django>=5.0" in packages
+        assert "djangorestframework>=3.15.0,<4.0" in packages
+
     def test_initialize_django_project_calls_django_admin(self, monkeypatch):
         """BOUNDARY: Validates initialize django project calls django admin."""
         run_calls = []

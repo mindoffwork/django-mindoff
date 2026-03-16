@@ -3,6 +3,7 @@ import re
 import shutil
 import subprocess
 import tomllib
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 from ..helper_kit import mo_helper_kit
@@ -252,7 +253,7 @@ MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT = "120/m"
         )
         if packages:
             return packages
-        return []
+        return self._read_installed_dependencies(optional_group="internal")
 
     def _read_pyproject_dependencies(self, path, optional_group=None):
         if not path.exists():
@@ -272,6 +273,35 @@ MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT = "120/m"
             if item not in seen:
                 combined.append(item)
                 seen.add(item)
+        return combined
+
+    def _read_installed_dependencies(self, optional_group=None):
+        try:
+            requires = importlib_metadata.requires("django-mindoff") or []
+        except importlib_metadata.PackageNotFoundError:
+            return []
+
+        def _matches_optional_group(marker):
+            if not optional_group:
+                return marker is None or marker.strip() == ""
+            if marker is None:
+                return True
+            return f"extra == '{optional_group}'" in marker or f'extra == "{optional_group}"' in marker
+
+        combined = []
+        seen = set()
+        for req in requires:
+            if ";" in req:
+                req_part, marker = req.split(";", 1)
+                marker = marker.strip()
+            else:
+                req_part, marker = req, None
+            if not _matches_optional_group(marker):
+                continue
+            req_part = req_part.strip()
+            if req_part and req_part not in seen:
+                combined.append(req_part)
+                seen.add(req_part)
         return combined
 
 
