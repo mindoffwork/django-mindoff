@@ -7,45 +7,13 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 
 
 class MindOffSampleAPI(MindoffAPIMixin):
-    # 1. API Identity
     api_url_name: str = "{{API_URL_NAME}}"
     api_name: str = "{{API_HUMAN_NAME}}"
-    api_description: str = "API Description"
-
-    # 2. Access Rules
-    authentication_classes: list = []
-    permission_classes: list = []
+    api_description: str = "{{API_HUMAN_NAME}} API"
     method: Literal["get", "post", "put", "delete"] = "get"
 
-    # 3. Execution Rules
-    process_mode: Literal["direct", "queue"] = "direct"
-    allow_duplicate_queue: bool = False
-    progress_steps: dict | None = None
-
-    # 4. Request Rules
-    payload_schema: list | dict | None = None
-    max_payload_size: int | float | None = 10  # in Megabytes(MB)
-    max_payload_depth: int | None = 20
-    payload_validation: Literal["strict", "basic", None] = "strict"
-
-    # 5. Usage Limits Per User
-    api_request_limit: str | None = "30/m"
-    queue_detail_api_limit: str | None = "30/m"
-    queue_status_stream_api_limit: int | None = 3
-    queue_cancel_api_limit: str | None = "30/m"
-    queue_retry_api_limit: str | None = "30/m"
-
     def run(self, request, *args, **kwargs):
-        # === Standard Mindoff request access guide ===
-        # request.method         → HTTP method
-        # request.data           → Body payload
-        # request.query_params   → Query string (?key=value)
-        # request.headers        → Dictionary-like access to HTTP headers
-        # request.user           → Authenticated user (if authentication is enabled)
-        # request.auth           → Authentication details/token (if any)
-        # request.FILES          → Uploaded files (multipart/form-data)
-        # kwargs.get("user_id")  → Value from <int:user_id> in the URL
-        # ----- 🚩 Add your API Logic below -----------
+        # ----- 🚩 Add your API Logic Here -----------
 
         return mo_response_kit.json_response(
             code="SUCCESS", category="success", data={}
