@@ -18,7 +18,7 @@ from ._api_kit.api_router import APIVersionRouter
 from ._api_kit.queue_process import enqueue_process
 from ._api_kit.redis import get_queue_status, mark_cancelled, update_progress
 from ._helper_kit.validate_schema import validate_schema
-from .response_kit import mo_response_kit
+from .response_kit import MINDOFF_RESPONSES, mo_response_kit
 from .validation_kit import MindoffValidationError, mo_validation_kit
 
 # ----------------
@@ -711,7 +711,9 @@ def _resolve_api_exception(exc: Exception):
         )
     if isinstance(exc, Throttled):
         return mo_response_kit.json_response(code="RATE_LIMITED", category="warning")
-    code = getattr(exc, "code", None) or "UNEXPECTED_ERR"
+    raw_code = getattr(exc, "code", None)
+    candidate_code = str(raw_code).strip().upper() if raw_code else None
+    code = candidate_code if candidate_code in MINDOFF_RESPONSES else "UNEXPECTED_ERR"
     category = getattr(exc, "category", None) or "danger"
     data = getattr(exc, "data", None) or []
     if isinstance(exc, MindoffValidationError):
