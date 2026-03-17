@@ -38,6 +38,16 @@ User = get_user_model()
 pass_code = "pass123"
 
 
+class _CodeError(Exception):
+    pass
+
+
+def _code_error(code: str) -> Exception:
+    exc = _CodeError("x")
+    exc.code = code
+    return exc
+
+
 @pytest.mark.django_db(transaction=True)
 class TestAPIConfigurationValidation(MindoffTestCase):
 
@@ -881,6 +891,7 @@ class TestApiKitAndChecksCoverage:
             (AuthenticationFailed("x"), "AUTHENTICATION_FAILED"),
             (PermissionDenied("x"), "PERMISSION_DENIED"),
             (Throttled(wait=1), "RATE_LIMITED"),
+            (_code_error("NOT_A_CODE"), "UNEXPECTED_ERR"),
             (RuntimeError("x"), "UNEXPECTED_ERR"),
         ],
     )
