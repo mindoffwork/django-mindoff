@@ -52,6 +52,14 @@ ERROR_COL = getattr(settings, "POLARS_VALIDATOR_ERROR_COL", None) or "__error__i
 # Classes
 # ----------------
 class RowValidator:
+    """
+    Sanitize and validate row-level values for model-mapped DataFrames.
+
+    This validator is the value-normalization layer of the CRUD pipeline. It applies
+    field-aware transformations (text, numeric, date/time, UUID, JSON, and others),
+    enforces Django field constraints, and appends standardized error details for
+    invalid values while preserving the DataFrame shape for downstream processing.
+    """
     def __init__(
         self,
         df_dict: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
@@ -63,6 +71,9 @@ class RowValidator:
         self.is_normalize_text = is_normalize_text
 
     def run(self) -> Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]]:
+        """
+        Run row-level sanitization for each model frame and return processed frames.
+        """
         return {
             model: self._sanitize_model_frm(model, df)
             for model, df in self.df_dict.items()

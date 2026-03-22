@@ -11,6 +11,13 @@ from ..helper_kit import mo_helper_kit
 
 # ======== CLASSES =======
 class DjangoProjectCreator:
+    """
+    Initialize a new Django-Mindoff project workspace in the current directory.
+
+    This manager orchestrates end-to-end bootstrap tasks including virtual
+    environment setup, dependency installation, Django project scaffolding,
+    settings and URL wiring, template/resource seeding, and initial Git setup.
+    """
     def __init__(self, apps_dir_name="apps", venv_name=".venv"):
         self.project_root = Path.cwd()
         self.apps_dir_name = apps_dir_name
@@ -28,6 +35,7 @@ class DjangoProjectCreator:
 
     @mo_helper_kit.file_guardian
     def run(self):
+        """Execute the full guided project initialization workflow."""
         os.chdir(self.project_root)
         print("\n# ------- Mindoff > Init ------- #")
         print("You're about to set up the following in the current directory:")
@@ -312,6 +320,7 @@ MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT = "120/m"
 
 # ======== FUNCTIONS =======
 def register_subcommand(subparsers):
+    """Register the `init` manager command and handler."""
     def _create_project(args):
         DjangoProjectCreator().run()
 

@@ -64,6 +64,7 @@ class MindoffTestCase:
 
     @pytest.fixture(autouse=True)
     def run(self, request):
+        """Inject Mindoff test helper fixtures into the test case instance."""
         self.mo_mock_app = request.getfixturevalue("_mo_mock_app")
         self.mo_mock_model = request.getfixturevalue("_mo_mock_model")
         self.mo_mock_model_frms = request.getfixturevalue("_mo_mock_model_frms")

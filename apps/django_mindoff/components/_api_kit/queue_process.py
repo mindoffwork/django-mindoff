@@ -268,6 +268,7 @@ def execute_queue(queue_task_uuid: str):
 
 @dramatiq.actor
 def dramatiq_healthcheck(probe_id: str):
+    """Check the health of a Dramatiq worker by writing a Redis key that expires in 30 seconds."""
     key = f"moq:health:{probe_id}"
     redis_client.hset(
         key,
@@ -397,9 +398,6 @@ def retry_failed_queue_task(queue_task_uuid: str) -> str:
 
 
 def _extract_response_code(result) -> int:
-    """
-    Derive an HTTP status code string from the raw result returned by ``api.run()``.
-    """
     if isinstance(result, DRFResponse):
         return int(result.status_code)
     if isinstance(result, JsonResponse):
@@ -489,7 +487,6 @@ def _get_json_compression_min_bytes(field_name: str, default: int) -> int:
 
 
 def _extract_result(result):
-    """Normalise HTTP responses to the raw payload stored in ``MOQueue.response``."""
     if isinstance(result, DRFResponse):
         return result.data
     if isinstance(result, JsonResponse):
@@ -498,11 +495,6 @@ def _extract_result(result):
 
 
 def _mark_db_cancelled(obj: MOQueue, queue_task_uuid: str):
-    """
-    Write the final ``"cancelled"`` state to both DB and Redis.
-
-    We write DB first so that if Redis fails we still have a consistent record.
-    """
     cancelled_result = _extract_result(
         mo_response_kit.json_response(
             code="QUEUE_TASK_CANCELLED",
@@ -547,7 +539,6 @@ def _parse_updated_at(updated_at):
 
 
 def _sync_redis_from_db(obj: MOQueue):
-    """Rebuild Redis state from the DB record."""
     status = obj.job_status
     if status == "queued":
         init_queue(queue_task_uuid=str(obj.id), created_at=obj.created_at)
@@ -570,7 +561,6 @@ def _sync_redis_from_db(obj: MOQueue):
 
 
 def _sync_db_from_redis(obj: MOQueue, redis_state: dict):
-    """Propagate a fresher Redis state back to the DB."""
     if _is_cancel_requested(redis_state):
         _mark_db_cancelled(obj, str(obj.id))
         return

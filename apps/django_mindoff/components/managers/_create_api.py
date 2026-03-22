@@ -15,6 +15,12 @@ API_CLASS_TEMPLATE_NAME = "{{API_HUMAN_NAME}}"
 
 
 class DjangoApiCreator:
+    """
+    Generate Mindoff API scaffolding for a target app and API name.
+
+    This creator builds versioned API classes, router wiring, URL entries, and test
+    scaffolding from manager templates while preventing duplicate definitions.
+    """
     def __init__(
         self, api_path: str, url_paths: list[str] = None, base_path: Path = None
     ):
@@ -396,6 +402,7 @@ class DjangoApiCreator:
 
     @mo_helper_kit.file_guardian
     def run(self):
+        """Execute API generation and route registration steps."""
         self._parse_input()
         self._write_versioned_api_file()
         self._write_version_router_to_views()
@@ -406,6 +413,7 @@ class DjangoApiCreator:
 
 # ======== CLI HOOK ========
 def register_subcommand(subparsers):
+    """Register the `createapi` manager command and handler."""
     def _create_api(args):
         DjangoApiCreator(api_path=args.api_path, url_paths=args.url).run()
 

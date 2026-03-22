@@ -8,6 +8,12 @@ from ..helper_kit import mo_helper_kit
 # ======== CLASSES =======
 # Add Classes here
 class DjangoProjectDeleter:
+    """
+    Remove Django-Mindoff project artifacts from the current workspace.
+
+    Supports guided scope selection, optional dry-run mode, guarded deletion, and
+    summary reporting for deleted or skipped paths.
+    """
     def __init__(self, dry_run: bool = False, delete_all: bool = False):
         self.project_root = Path.cwd()
         self.default_exclude = {".git", ".venv", ".gitignore", "README.md", ".env.bak"}
@@ -106,6 +112,7 @@ class DjangoProjectDeleter:
 
     @mo_helper_kit.file_guardian
     def run(self):
+        """Run the guided project deletion workflow."""
         print("\n# ------- Mindoff > Nuke ------- #")
         self._choose_scope()
         self._identify_targets()
@@ -127,6 +134,7 @@ class DjangoProjectDeleter:
 # Add Functions here
 # F1. Command Entry Point -- Registers the command into the CLI.
 def register_subcommand(subparsers):
+    """Register the `nuke` manager command and handler."""
     def _delete_project(args):
         DjangoProjectDeleter(dry_run=args.dry_run, delete_all=args.all).run()
 

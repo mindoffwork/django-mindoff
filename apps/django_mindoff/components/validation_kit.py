@@ -35,7 +35,14 @@ class ValidationError(Exception):
 
 
 class MindoffValidator:
-    """Info Docstring"""
+    """
+    Central validation engine for Mindoff kits with immediate and aggregate modes.
+
+    This validator provides a broad set of `ensure_*` guards for type, value,
+    collection, regex, path, and custom checks. Each check can either raise
+    immediately, accumulate structured errors for later finalization, or return
+    success directly, enabling consistent validation behavior across all kits.
+    """
 
     def __init__(self) -> None:
         self._errors: List[_ErrorItem] = []

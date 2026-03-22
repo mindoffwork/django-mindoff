@@ -11,6 +11,7 @@ models_file = "models.py"
 # Main Registration
 # -------------------
 def register_subcommand(subparsers):
+    """Register the interactive `create` manager command and handler."""
     def run(args):
         while True:
             command = _choose_create_command()

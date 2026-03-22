@@ -199,6 +199,7 @@ class DjangoModelFieldCreator:
     # -------------------------
     @mo_helper_kit.file_guardian
     def run(self):
+        """Add a validated ForeignKey field to the selected Django model."""
         self._parse_model_path()
         self._validate_field_name()
         self._validate_foreign_key()
@@ -209,6 +210,7 @@ class DjangoModelFieldCreator:
 
 # ======== FUNCTIONS ========
 def register_subcommand(subparsers):
+    """Register the `create_model_field` manager command and handler."""
     def _create_model_field(args):
         DjangoModelFieldCreator(
             model_path=args.model_path,

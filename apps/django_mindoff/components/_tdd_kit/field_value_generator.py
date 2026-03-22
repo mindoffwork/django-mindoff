@@ -12,6 +12,13 @@ from model_bakery import baker
 # Classes
 # ----------------
 class FieldValueGenerator:
+    """
+    Generate model-field test values that satisfy Django constraints.
+
+    This helper powers TDD data generation by creating deterministic-enough random
+    values across common Django field types while honoring defaults, uniqueness,
+    validators, and UUID output mode.
+    """
     def __init__(self, field, used_uniques, partial_kwargs, is_uuid_hex):
         self.field = field
         self.used_uniques = used_uniques
@@ -193,6 +200,7 @@ class FieldValueGenerator:
 # Functions
 # ----------------
 def generate_field_value(field, used_uniques, partial_kwargs, is_uuid_hex):
+    """Return a generated test value for a Django field."""
     return FieldValueGenerator(
         field=field,
         used_uniques=used_uniques,

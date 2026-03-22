@@ -9,6 +9,12 @@ init_file_name = "__init__.py"
 
 # ======== CLASSES =======
 class DjangoAppCreator:
+    """
+    Create and wire a Django app inside the Mindoff project structure.
+
+    Handles app directory creation, Django startapp execution, initial module files,
+    test/components/api folders, and project-level settings/URL registration.
+    """
     def __init__(self, dotted_path: str, *, isolated: bool = False):
         self.isolated = isolated
         if not self.isolated and not dotted_path.startswith("apps."):
@@ -160,6 +166,7 @@ class DjangoAppCreator:
 
     @mo_helper_kit.file_guardian
     def run(self):
+        """Run the app creation workflow for the configured app path."""
         if os.path.exists(self.app_dir):
             print(
                 f"[ACTION] App '{self.dotted_path}' already exists at: {self.app_dir}. Skipping."
@@ -182,6 +189,7 @@ class DjangoAppCreator:
 
 # ======== FUNCTIONS =======
 def register_subcommand(subparsers):
+    """Register the `createapp` manager command and handler."""
     def _create_app(args):
         for app_name in args.app_names:
             DjangoAppCreator(app_name).run()

@@ -17,6 +17,19 @@ def validate_schema(
     max_nesting_depth: int | None = None,
     validation_mode: str = "strict",
 ) -> None:
+    """
+    Validate payload data against a nested schema definition used by Mindoff kits.
+
+    The validator supports core Python/typing schema forms (types, `Union`,
+    `Literal`, list/dict shorthand, and typed `List`/`Dict`) and performs iterative
+    depth-aware traversal to accumulate validation errors through `mo_validation_kit`.
+
+    Args:
+        data: Incoming payload value to validate.
+        schema: Expected schema definition for the payload.
+        max_nesting_depth: Optional maximum allowed nesting depth.
+        validation_mode: Validation mode (`"strict"` requires all schema keys).
+    """
     depth = 0
     stack = [(data, schema, depth, "root")]
 

@@ -8,6 +8,12 @@ from ..helper_kit import mo_helper_kit
 # ======== CLASSES =======
 # Add Classes here
 class DjangoAppDeleter:
+    """
+    Delete a Django app and clean project references safely.
+
+    Removes the app directory, clears empty parent namespace folders when possible,
+    and updates project `settings.py` and `urls.py` to remove app references.
+    """
     def __init__(self, dotted_path: str):
         if not dotted_path.startswith("apps."):
             dotted_path = f"apps.{dotted_path}"
@@ -87,6 +93,7 @@ class DjangoAppDeleter:
 
     @mo_helper_kit.file_guardian
     def run(self):
+        """Execute app deletion after user confirmation."""
         if not os.path.exists(self.app_dir):
             print(f"[ERROR] App directory not found: {self.app_dir}")
             return
@@ -106,6 +113,7 @@ class DjangoAppDeleter:
 # Add Functions here
 # F1. Command Entry Point -- Registers the command into the CLI.
 def register_subcommand(subparsers):
+    """Register the `deleteapp` manager command and handler."""
     def _delete_app(args):
         for app_name in args.app_names:
             DjangoAppDeleter(app_name).run()

@@ -10,6 +10,7 @@ from pathlib import Path
 # Functions
 # ----------------
 def file_guardian(func):
+    """Wrap a function with filesystem rollback protection for file and directory writes."""
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs):
         created_files, created_dirs = set(), set()

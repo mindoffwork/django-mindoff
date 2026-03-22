@@ -25,6 +25,7 @@ def _delete_apps_via_subprocess():
 # Main Registration
 # -------------------
 def register_subcommand(subparsers):
+    """Register the interactive `delete` manager command and handler."""
     def run(args):
         options = {"1": ("app", "deleteapp")}
         command = None

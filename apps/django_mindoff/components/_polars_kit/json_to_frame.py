@@ -17,6 +17,14 @@ MODEL_FRMS_DEFAULT_ROOT_KEY = "__root__"
 # Classes
 # ----------------
 class PayloadFlattener:
+    """
+    Flatten hierarchical JSON payloads into relational-style Polars frames.
+
+    This class converts nested payload paths into table-like DataFrames/LazyFrames,
+    propagates parent identifiers across nested levels, and guarantees primary-key
+    columns per configured path so downstream CRUD validators and processors receive
+    model-ready frame structures.
+    """
     def __init__(
         self,
         payload: List[Dict],
@@ -46,6 +54,7 @@ class PayloadFlattener:
     # ------------------------------------------------------------------ #
 
     def flatten(self) -> Dict[str, Union[pl.DataFrame, pl.LazyFrame]]:
+        """Build and return flattened frame mapping keyed by internal table path names."""
         self._init_parent()
 
         nested_paths = [

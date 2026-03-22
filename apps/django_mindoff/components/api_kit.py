@@ -96,7 +96,7 @@ class MindoffAPIMixin(APIView):
         return steps if isinstance(steps, dict) else {}
 
     def dispatch(self, request, *args, **kwargs):
-        """Add one line docstring here"""
+        """Dispatch the request and normalize unexpected exceptions into API responses."""
         try:
             return super().dispatch(request, *args, **kwargs)
         except Exception as exc:
@@ -104,7 +104,7 @@ class MindoffAPIMixin(APIView):
             return self._dispatch_ensure_response_is_rendered(response)
 
     def initial(self, request, *args, **kwargs):
-        """Add one line docstring here"""
+        """Run request initialization checks before API business logic executes."""
         super().initial(request, *args, **kwargs)
         self._initial_validate_request_method(request)
         self._initial_validate_api_rate_limit(request)
@@ -112,7 +112,7 @@ class MindoffAPIMixin(APIView):
             self._initial_validate_request_payload(request)
 
     def validate_api_configuration(self):
-        """Add one line docstring here"""
+        """Validate API class configuration and fail fast on invalid settings."""
         required_attrs = ("api_url_name", "api_name", "api_description", "method")
         for attr in required_attrs:
             mo_validation_kit.ensure_truthy(
@@ -330,15 +330,19 @@ class MindoffAPIMixin(APIView):
                 _validate_progress_steps(steps_cfg, self.api_url_name)
 
     def get(self, request, *args, **kwargs):
+        """Handle GET requests through shared request-processing flow."""
         return self._handle_request_logic(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
+        """Handle POST requests through shared request-processing flow."""
         return self._handle_request_logic(request, *args, **kwargs)
 
     def put(self, request, *args, **kwargs):
+        """Handle PUT requests through shared request-processing flow."""
         return self._handle_request_logic(request, *args, **kwargs)
 
     def delete(self, request, *args, **kwargs):
+        """Handle DELETE requests through shared request-processing flow."""
         return self._handle_request_logic(request, *args, **kwargs)
 
     def run(self, request, *args, **kwargs):
@@ -434,7 +438,7 @@ class MindoffAPIMixin(APIView):
         )
 
     def handle_exception(self, exc):
-        """Add one line docstring here"""
+        """Convert framework or runtime exceptions into standardized Mindoff responses."""
         return _resolve_api_exception(exc)
 
     def _dispatch_ensure_response_is_rendered(self, response):
@@ -561,7 +565,7 @@ class MindoffAPIMixin(APIView):
 # Functions
 # ----------------
 def api_guardian(func):
-    """Add Full Scale Docstring here"""
+    """Wrap an API callable and convert uncaught exceptions into standard responses."""
 
     @wraps(func)
     def wrapper(request, *args, **kwargs):

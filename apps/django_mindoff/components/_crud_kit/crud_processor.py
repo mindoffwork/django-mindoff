@@ -22,6 +22,20 @@ from ..response_kit import mo_validation_kit
 # ----------------
 @typechecked
 class CRUDProcessor:
+    """
+    Execute bulk create/update database operations for validated model DataFrames.
+
+    This processor is the persistence layer of the CRUD kit. It bridges Django model
+    metadata with SQLAlchemy execution so validated Polars data can be written to the
+    configured database backend using a unified interface across SQLite, PostgreSQL,
+    and MySQL.
+
+    Responsibilities:
+    1. Resolve the configured Django database alias to a SQLAlchemy engine.
+    2. Perform append-style inserts for `create`.
+    3. Perform upsert-style updates for `update`, with optional staging-table merge.
+    4. Return operation metadata such as affected tables and execution time.
+    """
     def __init__(
         self,
         model_frame_map: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
@@ -80,6 +94,15 @@ class CRUDProcessor:
 
     @_track_time
     def create(self, batch_size: int) -> list[str]:
+        """
+        Insert each model DataFrame into its mapped database table.
+
+        Args:
+            batch_size: Reserved for batching strategy compatibility.
+
+        Returns:
+            list[str]: Database table names that were successfully written.
+        """
         saved_tables = []
         with self.engine.begin() as conn:
             for model, df in self.model_frame_map.items():
@@ -111,6 +134,16 @@ class CRUDProcessor:
 
     @_track_time
     def update(self, is_temp_table: bool, batch_size: int) -> list[str]:
+        """
+        Upsert each model DataFrame into its mapped database table.
+
+        Args:
+            is_temp_table: When true, stage rows into a temp table before merge.
+            batch_size: Reserved for batching strategy compatibility.
+
+        Returns:
+            list[str]: Database table names affected by the update operation.
+        """
         affected_tables = []
         with self.engine.begin() as conn:
             metadata = MetaData()

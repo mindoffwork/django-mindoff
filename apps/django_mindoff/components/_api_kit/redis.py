@@ -107,6 +107,9 @@ def init_queue(queue_task_uuid: str, created_at):
 
 
 def mark_running(queue_task_uuid: str):
+    """
+    Update the in-flight progress of a running task.
+    """
     key = f"moq:{queue_task_uuid}"
     state = get_queue_status(queue_task_uuid)
 
@@ -168,6 +171,7 @@ def update_progress(
 
 
 def mark_completed(queue_task_uuid: str):
+    """Mark a queue task as completed."""
     key = f"moq:{queue_task_uuid}"
     state = get_queue_status(queue_task_uuid)
 
@@ -186,6 +190,7 @@ def mark_completed(queue_task_uuid: str):
 
 
 def mark_failed(queue_task_uuid: str, error: str):
+    """Mark a queue task as failed with an error message."""
     key = f"moq:{queue_task_uuid}"
     state = get_queue_status(queue_task_uuid)
 
@@ -209,6 +214,7 @@ def mark_failed(queue_task_uuid: str, error: str):
 
 
 def mark_cancelled(queue_task_uuid: str, message: str = "cancelled"):
+    """Mark a queue task as cancelled, optionally with a custom message."""
     key = f"moq:{queue_task_uuid}"
     state = get_queue_status(queue_task_uuid)
 
@@ -257,6 +263,10 @@ def mark_cancel_requested(queue_task_uuid: str):
 
 
 def get_queue_status(queue_task_uuid: str) -> dict:
+    """Return the current status of a queue task as a JSON blob.
+
+    See the response format in the documentation for `enqueue_process`.
+    """
     key = f"moq:{queue_task_uuid}"
     data = redis_client.hgetall(key)
 
@@ -285,6 +295,10 @@ def get_queue_status(queue_task_uuid: str) -> dict:
 
 
 def acquire_sse_slot(user_id, *, limit: int) -> bool:
+    """Acquire a SSE slot for the given user.
+
+    Returns True if a slot is available, False otherwise.
+    """
     key = sse_key(user_id)
     count = redis_client.incr(key)
     redis_client.expire(key, SSE_TTL)
@@ -292,6 +306,7 @@ def acquire_sse_slot(user_id, *, limit: int) -> bool:
 
 
 def release_sse_slot(user_id):
+    """Release a previously acquired SSE slot for the given user."""
     key = sse_key(user_id)
     try:
         redis_client.decr(key)
@@ -305,8 +320,10 @@ def release_sse_slot(user_id):
 
 
 def sse_event(data: dict) -> str:
+    """Return a Server-Sent Event formatted string from the given data."""
     return f"data: {json.dumps(data)}\n\n"
 
 
 def sse_key(user_id) -> str:
+    """Return the SSE key for the given user_id."""
     return f"sse:active:{user_id}"

@@ -8,6 +8,21 @@ from django.db import models
 # Classes
 # ----------------
 class ColumnValidator:
+    """
+    Validate and normalize DataFrame columns against Django model column definitions.
+
+    This validator is the column-shape gate in the CRUD pipeline. It aligns incoming
+    Polars frames to model fields, enforces primary-key and foreign-key db_column
+    requirements, optionally adds missing columns, optionally removes extra columns,
+    and separates valid/invalid frames with explicit error context.
+
+    Typical flow:
+    1. Verify PK and FK `db_column` configuration on each model.
+    2. Map incoming db column names to model field names for validation.
+    3. Inject auto-managed datetime fields when needed.
+    4. Detect missing/extra columns and apply configured handling.
+    5. Rename columns back to database column names for downstream persistence.
+    """
     def __init__(
         self,
         model_frms: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
@@ -136,6 +151,17 @@ class ColumnValidator:
         Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
         Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
     ]:
+        """
+        Execute column-level validation and return valid/invalid model DataFrame maps.
+
+        Returns:
+            tuple[
+                dict[type[models.Model], pl.DataFrame | pl.LazyFrame],
+                dict[type[models.Model], pl.DataFrame | pl.LazyFrame],
+            ]:
+            A pair of dictionaries in the form `(valid_dfs, invalid_dfs)`.
+            Invalid entries include an `error` column that explains the issue.
+        """
         valid_dfs = {}
         invalid_dfs = {}
 

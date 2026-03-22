@@ -16,10 +16,20 @@ ERROR_COL = getattr(settings, "POLARS_VALIDATOR_ERROR_COL", None) or "__error__i
 # Classes
 # ----------------
 class ForeignKeyValidator:
+    """
+    Validate foreign-key integrity across incoming model DataFrames.
+
+    This validator ensures that every foreign-key value in each model frame points
+    to an existing related primary key, either from another provided frame or from
+    the database when the related model frame is not supplied.
+    """
     def __init__(self, df_dict: dict[type[models.Model], pl.DataFrame | pl.LazyFrame]):
         self.df_dict = df_dict
 
     def validate(self) -> dict[type[models.Model], pl.DataFrame | pl.LazyFrame]:
+        """
+        Validate foreign keys for all model frames and return validated frames.
+        """
         return {
             model: self._validate_model_foreign_keys(model, df)
             for model, df in self.df_dict.items()

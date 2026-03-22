@@ -9,6 +9,12 @@ MODEL_FILE_NAME = "models.py"
 
 # ======== CLASSES =======
 class DjangoModelCreator:
+    """
+    Scaffold a Django model class and serializer inside an existing app.
+
+    The creator normalizes model naming, prepares base model inheritance, and appends
+    generated model/serializer classes while avoiding duplicate class insertion.
+    """
     def __init__(self, model_path: str):
         self.model_path = model_path
         self.original_app_name = None
@@ -122,6 +128,7 @@ class {self.final_model_name}Serializer(serializers.ModelSerializer):
 
     @mo_helper_kit.file_guardian
     def run(self):
+        """Run model generation after validating input and target app existence."""
         if not self._parse_input():
             return
         project_root = Path.cwd()
@@ -135,6 +142,7 @@ class {self.final_model_name}Serializer(serializers.ModelSerializer):
 
 # ======== FUNCTIONS =======
 def register_subcommand(subparsers):
+    """Register the `createmodel` manager command and handler."""
     def _create_model(args):
         DjangoModelCreator(args.model_path).run()
 
