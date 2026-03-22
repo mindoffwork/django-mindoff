@@ -376,6 +376,7 @@ class TestInitManager:
         creator._write_supporting_files()
         dst_names = [str(d) for d in copy_calls]
         assert any("mindoff.py" in n for n in dst_names)
+        assert any("agents.md" in n for n in dst_names)
         assert any("pytest.ini" in n for n in dst_names)
         assert any(".gitignore" in n for n in dst_names)
         assert any("responses.csv" in n for n in dst_names)
