@@ -5,6 +5,9 @@
 ### Fixes
 - 🐛 Fix exception code not matching response code ([#23](https://github.com/mindoffwork/django-mindoff/pull/23))
 
+### Enhancements
+- 🔨 Add agents.md on `init` and corresponding tests ([#24](https://github.com/mindoffwork/django-mindoff/pull/24))
+
 ## v0.3.0
 
 ### Internal
