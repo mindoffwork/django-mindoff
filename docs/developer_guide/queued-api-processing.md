@@ -43,7 +43,7 @@ REDIS_URL = config("REDIS_URL", default=None)
 From the same virtual environment as your project:
 
 ```bash
-dramatiq django_mindoff.components._api_kit.queue_process
+dramatiq django_mindoff.queue_worker
 ```
 
 ## Implementation
