@@ -123,11 +123,20 @@ class DjangoProjectCreator:
                 insert_pos["DEBUG"], "DEBUG = config('DEBUG', cast=bool, default=True)"
             )
         updated = "\n".join(lines)
+        updated = self._ensure_host_and_cors_config(updated)
         updated = self._append_to_list(updated, "INSTALLED_APPS", "rest_framework")
         updated = self._append_to_list(
             updated, "INSTALLED_APPS", "rest_framework.authtoken"
         )
         updated = self._append_to_list(updated, "INSTALLED_APPS", "django_mindoff")
+        updated = self._ensure_list_item_before(
+            updated, "INSTALLED_APPS", "corsheaders", "rest_framework"
+        )
+        updated = self._ensure_list_item_first(
+            updated,
+            "MIDDLEWARE",
+            "corsheaders.middleware.CorsMiddleware",
+        )
         if "TEMPLATES" in updated:
             if "import os" not in updated:
                 updated = updated.replace(
@@ -173,7 +182,13 @@ MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT = "120/m"
     def _create_env_file(self):
         print("[ACTION] Writing .env file.")
         Path(".env").write_text(
-            f"DJANGO_SECRET_KEY={self.secret_key}\nDEBUG=True\nREDIS_URL=redis://127.0.0.1:6379/0\n"
+            (
+                f"DJANGO_SECRET_KEY={self.secret_key}\n"
+                "DEBUG=True\n"
+                "# Tighten this for production by using an explicit CORS allowlist.\n"
+                "CORS_ALLOW_ALL_ORIGINS=True\n"
+                "REDIS_URL=redis://127.0.0.1:6379/0\n"
+            )
         )
 
     def _update_urls(self):
@@ -258,6 +273,111 @@ MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT = "120/m"
                 new_lines.insert(-1, f"{indent}'{value}',")
                 inside_list = False
         return "\n".join(new_lines)
+
+    def _ensure_list_item_before(self, text, list_name, value, before_value):
+        lines = text.splitlines()
+        list_start = None
+        list_end = None
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if list_start is None and stripped.startswith(f"{list_name} = ["):
+                list_start = idx
+                continue
+            if list_start is not None and stripped == "]":
+                list_end = idx
+                break
+        if list_start is None or list_end is None:
+            return text
+
+        list_block = lines[list_start + 1:list_end]
+        existing_idx = None
+        before_idx = None
+        for idx, line in enumerate(list_block):
+            normalized = line.strip().strip(",").strip("'").strip('"')
+            if normalized == value:
+                existing_idx = idx
+            if normalized == before_value and before_idx is None:
+                before_idx = idx
+
+        if existing_idx is not None:
+            list_block.pop(existing_idx)
+            if before_idx is not None and existing_idx < before_idx:
+                before_idx -= 1
+
+        if before_idx is None:
+            insert_idx = len(list_block)
+        else:
+            insert_idx = before_idx
+
+        indent = " " * 4
+        if list_block:
+            first_entry = list_block[0]
+            indent = first_entry[: len(first_entry) - len(first_entry.lstrip())] or indent
+        list_block.insert(insert_idx, f"{indent}'{value}',")
+
+        lines[list_start + 1:list_end] = list_block
+        return "\n".join(lines)
+
+    def _ensure_list_item_first(self, text, list_name, value):
+        lines = text.splitlines()
+        list_start = None
+        list_end = None
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if list_start is None and stripped.startswith(f"{list_name} = ["):
+                list_start = idx
+                continue
+            if list_start is not None and stripped == "]":
+                list_end = idx
+                break
+        if list_start is None or list_end is None:
+            return text
+
+        list_block = lines[list_start + 1:list_end]
+        normalized_items = [
+            line.strip().strip(",").strip("'").strip('"') for line in list_block
+        ]
+        list_block = [
+            line
+            for line, normalized in zip(list_block, normalized_items)
+            if normalized != value
+        ]
+
+        indent = " " * 4
+        if list_block:
+            first_entry = list_block[0]
+            indent = first_entry[: len(first_entry) - len(first_entry.lstrip())] or indent
+        list_block.insert(0, f"{indent}'{value}',")
+
+        lines[list_start + 1:list_end] = list_block
+        return "\n".join(lines)
+
+    def _ensure_host_and_cors_config(self, text):
+        if "ALLOWED_HOSTS" not in text:
+            return text
+        warning_comment = (
+            "# SECURITY WARNING: Restrict ALLOWED_HOSTS and CORS in production."
+        )
+        cors_line = (
+            'CORS_ALLOW_ALL_ORIGINS = config("CORS_ALLOW_ALL_ORIGINS", cast=bool, default=True)'
+        )
+        if warning_comment not in text:
+            text = re.sub(
+                r"^ALLOWED_HOSTS\s*=.*$",
+                f"{warning_comment}\nALLOWED_HOSTS = []",
+                text,
+                count=1,
+                flags=re.MULTILINE,
+            )
+        if cors_line not in text:
+            text = re.sub(
+                r"^(ALLOWED_HOSTS\s*=.*)$",
+                r"\1\n" + cors_line,
+                text,
+                count=1,
+                flags=re.MULTILINE,
+            )
+        return text
 
     def _get_base_packages(self):
         pyproject_path = self.project_root / "pyproject.toml"

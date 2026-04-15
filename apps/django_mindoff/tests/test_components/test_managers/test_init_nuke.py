@@ -143,8 +143,12 @@ class TestInitManager:
             "BASE_DIR = Path(__file__).resolve().parent.parent\n"
             "SECRET_KEY = 'django-insecure-abc123'\n"
             "DEBUG = True\n"
+            "ALLOWED_HOSTS = []\n"
             "INSTALLED_APPS = [\n"
             "    'django.contrib.admin',\n"
+            "]\n"
+            "MIDDLEWARE = [\n"
+            "    'django.middleware.security.SecurityMiddleware',\n"
             "]\n"
             'TEMPLATES = [{"BACKEND": "...", "DIRS": [], "OPTIONS": {}}]\n'
         )
@@ -156,8 +160,15 @@ class TestInitManager:
         updated = settings_file.read_text()
         assert "from decouple import config" in updated
         assert "SECRET_KEY = config('DJANGO_SECRET_KEY')" in updated
+        assert "corsheaders" in updated
         assert "rest_framework" in updated
         assert "django_mindoff" in updated
+        assert "corsheaders.middleware.CorsMiddleware" in updated
+        assert (
+            'CORS_ALLOW_ALL_ORIGINS = config("CORS_ALLOW_ALL_ORIGINS", cast=bool, default=True)'
+            in updated
+        )
+        assert "SECURITY WARNING: Restrict ALLOWED_HOSTS and CORS in production." in updated
         assert "MINDOFF_LOG_ERRORS_IN_DEBUG" in updated
 
     def test_update_settings_decouple_already_imported_not_duplicated(self, tmp_path):
@@ -170,7 +181,9 @@ class TestInitManager:
             "from decouple import config\n"
             "SECRET_KEY = 'abc'\n"
             "DEBUG = True\n"
+            "ALLOWED_HOSTS = []\n"
             "INSTALLED_APPS = [\n    'django.contrib.admin',\n]\n"
+            "MIDDLEWARE = [\n    'django.middleware.security.SecurityMiddleware',\n]\n"
         )
         creator = init_manager.DjangoProjectCreator()
         creator.project_root = tmp_path
@@ -189,7 +202,9 @@ class TestInitManager:
             "from pathlib import Path\n"
             "SECRET_KEY = 'abc'\n"
             "DEBUG = True\n"
+            "ALLOWED_HOSTS = []\n"
             "INSTALLED_APPS = [\n    'django.contrib.admin',\n]\n"
+            "MIDDLEWARE = [\n    'django.middleware.security.SecurityMiddleware',\n]\n"
             f"{header}\n"
             "MINDOFF_LOG_ERRORS_IN_DEBUG = False\n"
         )
@@ -199,6 +214,58 @@ class TestInitManager:
         creator.settings_path = settings_file
         creator._update_settings()
         assert settings_file.read_text().count(header) == 1
+
+    def test_update_settings_places_cors_app_before_rest_framework(self, tmp_path):
+        """ACCEPTANCE: Validates update settings places cors app before rest framework."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        settings_file = config_dir / "settings.py"
+        settings_file.write_text(
+            "from pathlib import Path\n"
+            "SECRET_KEY = 'abc'\n"
+            "DEBUG = True\n"
+            "ALLOWED_HOSTS = []\n"
+            "INSTALLED_APPS = [\n"
+            "    'django.contrib.admin',\n"
+            "    'rest_framework',\n"
+            "]\n"
+            "MIDDLEWARE = [\n"
+            "    'django.middleware.security.SecurityMiddleware',\n"
+            "]\n"
+        )
+        creator = init_manager.DjangoProjectCreator()
+        creator.project_root = tmp_path
+        creator.config_dir = config_dir
+        creator.settings_path = settings_file
+        creator._update_settings()
+        updated = settings_file.read_text()
+        assert updated.index("'corsheaders',") < updated.index("'rest_framework',")
+
+    def test_update_settings_places_cors_middleware_first(self, tmp_path):
+        """ACCEPTANCE: Validates update settings places cors middleware first."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        settings_file = config_dir / "settings.py"
+        settings_file.write_text(
+            "from pathlib import Path\n"
+            "SECRET_KEY = 'abc'\n"
+            "DEBUG = True\n"
+            "ALLOWED_HOSTS = []\n"
+            "INSTALLED_APPS = [\n    'django.contrib.admin',\n]\n"
+            "MIDDLEWARE = [\n"
+            "    'django.middleware.security.SecurityMiddleware',\n"
+            "    'django.contrib.sessions.middleware.SessionMiddleware',\n"
+            "]\n"
+        )
+        creator = init_manager.DjangoProjectCreator()
+        creator.project_root = tmp_path
+        creator.config_dir = config_dir
+        creator.settings_path = settings_file
+        creator._update_settings()
+        updated = settings_file.read_text()
+        assert updated.index("'corsheaders.middleware.CorsMiddleware',") < updated.index(
+            "'django.middleware.security.SecurityMiddleware',"
+        )
 
     def test_update_urls_adds_include_and_templateview(self, tmp_path):
         """ACCEPTANCE: Validates update urls adds include and templateview."""
@@ -231,6 +298,7 @@ class TestInitManager:
         env = (tmp_path / ".env").read_text()
         assert "DJANGO_SECRET_KEY=" in env
         assert "DEBUG=True" in env
+        assert "CORS_ALLOW_ALL_ORIGINS=True" in env
         assert "REDIS_URL=" in env
 
     def test_prompt_optional_dependencies_returns_empty_list(self):
@@ -277,6 +345,7 @@ class TestInitManager:
         all_args = [arg for call in run_calls for arg in call]
         assert "django>=5.0" in all_args
         assert "djangorestframework>=3.15.0,<4.0" in all_args
+        assert "django-cors-headers>=4.4.0,<5.0" in all_args
         assert "django-mindoff" in all_args
 
     def test_install_packages_installs_optional_when_present(self, monkeypatch):
