@@ -83,7 +83,8 @@ def _create_model_field_flow(local_apps, selected_app=None):
     field_name = _resolve_foreign_key_field_name(model_text, model_class)
 
     args = [model, field_name]
-    args = __create_foreign_key_field_flow(args, models)
+    parent_models = _list_existing_models(local_apps)
+    args = __create_foreign_key_field_flow(args, parent_models)
     return args, app_name
 
 
@@ -256,6 +257,21 @@ def _choose_from_list(prompt, items, bracket_suffix=""):
 
 
 def _choose_a_existing_model(local_apps, selected_app=None):
+    models = _list_existing_models(local_apps, selected_app)
+
+    if not models:
+        print("No existing models found. Exiting.")
+        return [], None, None
+
+    while True:
+        model = _choose_from_list("Select a Model:", models)
+        if model:
+            app_name = model.split("/")[0]
+            return models, model, app_name
+        print("Invalid model selection. Please try again.")
+
+
+def _list_existing_models(local_apps, selected_app=None):
     models = []
 
     for app in local_apps:
@@ -271,16 +287,7 @@ def _choose_a_existing_model(local_apps, selected_app=None):
                 if line.strip().startswith("class ") and "(" in line
             )
 
-    if not models:
-        print("No existing models found. Exiting.")
-        return [], None, None
-
-    while True:
-        model = _choose_from_list("Select a Model:", models)
-        if model:
-            app_name = model.split("/")[0]
-            return models, model, app_name
-        print("Invalid model selection. Please try again.")
+    return models
 
 
 def _resolve_foreign_key_field_name(model_text, model_class):

@@ -473,6 +473,52 @@ class TestCreateManagerFlows:
         assert "account" in result
         assert result == ["shop/Order", "account", "--to", "shop/Order"]
 
+    def test_create_model_field_flow_parent_model_list_uses_all_apps(
+        self, tmp_path, monkeypatch
+    ):
+        """REJECTION: Validates parent model list includes models from other apps."""
+        monkeypatch.setattr(create_manager, "apps_folder", tmp_path / "apps")
+        for app_name, model_name in [("shop", "Order"), ("billing", "Account")]:
+            app_dir = tmp_path / "apps" / app_name
+            app_dir.mkdir(parents=True)
+            (app_dir / "models.py").write_text(
+                f"class {model_name}(models.Model):\n    pass\n"
+            )
+
+        monkeypatch.setattr(
+            create_manager,
+            "_choose_a_existing_model",
+            lambda apps, sel: (["shop/Order"], "shop/Order", "shop"),
+        )
+        monkeypatch.setattr(
+            create_manager,
+            "_resolve_foreign_key_field_name",
+            lambda text, cls: "account",
+        )
+
+        list_calls = []
+
+        def _fake_list_existing_models(apps, selected_app=None):
+            list_calls.append((tuple(apps), selected_app))
+            return ["shop/Order", "billing/Account"]
+
+        monkeypatch.setattr(
+            create_manager, "_list_existing_models", _fake_list_existing_models
+        )
+        monkeypatch.setattr(
+            create_manager,
+            "_choose_from_list",
+            lambda prompt, items, **kw: "billing/Account",
+        )
+
+        result, app = create_manager._create_model_field_flow(
+            ["shop", "billing"], selected_app="shop"
+        )
+
+        assert app == "shop"
+        assert list_calls == [(("shop", "billing"), None)]
+        assert result == ["shop/Order", "account", "--to", "billing/Account"]
+
     def test_choose_app_returns_selected_app_immediately(self):
         """ACCEPTANCE: Validates choose app returns selected app immediately."""
         result = create_manager._choose_app(
@@ -599,6 +645,21 @@ class TestCreateManagerFlows:
         _, model, _ = create_manager._choose_a_existing_model(["shop"])
         assert model == "shop/Order"
         assert call_count["n"] == 2
+
+    def test_list_existing_models_filters_by_selected_app(self, tmp_path, monkeypatch):
+        """ACCEPTANCE: Validates list existing models filters by selected app."""
+        monkeypatch.setattr(create_manager, "apps_folder", tmp_path / "apps")
+        for app_name, model_name in [("shop", "Order"), ("billing", "Invoice")]:
+            app_dir = tmp_path / "apps" / app_name
+            app_dir.mkdir(parents=True)
+            (app_dir / "models.py").write_text(
+                f"class {model_name}(models.Model):\n    pass\n"
+            )
+
+        result = create_manager._list_existing_models(
+            ["shop", "billing"], selected_app="billing"
+        )
+        assert result == ["billing/Invoice"]
 
     def test_choose_a_existing_model_no_models_file(self, tmp_path, monkeypatch):
         """ACCEPTANCE: Validates choose a existing model no models file."""
