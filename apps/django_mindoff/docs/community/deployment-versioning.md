@@ -36,7 +36,7 @@ Once the pipeline finishes cleanly, the release is live.
 
 ### Deploy the Documentation
 
-Source docs live in `docs/` directory. Rendered docs are built with MkDocs and Mike, then pushed to the `docs` branch.
+Source docs live in `apps/django_mindoff/docs/` directory. Rendered docs are built with MkDocs and Mike, then pushed to the `docs` branch.
 
 <div class="admonition note">
 <p class="admonition-title">Key points to remember</p>
@@ -52,7 +52,7 @@ The public documentation site is:
 https://django.mindoff.work/
 ```
 
-Before you deploy, make sure your working tree is clean, `docs/` contains the final content
+Before you deploy, make sure your working tree is clean, `apps/django_mindoff/docs/` contains the final content
 and you are on the correct branch
 
 Example for the `2.1` series:

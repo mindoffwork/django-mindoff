@@ -3,6 +3,7 @@ site_description: Fast, structured, and scalable API development with django-min
 site_url: https://django-mindoff.mindoff.work
 repo_name: mindoffwork/django-mindoff
 repo_url: https://github.com/mindoffwork/django-mindoff
+docs_dir: apps/django_mindoff/docs
 
 nav:
   - Getting Started:
@@ -71,7 +72,7 @@ markdown_extensions:
       check_paths: true
       base_path:
         - .
-        - docs
+        - apps/django_mindoff/docs
   - pymdownx.tabbed:
       alternate_style: true
   - toc:
@@ -81,7 +82,7 @@ plugins:
   - search
 
 hooks:
-  - docs/_hooks/main.py
+  - apps/django_mindoff/docs/_hooks/main.py
 
 extra_css:
   - _assets/stylesheets/style.css
