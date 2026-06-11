@@ -11,12 +11,13 @@
 
 :root {
 	--mo-white: #ffffff;
-	--mo-fawn: #faf5ee;
-	--mo-black: #000000;
-	--mo-green: #d8e995;
-	--mo-yellow: #f7ec87;
-	--mo-red: #d85757;
-	--mo-turquoise: #86d0c9;
+	--mo-fawn: #f4efe8;
+	--mo-black: #2b3a52;
+	--mo-green: #4caf82;
+	--mo-yellow: #f0b429;
+	--mo-red: #d4523a;
+	--mo-logo-bg: #d9c9b0;
+	--mo-link-hover-bg: #d9c9b0;
 }
 
 /* =============================================================================
@@ -48,7 +49,7 @@
 }
 
 [data-md-color-scheme="default"][data-md-color-primary="black"] .md-header {
-	background-color: #faf5ee80;
+	background-color: #f4efe880;
 	-webkit-backdrop-filter: blur(12px);
 	backdrop-filter: blur(12px);
 }
@@ -64,7 +65,7 @@
 	position: fixed;
 	top: 0;
 	left: 0;
-	background-color: var(--mo-yellow);
+	background-color: var(--mo-logo-bg);
 	border-right: 0.188rem solid;
 	border-bottom: 0.188rem solid;
 	border-color: rgba(0, 0, 0, 0.05);
@@ -208,7 +209,7 @@
 }
 
 .md-nav__item .md-nav__link:hover .md-ellipsis {
-	background-color: var(--mo-yellow);
+	background-color: var(--mo-link-hover-bg);
 	border-radius: 2px;
 }
 
@@ -286,7 +287,7 @@
 	border-bottom: 0.125rem solid rgb(0 0 0 / 1);
 	opacity: 1;
 	transition-duration: 200ms;
-	background-color: var(--mo-yellow);
+	background-color: var(--mo-link-hover-bg);
 }
 
 .md-typeset .headerlink {
@@ -343,7 +344,7 @@
 .md-typeset .note > summary,
 .md-typeset .important > .admonition-title,
 .md-typeset .important > summary {
-	background-color: rgba(255, 192, 83, 0.2);
+	background-color: rgba(240, 180, 41, 0.2);
 	border-bottom: 2px solid rgba(0, 0, 0, 0.05);
 }
 .md-typeset .warning > .admonition-title:before,
@@ -352,10 +353,10 @@
 .md-typeset .note > summary:before,
 .md-typeset .important > .admonition-title:before,
 .md-typeset .important > summary:before {
-	background-color: rgb(255, 192, 83);
+	background-color: rgb(240, 180, 41);
 }
 
-/* Admonitions turquoise family (info/tip/question) */
+/* Admonitions navy family (info/tip/question) */
 .md-typeset .admonition.info,
 .md-typeset details.info,
 .md-typeset .admonition.tip,
@@ -370,7 +371,7 @@
 .md-typeset .tip > summary,
 .md-typeset .question > .admonition-title,
 .md-typeset .question > summary {
-	background-color: rgba(134, 208, 201, 0.12);
+	background-color: rgba(43, 58, 82, 0.12);
 	border-bottom: 2px solid rgba(0, 0, 0, 0.05);
 }
 .md-typeset .info > .admonition-title:before,
@@ -379,7 +380,7 @@
 .md-typeset .tip > summary:before,
 .md-typeset .question > .admonition-title:before,
 .md-typeset .question > summary:before {
-	background-color: rgba(134, 208, 201, 1);
+	background-color: rgba(43, 58, 82, 1);
 }
 
 /* Admonitions green family (success/example/quote) */
@@ -397,7 +398,7 @@
 .md-typeset .example > summary,
 .md-typeset .quote > .admonition-title,
 .md-typeset .quote > summary {
-	background-color: rgba(216, 233, 149, 0.12);
+	background-color: rgba(76, 175, 130, 0.12);
 	border-bottom: 2px solid rgba(0, 0, 0, 0.05);
 }
 .md-typeset .success > .admonition-title:before,
@@ -406,7 +407,7 @@
 .md-typeset .example > summary:before,
 .md-typeset .quote > .admonition-title:before,
 .md-typeset .quote > summary:before {
-	background-color: rgba(216, 233, 149, 1);
+	background-color: rgba(76, 175, 130, 1);
 }
 
 /* Admonitions red family (danger/failure/bug) */
@@ -424,7 +425,7 @@
 .md-typeset .failure > summary,
 .md-typeset .bug > .admonition-title,
 .md-typeset .bug > summary {
-	background-color: rgba(216, 87, 87, 0.12);
+	background-color: rgba(212, 82, 58, 0.12);
 	border-bottom: 2px solid rgba(0, 0, 0, 0.05);
 }
 .md-typeset .danger > .admonition-title:before,
@@ -433,7 +434,7 @@
 .md-typeset .failure > summary:before,
 .md-typeset .bug > .admonition-title:before,
 .md-typeset .bug > summary:before {
-	background-color: rgba(216, 87, 87, 1);
+	background-color: rgba(212, 82, 58, 1);
 }
 
 /* =============================================================================
@@ -558,7 +559,7 @@ html .md-footer-meta.md-typeset a {
 	border-radius: 16px;
 	box-shadow: var(--md-shadow-z2);
 	color: rgba(0, 0, 0, 0.5);
-	background-color: #faf5ee80;
+	background-color: #f4efe880;
 	-webkit-backdrop-filter: blur(12px);
 	backdrop-filter: blur(12px);
 	border: 2px solid rgba(0, 0, 0, 0.05);

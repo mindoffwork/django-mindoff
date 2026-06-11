@@ -2,6 +2,8 @@
 
 _Build production-ready Django REST APIs faster with less boilerplate._
 
+![Django Mindoff cover image](https://raw.githubusercontent.com/mindoffwork/mindoff.work/refs/heads/root/public/images/projects/django_mindoff/django-mindoff-cover-with-name.png)
+
 Django Mindoff is an architectural framework that manages the structure and mechanics of API development so developers can focus on business logic, with efficient data workflows powered by Polars.
 
 [![Coverage Status](https://codecov.io/gh/mindoffwork/django-mindoff/branch/root/graph/badge.svg)](https://codecov.io/gh/mindoffwork/django-mindoff)
@@ -11,6 +13,8 @@ Django Mindoff is an architectural framework that manages the structure and mech
 **Documentation**: [https://django.mindoff.work](https://django.mindoff.work)
 
 **Source**: [https://github.com/mindoffwork/django-mindoff](https://github.com/mindoffwork/django-mindoff)
+
+**Case Study**: [https://mindoff.work/projects/django-mindoff](https://mindoff.work/projects/django-mindoff/)
 
 ## Key Features
 

@@ -40,8 +40,8 @@ nav:
 
 theme:
   name: material
-  logo: _assets/MindOff_Logo_YellowRounded_192x192.png
-  favicon: _assets/MindOff_Logo_YellowRounded_192x192.png
+  logo: _assets/django_mindoff_logo_filled_bg.png
+  favicon: _assets/django_mindoff_logo_filled_bg.png
   font:
     text: Ubuntu
     code: JetBrains Mono
