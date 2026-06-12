@@ -10,6 +10,7 @@ on:
       - "manage.py"
       - "mindoff.py"
       - "pytest.ini"
+      - "pyproject.toml"
 
 concurrency:
   group: root-stability-${{ github.sha }}
