@@ -7,7 +7,9 @@ import pytest
 from django.http import FileResponse, HttpResponse
 from typeguard import TypeCheckError
 from ...components.response_kit import (
+    DEFAULT_RESPONSES_CSV,
     MINDOFF_RESPONSES,
+    REQUIRED_HEADERS,
     load_responses_csv,
     mo_response_kit,
 )
@@ -184,6 +186,18 @@ class TestJsonResponse(MindoffTestCase):
                 assert "ValueError" not in result["message"]["description"]
                 with caplog.at_level(logging.ERROR):
                     assert any("Traceback" in rec.message for rec in caplog.records)
+
+    def test_bundled_responses_csv_has_required_headers(self):
+        """GUARD: Bundled resources/responses.csv must always contain all REQUIRED_HEADERS.
+
+        Catches schema drift — if a header is renamed in the bundled CSV without
+        updating REQUIRED_HEADERS (or vice versa), this test fails immediately.
+        """
+        with open(DEFAULT_RESPONSES_CSV, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            actual = [h.strip().lower() for h in (reader.fieldnames or [])]
+        missing = [h for h in REQUIRED_HEADERS if h not in actual]
+        assert not missing, f"Bundled responses.csv is missing required headers: {missing}"
 
     def test_load_responses_csv_fallback_logic(self, tmp_path, monkeypatch):
         """BOUNDARY: Uses bundled fallback CSV when config/responses.csv is missing.

@@ -42,6 +42,16 @@ class MindoffValidator:
     collection, regex, path, and custom checks. Each check can either raise
     immediately, accumulate structured errors for later finalization, or return
     success directly, enabling consistent validation behavior across all kits.
+
+    **Thread safety / aggregate state:** The `mo_validation_kit` singleton stores
+    buffered errors in a shared `_errors` list when `is_aggregate=True`. This state
+    is **not thread-safe** — concurrent requests that both use aggregate mode will
+    corrupt each other's error buffer. Safe usage patterns:
+
+    - Use `is_aggregate=True` only within a single synchronous call chain, and call
+      `finalize()` (which auto-resets) or `reset()` before returning.
+    - For concurrent workloads, instantiate a local `MindoffValidator()` per request
+      instead of relying on the shared singleton.
     """
 
     def __init__(self) -> None:

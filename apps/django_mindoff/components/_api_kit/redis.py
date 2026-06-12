@@ -1,7 +1,10 @@
+import logging
 import redis
 import json
 from django.conf import settings
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 TTL_QUEUED = 60 * 60 * 24  # 24h
 TTL_COMPLETED = 60 * 60 * 1  # 1h
@@ -310,8 +313,8 @@ def release_sse_slot(user_id):
     key = sse_key(user_id)
     try:
         redis_client.decr(key)
-    except redis.RedisError:
-        pass
+    except redis.RedisError as exc:
+        logger.debug("Failed to release SSE slot for user %s: %s", user_id, exc)
 
 
 # ─────────────────────────────────────────────
