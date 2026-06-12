@@ -12,7 +12,7 @@
 Start by importing the helper kit in your API or utility module:
 
 ```python
-from django_mindoff.components.helper_kit import mo_helper_kit
+from django_mindoff import mo_helper_kit
 ```
 
 {{ MO_HELPER_KIT_FUNCTIONS }}
@@ -20,7 +20,7 @@ from django_mindoff.components.helper_kit import mo_helper_kit
 ### Example Usage
 
 ```python
-from django_mindoff.components.helper_kit import mo_helper_kit
+from django_mindoff import mo_helper_kit
 
 api_cls = mo_helper_kit.get_api_class_from_url_name(
     api_url_name="orders__create_order",

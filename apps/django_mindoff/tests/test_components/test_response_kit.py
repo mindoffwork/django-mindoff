@@ -186,34 +186,24 @@ class TestJsonResponse(MindoffTestCase):
                     assert any("Traceback" in rec.message for rec in caplog.records)
 
     def test_load_responses_csv_fallback_logic(self, tmp_path, monkeypatch):
-        """BOUNDARY: Uses internal fallback CSV when the target CSV path is missing."""
-        fake_config_dir = tmp_path / "config"
-        fake_config_dir.mkdir()
-        target_csv_path = fake_config_dir / "responses.csv"
-        resource_dir = tmp_path / "resources"
-        resource_dir.mkdir()
-        internal_csv = resource_dir / "responses.csv"
-        internal_csv.write_text(
+        """BOUNDARY: Uses bundled fallback CSV when config/responses.csv is missing.
+
+        The fallback must NOT copy the CSV to disk — it reads from the bundled resource
+        directly, leaving the project tree untouched.
+        """
+        bundled_csv = tmp_path / "bundled_responses.csv"
+        bundled_csv.write_text(
             "code,title,description,http_status\nFALLBACK,Fallback,Internal File,200"
         )
+        target_csv_path = tmp_path / "config" / "responses.csv"
 
-        class MockResourcePkg:
-            __file__ = str(resource_dir / "__init__.py")
-
-        import sys
-
-        sys.modules["apps.django_mindoff.components.managers.resources"] = (
-            MockResourcePkg
-        )
         monkeypatch.setattr(
-            "apps.django_mindoff.components.response_kit.resources",
-            MockResourcePkg,
-            raising=False,
+            "apps.django_mindoff.components.response_kit.DEFAULT_RESPONSES_CSV",
+            bundled_csv,
         )
         load_responses_csv(csv_location=str(target_csv_path))
-        assert (
-            target_csv_path.exists()
-        ), "The CSV should have been copied to the target path."
+
+        assert not target_csv_path.exists(), "Fallback must not copy CSV to disk."
         assert "FALLBACK" in MINDOFF_RESPONSES
         assert MINDOFF_RESPONSES["FALLBACK"]["title"] == "Fallback"
 

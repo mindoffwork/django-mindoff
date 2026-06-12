@@ -346,7 +346,7 @@ class TestInitManager:
         creator.optional_packages = []
         creator._install_packages()
         all_args = [arg for call in run_calls for arg in call]
-        assert "django>=5.0" in all_args
+        assert "django>=5.0,<7.0" in all_args
         assert "djangorestframework>=3.15.0,<4.0" in all_args
         assert "django-cors-headers>=4.4.0,<5.0" in all_args
         assert "django-mindoff" in all_args

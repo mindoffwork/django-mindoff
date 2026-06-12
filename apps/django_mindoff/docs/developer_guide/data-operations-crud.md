@@ -53,7 +53,7 @@ model_frms = {
 ### Example Usage
 
 ```python
-from django_mindoff.components.crud_kit import mo_crud_kit
+from django_mindoff import mo_crud_kit
 from apps.orders.models import OrderModel
 
 # CREATE

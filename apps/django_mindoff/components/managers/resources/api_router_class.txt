@@ -1,4 +1,4 @@
-from django_mindoff.components.api_kit import mo_api_kit
+from django_mindoff import mo_api_kit
 
 
 class SampleRouterClassName(mo_api_kit.APIVersionRouter):

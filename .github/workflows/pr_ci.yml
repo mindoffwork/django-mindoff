@@ -33,7 +33,7 @@ jobs:
         run: django-mindoff init --help
 
   test:
-    name: Test (Python ${{ matrix.python-version }})
+    name: Test (Python ${{ matrix.python-version }}, Django ${{ matrix.django-version }}${{ matrix.drf-pin && format(', DRF floor, Polars floor') || '' }})
     runs-on: ubuntu-latest
     if: github.event.action != 'labeled' && github.event.action != 'unlabeled' && github.event.action != 'edited'
     services:
@@ -45,6 +45,14 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
+        django-version: ["5.0", "5.2", "6.0"]
+        include:
+          # Floor-pin: verify minimum stated DRF and Polars versions are still supported.
+          # Regular matrix jobs implicitly test the ceiling (pip resolves to latest within bounds).
+          - python-version: "3.13"
+            django-version: "6.0"
+            drf-pin: "djangorestframework==3.15.0"
+            polars-pin: "polars==1.39.0"
     env:
       DJANGO_SETTINGS_MODULE: apps.django_mindoff.tests.settings
       PYTHONDONTWRITEBYTECODE: "1"
@@ -61,7 +69,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[internal]"
-          pip install pytest-cov
+          pip install pytest-cov "django~=${{ matrix.django-version }}.0" ${{ matrix.drf-pin }} ${{ matrix.polars-pin }}
+
+      - name: Show key dependency versions
+        run: pip show djangorestframework polars | grep -E "^(Name|Version):"
 
       - name: Django system checks
         run: python manage.py check --settings=apps.django_mindoff.tests.settings

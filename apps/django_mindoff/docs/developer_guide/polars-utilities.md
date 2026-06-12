@@ -12,7 +12,7 @@
 Start by importing the polars kit in your API or utility module:
 
 ```python
-from django_mindoff.components.polars_kit import mo_polars_kit
+from django_mindoff import mo_polars_kit
 ```
 
 {{ MO_POLARS_KIT_FUNCTIONS }}
@@ -21,7 +21,7 @@ from django_mindoff.components.polars_kit import mo_polars_kit
 
 ```python
 import polars as pl
-from django_mindoff.components.polars_kit import mo_polars_kit
+from django_mindoff import mo_polars_kit
 
 frm = pl.DataFrame({
     "email": ["A@EXAMPLE.COM", None],

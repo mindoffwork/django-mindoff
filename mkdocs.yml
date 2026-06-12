@@ -35,6 +35,7 @@ nav:
   - Community:
       - Overview: community/index.md
       - Contribution Guide: community/contribution-guide.md
+      - Stability & SemVer Policy: community/stability-policy.md
       - Deployment & Versioning: community/deployment-versioning.md
       - Security Policy: community/security-policy.md
 

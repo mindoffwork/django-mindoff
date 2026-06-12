@@ -11,7 +11,6 @@ import io
 import logging
 import mimetypes
 import os
-import shutil
 import textwrap
 import traceback
 import uuid
@@ -60,7 +59,7 @@ class MindoffResponseHandler:
     Typical usage:
 
     ```python
-    from django_mindoff.components.response_kit import mo_response_kit
+    from django_mindoff import mo_response_kit
     return mo_response_kit.json_response(...)
     ```
     """
@@ -79,7 +78,7 @@ class MindoffResponseHandler:
         Usage:
 
         ```python
-        from django_mindoff.components.response_kit import mo_response_kit
+        from django_mindoff import mo_response_kit
 
         return mo_response_kit.json_response(
             code="SUCCESS",
@@ -164,7 +163,7 @@ class MindoffResponseHandler:
         Usage:
 
         ```python
-        from django_mindoff.components.response_kit import mo_response_kit
+        from django_mindoff import mo_response_kit
         import io
 
         return mo_response_kit.file_response("exports/orders.csv")
@@ -228,7 +227,7 @@ class MindoffResponseHandler:
         Usage:
 
         ```python
-        from django_mindoff.components.response_kit import mo_response_kit
+        from django_mindoff import mo_response_kit
         return mo_response_kit.text_response("ok", status_code=200)
         ```
         """
@@ -245,7 +244,7 @@ class MindoffResponseHandler:
         Usage:
 
         ```python
-        from django_mindoff.components.response_kit import mo_response_kit
+        from django_mindoff import mo_response_kit
         return mo_response_kit.html_response("<h1>Ready</h1>", status_code=200)
         ```
         """
@@ -270,18 +269,9 @@ def load_responses_csv(csv_location=None):
     """
     csv_path = csv_location or _get_csv_path()
     if not os.path.exists(csv_path):
-        try:
-            from .managers import resources as resource_pkg
-
-            fallback_path = os.path.join(
-                os.path.dirname(resource_pkg.__file__), RESPONSES_FILE_NAME
-            )
-            if os.path.exists(fallback_path):
-                os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-                shutil.copy2(fallback_path, csv_path)
-            else:
-                raise FileNotFoundError
-        except (ImportError, FileNotFoundError):
+        if DEFAULT_RESPONSES_CSV.exists():
+            csv_path = str(DEFAULT_RESPONSES_CSV)
+        else:
             raise FileNotFoundError(
                 "no responses.csv found in config folder or django-mindoff resources folder. "
                 "Is django mindoff installed properly globally?"

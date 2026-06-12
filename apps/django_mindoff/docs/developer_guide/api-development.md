@@ -87,8 +87,8 @@ Queue-specific attributes are documented in Queue Mode API - [Mindoff Queue API 
 
 ```python
 from typing import Literal
-from django_mindoff.components.api_kit import MindoffAPIMixin
-from django_mindoff.components.response_kit import mo_response_kit
+from django_mindoff import MindoffAPIMixin
+from django_mindoff import mo_response_kit
 
 
 class CreateOrderV1APIView(MindoffAPIMixin):
@@ -223,7 +223,7 @@ For detailed queue behavior, endpoints, and progress checkpoints, see [Queue Mod
 Each API is wrapped by a version router in `apps/<app_name>/views.py`:
 
 ```python
-from django_mindoff.components.api_kit import mo_api_kit
+from django_mindoff import mo_api_kit
 from .apis.create_order import CreateOrderV1APIView
 
 

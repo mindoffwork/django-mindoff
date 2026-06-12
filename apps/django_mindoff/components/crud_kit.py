@@ -63,7 +63,7 @@ class MindoffCRUDHandler:
         Usage:
 
         ```python
-        from django_mindoff.components.crud_kit import mo_crud_kit
+        from django_mindoff import mo_crud_kit
 
         status, valid_model_frms, invalid_model_frms = mo_crud_kit.create(
             {
@@ -168,7 +168,7 @@ class MindoffCRUDHandler:
         Usage:
 
         ```python
-        from django_mindoff.components.crud_kit import mo_crud_kit
+        from django_mindoff import mo_crud_kit
 
         frm, stats = mo_crud_kit.read(
             OrderModel.objects.filter(is_active=True).values(),
@@ -293,7 +293,7 @@ class MindoffCRUDHandler:
         Usage:
 
         ```python
-        from django_mindoff.components.crud_kit import mo_crud_kit
+        from django_mindoff import mo_crud_kit
 
         status, valid_model_frms, invalid_model_frms = mo_crud_kit.update(
             {

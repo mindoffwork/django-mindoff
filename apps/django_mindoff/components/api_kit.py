@@ -41,7 +41,7 @@ class MindoffAPIMixin(APIView):
     This class provides common functionality for all Mindoff APIs.
 
     Usage Example::
-        from django_mindoff.components.api_kit import MindoffAPIMixin
+        from django_mindoff import MindoffAPIMixin
 
         class MyAPI(MindoffAPIMixin):
             api_url_name = "my_api"

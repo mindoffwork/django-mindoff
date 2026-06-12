@@ -26,6 +26,9 @@ site/
 media/
 staticfiles/
 
+# Test-run pollution (response_kit fallback must not write here)
+apps/django_mindoff/config/
+
 # Testing
 .pytest_cache/
 .coverage
