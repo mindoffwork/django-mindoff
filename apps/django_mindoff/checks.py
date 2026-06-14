@@ -13,6 +13,7 @@ REQUIRED_INTEGRATION_DEPENDENCIES = [
     ("django-ratelimit", "django_ratelimit"),
     ("typeguard", "typeguard"),
     ("polars", "polars"),
+    ("connectorx", "connectorx"),
     ("pandas", "pandas"),
     ("sqlalchemy", "sqlalchemy"),
     ("orjson", "orjson"),

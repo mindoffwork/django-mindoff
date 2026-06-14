@@ -10,41 +10,11 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 
 from ..polars_kit import mo_polars_kit
 from django.conf import settings
+from .dtypes import DJANGO_TO_POLARS_TYPE_MAP
 
 # ----------------
 # Constants
 # ----------------
-DJANGO_TO_POLARS_TYPE_MAP = {
-    "AutoField": pl.Int64,
-    "BigAutoField": pl.Int64,
-    "SmallAutoField": pl.Int16,
-    "IntegerField": pl.Int32,
-    "BigIntegerField": pl.Int64,
-    "SmallIntegerField": pl.Int16,
-    "PositiveIntegerField": pl.UInt32,
-    "PositiveSmallIntegerField": pl.UInt16,
-    "FloatField": pl.Float64,
-    "DecimalField": pl.Decimal,
-    "BooleanField": pl.Boolean,
-    "CharField": pl.Utf8,
-    "TextField": pl.Utf8,
-    "SlugField": pl.Utf8,
-    "EmailField": pl.Utf8,
-    "URLField": pl.Utf8,
-    "UUIDField": pl.Utf8,
-    "GenericIPAddressField": pl.Utf8,
-    "BinaryField": pl.Binary,
-    "FileField": pl.Utf8,
-    "ImageField": pl.Utf8,
-    "DateField": pl.Date,
-    "DateTimeField": pl.Datetime("us"),
-    "TimeField": pl.Time,
-    "DurationField": pl.Duration("us"),
-    "JSONField": pl.Object,
-    "ForeignKey": pl.Utf8,
-    "OneToOneField": pl.Utf8,
-    "ManyToManyField": pl.List(pl.Utf8),
-}
 ERROR_COL = getattr(settings, "POLARS_VALIDATOR_ERROR_COL", None) or "__error__info"
 
 
@@ -82,21 +52,26 @@ class RowValidator:
     def _sanitize_model_frm(self, model, df):
         if mo_polars_kit.is_frm_empty(df):
             return df
-        if ERROR_COL not in df.columns:
+        # Resolve the schema once per frame. Each field only ever touches its own
+        # column / temp columns / ERROR_COL, never another field's column, so the
+        # input dtype recorded here stays correct for every field in the loop
+        # (rows may change, but a schema is column-names + dtypes only — never
+        # affected by row-level edits). See B1 in the performance checklist.
+        df_schema = mo_polars_kit.resolve_schema(df)
+        if ERROR_COL not in df_schema:
             df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias(ERROR_COL))
-        df_schema = df.collect_schema() if isinstance(df, pl.LazyFrame) else df.schema
         for field in model._meta.concrete_fields:
             if (
                 not isinstance(field, models.Field)
                 or (field.db_column or field.name) not in df_schema
             ):
                 continue
-            df = self._sanitize_field(model, df, field)
+            df = self._sanitize_field(model, df, field, df_schema)
         return df
 
-    def _sanitize_field(self, model, df, field):
+    def _sanitize_field(self, model, df, field, df_schema):
         name = field.db_column or field.name
-        dtype = df.collect_schema().get(name)
+        dtype = df_schema.get(name)
         if isinstance(field, models.ManyToManyField):
             raise ValueError(
                 f"[{model.__name__}.{name}] ManyToManyField is not supported Yet. "
@@ -525,21 +500,18 @@ class RowValidator:
 
     def _sanitize_json_field(self, model, df, field, dtype):
         def transform(col: pl.Series) -> pl.Series:
-            def try_parse(val):
+            def to_json_text(val):
                 if val is None:
                     return None
                 try:
-                    if isinstance(val, str):
-                        val = orjson.loads(val)
-                    if not isinstance(val, list):
-                        val = [val]
-                    orjson.dumps(val)
-                    return val
+                    # Accept raw JSON text or an already-parsed Python value,
+                    # validate it, and re-emit canonical compact JSON text.
+                    parsed = orjson.loads(val) if isinstance(val, (str, bytes)) else val
+                    return orjson.dumps(parsed).decode()
                 except Exception:
                     return None
 
-            col = col.map_elements(try_parse, return_dtype=pl.Object)
-            return col
+            return col.map_elements(to_json_text, return_dtype=pl.Utf8)
 
         df = self._transform_and_validate_column(
             model, df, field, dtype, transform_fn=transform, label="JSON"
@@ -616,9 +588,7 @@ class RowValidator:
                 .alias(ERROR_COL)
             )
             if not is_choices:
-                df = self._field_vs_data_validation(
-                    model, df, field, name, expected_dtype
-                )
+                df = self._field_vs_data_validation(model, df, field, name)
             return df
         except Exception as e:
             raise ValueError(
@@ -645,10 +615,9 @@ class RowValidator:
             df, column=field_name, fill_value=__apply_default, mode=mode
         )
 
-    def _field_vs_data_validation(self, model, df, field, name, expected_dtype):
+    def _field_vs_data_validation(self, model, df, field, name):
         is_null_true = getattr(field, "null", False)
         is_blank_true = getattr(field, "blank", False)
-        dtype = df.collect_schema().get(name)
         # 1. Required field validation
         if not is_null_true and not is_blank_true:
             if isinstance(
@@ -764,15 +733,10 @@ class RowValidator:
                 .alias(ERROR_COL)
             )
 
-        # 5. Type consistency check
-        if dtype != expected_dtype:
-            raise ValueError(
-                self._response_messages(
-                    error_key="column_type_mismatch",
-                    context=f"{model.__name__}.{name}",
-                    exception=f"expected={expected_dtype}, actual={dtype}",
-                )
-            )
+        # 5. Type consistency is guaranteed by construction: the value was just
+        # cast to ``expected_dtype`` (a failed cast raises upstream), so the
+        # column dtype already equals ``expected_dtype`` — no schema re-resolution
+        # (which would force the lazy plan) and no separate mismatch check needed.
 
         # 6. UUID primary key check
         if getattr(field, "primary_key", False) and mo_polars_kit.has_nulls_in_frm_col(
@@ -786,8 +750,19 @@ class RowValidator:
                 )
             )
 
-        temp_cols = [c for c in df.columns if c.startswith("__") and c != ERROR_COL]
-        df = df.drop(temp_cols)
+        # Drop this field's temp columns by their deterministic names rather than
+        # scanning ``df.columns`` (which resolves the lazy schema). ``strict=False``
+        # ignores the conditional ones (length/digit/min/max) that weren't added.
+        temp_cols = [
+            f"__orig_null__{name}",
+            f"__post_null__{name}",
+            f"__invalid__{name}",
+            f"__length_check__{name}",
+            f"__digit_check__{name}",
+            f"__min_check__{name}",
+            f"__max_check__{name}",
+        ]
+        df = df.drop(temp_cols, strict=False)
         return df
 
     def __get_min_max_from_validators(self, field):

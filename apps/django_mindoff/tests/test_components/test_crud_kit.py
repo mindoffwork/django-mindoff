@@ -406,21 +406,21 @@ class TestRowValidatorFieldSanitisation:
         )
         assert df["ip"][0] is None
 
-    def test_jsonfield_string_parsed_to_list(self):
-        """ACCEPTANCE: Jsonfield string parsed to list."""
+    def test_jsonfield_string_normalized_to_compact_text(self):
+        """ACCEPTANCE: JSON text is validated and normalized to compact JSON text."""
         df = self._run(
             {"meta": models.JSONField(null=True)},
             {"id": [_make_uuid()], "meta": ['{"key": "value"}']},
         )
-        assert df["meta"][0] == [{"key": "value"}]
+        assert df["meta"][0] == '{"key":"value"}'
 
-    def test_jsonfield_dict_wrapped_in_list(self):
-        """ACCEPTANCE: Jsonfield dict wrapped in list."""
+    def test_jsonfield_dict_serialized_to_text(self):
+        """ACCEPTANCE: A JSON value keeps its structure, serialized to JSON text."""
         df = self._run(
             {"meta": models.JSONField(null=True)},
             {"id": [_make_uuid()], "meta": [{"key": "value"}]},
         )
-        assert df["meta"][0] == [{"key": "value"}]
+        assert df["meta"][0] == '{"key":"value"}'
 
     def test_jsonfield_invalid_string_becomes_null(self):
         """REJECTION: Jsonfield invalid string becomes null."""
@@ -889,7 +889,7 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
             counts=[2, 1],
         )
         author_only = {self._author_model: update_dict[self._author_model]}
-        status, _, _ = mo_crud_kit.update(author_only, is_validate=False)
+        status, _, _ = mo_crud_kit.update(author_only, validation_level="none")
         assert status == "ok"
 
     @pytest.mark.parametrize("is_temp_table", [True, False])
@@ -926,15 +926,24 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         )
         assert set(result[self._author_model].columns) == set(author_df.columns)
 
-    def test_create_no_validate_bad_uuid_raises_runtime_error(self):
-        """REJECTION: Create no validate bad uuid raises runtime error."""
-        df_dict = self.mo_mock_model_frms(
-            models=[self._author_model],
-            counts=[2],
-            is_uuid_hex=False,
+    def test_create_no_validate_persists_unchecked_data(self):
+        """C3/contract: validation_level='none' persists data as-is, no row checks.
+
+        No validation runs (not even column normalization), so the caller's
+        frame is written verbatim — the documented "may persist unsafe data"
+        trade-off. We prove the row pass was skipped by leaving an untrimmed
+        name that RowValidator would otherwise strip; it persists verbatim.
+        """
+        pk_col = self._author_model._meta.pk.column
+        author_id = uuid.uuid4().hex
+        df = pl.DataFrame(
+            {pk_col: [author_id], "name": ["  Spaced  "], "nickname": [None]}
         )
-        with pytest.raises(RuntimeError):
-            mo_crud_kit.create(df_dict, is_validate=False)
+        status, _, _ = mo_crud_kit.create(
+            {self._author_model: df}, validation_level="none"
+        )
+        assert status == "ok"
+        assert self._author_model.objects.get(pk=author_id).name == "  Spaced  "
 
     def test_create_all_invalid_rows_returns_fail(self):
         """REJECTION: Create all invalid rows returns fail."""
@@ -1012,7 +1021,382 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         mo_crud_kit.create(df_dict, is_partial=False)
         # Try inserting same PK again — DB should reject
         with pytest.raises(RuntimeError):
-            mo_crud_kit.create(df_dict, is_validate=False)
+            mo_crud_kit.create(df_dict, validation_level="none")
+
+    def test_read_auto_engine_canonical_dtypes(self):
+        """ACCEPTANCE: Auto engine returns canonical UUID/FK/int dtypes."""
+        self._seed(2, 3)
+        df, _ = mo_crud_kit.read(self._book_model.objects.all().values())
+        assert df.schema["id"] == pl.Utf8
+        assert df.schema["author_ref_id"] == pl.Utf8
+        assert df.schema["pages"] == pl.Int32
+        # UUIDs rendered lowercase + hyphenated (canonical Django read form)
+        sample = df["id"][0]
+        assert sample == sample.lower()
+        assert len(sample) == 36 and sample.count("-") == 4
+
+    def test_read_auto_then_update_roundtrip(self):
+        """ACCEPTANCE: A frame produced by read feeds straight back into update."""
+        self._seed(2, 2)
+        df, _ = mo_crud_kit.read(self._book_model.objects.all().values())
+        status, _, invalid = mo_crud_kit.update({self._book_model: df})
+        assert status == "ok"
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+
+    def test_read_iterator_engine_matches_count(self):
+        """ACCEPTANCE: Iterator engine returns the legacy frame unchanged."""
+        valid = self._seed(4, 2)
+        expected = valid[self._book_model].shape[0]
+        df, stats = mo_crud_kit.read(
+            self._book_model.objects.all().values(), engine="iterator"
+        )
+        assert df.shape[0] == expected == stats["total_count"]
+
+    def test_read_connectorx_falls_back_on_memory_sqlite(self):
+        """BOUNDARY: connectorx engine warns and falls back for in-memory SQLite."""
+        self._seed(3, 1)
+        with pytest.warns(RuntimeWarning):
+            df, stats = mo_crud_kit.read(
+                self._book_model.objects.all().values(), engine="connectorx"
+            )
+        # Fallback still yields normalized canonical output.
+        assert df.shape[0] == stats["total_count"]
+        assert df.schema["id"] == pl.Utf8
+
+    def test_read_subset_then_update_fetches_missing_columns(self):
+        """ACCEPTANCE: read() subset (hyphenated UUIDs) -> update fills missing cols.
+
+        Guards the UUID PK join in `_update__fill_missing_columns`: read returns
+        hyphenated UUIDs while the DB casts UUID PKs to dashless hex, so the join
+        must canonicalize both sides.
+        """
+        self._seed(2, 3)
+        # Read only id + title; pages and the FK column are intentionally absent.
+        subset, _ = mo_crud_kit.read(
+            self._book_model.objects.all().values("id", "title")
+        )
+        status, _, _ = mo_crud_kit.update({self._book_model: subset})
+        assert status == "ok"
+        # pages must be preserved (would be NULL if the PK join had failed).
+        after, _ = mo_crud_kit.read(self._book_model.objects.all().values())
+        assert after["pages"].null_count() == 0
+
+    @pytest.mark.parametrize("is_lazy", [True, False])
+    def test_read_fast_path_lazy_variants(self, is_lazy):
+        """ACCEPTANCE: Fast path honors is_lazy in streaming and pagination."""
+        self._seed(3, 2)
+        qs = self._book_model.objects.all().values()
+        stream, _ = mo_crud_kit.read(qs, is_lazy=is_lazy)
+        page, _ = mo_crud_kit.read(qs, page_number=1, batch_size=2, is_lazy=is_lazy)
+        expected = pl.LazyFrame if is_lazy else pl.DataFrame
+        assert isinstance(stream, expected)
+        assert isinstance(page, expected)
+
+    def test_read_with_stats_false_skips_queries(self):
+        """A2: with_stats=False skips exists()/count() and nulls the counts."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self._seed(3, 5)
+        qs = self._book_model.objects.all().values()
+        with CaptureQueriesContext(connection) as with_stats:
+            _, s_true = mo_crud_kit.read(qs, with_stats=True)
+        with CaptureQueriesContext(connection) as without_stats:
+            frm, s_false = mo_crud_kit.read(qs, with_stats=False)
+        assert len(without_stats) < len(with_stats)
+        assert s_false["total_count"] is None and s_false["total_pages"] is None
+        assert s_true["total_count"] == frm.shape[0]
+
+    def test_read_pagination_no_stats_has_next(self):
+        """A2: pagination with_stats=False derives has_next via one extra row."""
+        self._seed(1, 3)  # 1 author -> 3 books
+        qs = self._book_model.objects.all().values()
+        first, s1 = mo_crud_kit.read(qs, page_number=1, batch_size=2, with_stats=False)
+        last, s2 = mo_crud_kit.read(qs, page_number=2, batch_size=2, with_stats=False)
+        assert first.shape[0] == 2 and s1["has_next"] is True
+        assert s1["has_previous"] is False and s1["total_count"] is None
+        assert last.shape[0] == 1 and s2["has_next"] is False
+        assert s2["has_previous"] is True
+
+    def test_read_lazy_streaming_is_real_scan(self):
+        """A3: is_lazy streaming returns a real (disk-backed) scan, not .lazy()."""
+        self._seed(1, 6)  # 6 books
+        qs = self._book_model.objects.all().values()
+        lf, _ = mo_crud_kit.read(qs, is_lazy=True, batch_size=2)
+        assert isinstance(lf, pl.LazyFrame)
+        # The plan is a file scan, not an in-memory frame.
+        assert "scan" in lf.explain().lower()
+        collected = lf.collect()
+        assert collected.shape[0] == 6
+        assert collected.schema["id"] == pl.Utf8
+
+    def test_read_batches_streams_chunks(self):
+        """A4: read_batches yields memory-bounded normalized chunks."""
+        self._seed(1, 5)  # 5 books
+        gen = mo_crud_kit.read_batches(
+            self._book_model.objects.all().values(), batch_size=2
+        )
+        assert not isinstance(gen, (list, tuple))  # a generator, not materialized
+        batches = list(gen)
+        assert [b.shape[0] for b in batches] == [2, 2, 1]
+        assert all(b.schema["id"] == pl.Utf8 for b in batches)
+        assert sum(b.shape[0] for b in batches) == 5
+
+    def test_read_batches_iterator_engine(self):
+        """A4: read_batches honors the iterator engine (legacy frames)."""
+        self._seed(1, 3)  # 3 books
+        batches = list(
+            mo_crud_kit.read_batches(
+                self._book_model.objects.all().values(),
+                batch_size=2,
+                engine="iterator",
+            )
+        )
+        assert sum(b.shape[0] for b in batches) == 3
+
+    def test_create_lazyframe_streams_in_chunks(self):
+        """B2: create() writes a LazyFrame in bounded-memory chunks."""
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[7])
+        lazy = {self._author_model: df_dict[self._author_model].lazy()}
+        status, _, invalid = mo_crud_kit.create(lazy, batch_size=3)
+        assert status == "ok"
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+        assert self._author_model.objects.count() == 7
+
+    def test_update_lazyframe_streams_in_chunks(self):
+        """B2: update() stages a LazyFrame to the temp table in chunks, then merges."""
+        self._seed(4, 0)  # 4 authors
+        frm, _ = mo_crud_kit.read(self._author_model.objects.all().values())
+        frm = frm.with_columns(pl.lit("Streamed").alias("name"))
+        status, _, invalid = mo_crud_kit.update(
+            {self._author_model: frm.lazy()}, batch_size=2
+        )
+        assert status == "ok"
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+        names = set(self._author_model.objects.values_list("name", flat=True))
+        assert names == {"Streamed"}
+
+    def test_lazy_pipeline_emits_no_schema_resolution_warning(self):
+        """B3: lazy CRUD must never trigger Polars' schema-resolution warning.
+
+        ``LazyFrame.schema``/``.columns`` resolve the plan and emit a
+        ``PerformanceWarning``; B1 replaced every such access with
+        ``collect_schema()``. We promote that warning to an error and drive the
+        full lazy pipeline (validated create + read eager/lazy + validated
+        update, which exercises the row/FK validators, the valid/invalid
+        splitter, and missing-column fill) so any regression fails the suite.
+        This drives Python's ``warnings`` machinery directly, so it holds even
+        under pytest's ``-p no:warnings``.
+        """
+        import warnings as _warnings
+
+        from polars.exceptions import PerformanceWarning
+
+        seeded = self._seed(3, 2)
+        update_dict = self.mo_update_mock_model_frms(
+            seeded,
+            exclude_columns=[],
+            modify=[{0: {"name": "Lazy Honest"}}],
+            counts=[3, 2],
+        )
+
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("error", PerformanceWarning)
+
+            # Validated create from a LazyFrame.
+            create_lazy = self.mo_mock_model_frms(
+                models=[self._author_model], counts=[4]
+            )
+            create_status, _, _ = mo_crud_kit.create(
+                {self._author_model: create_lazy[self._author_model].lazy()},
+                is_partial=False,
+            )
+            assert create_status == "ok"
+
+            # Read both eager and as a genuine lazy scan, then collect it.
+            qs = self._author_model.objects.all().values()
+            eager_frm, _ = mo_crud_kit.read(qs)
+            lazy_frm, _ = mo_crud_kit.read(qs, is_lazy=True)
+            assert isinstance(lazy_frm, pl.LazyFrame)
+            lazy_frm.collect()
+
+            # Validated update from a LazyFrame (row + FK validation, splitter,
+            # and missing-column fill all run on the lazy frame).
+            update_status, _, _ = mo_crud_kit.update(
+                {self._author_model: update_dict[self._author_model].lazy()},
+                is_partial=True,
+            )
+            assert update_status in ("ok", "partial_ok")
+
+    @pytest.mark.parametrize("batch_size", [1, 2, 3, 7, 1000])
+    def test_create_honors_batch_size_chunking(self, batch_size, monkeypatch):
+        """C1/C2: create() inserts in batch_size chunks via SQLAlchemy core."""
+        from ...components._crud_kit import crud_processor as cp
+
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[10])
+
+        seen_batches = []
+        original = cp.CRUDProcessor._fast_insert
+
+        def _spy(self, df, table, conn, bs):
+            for frm in self._iter_write_frames(df, bs):
+                seen_batches.append(frm.height)
+            # Re-drive the real insert so the rows actually persist.
+            return original(self, df, table, conn, bs)
+
+        monkeypatch.setattr(cp.CRUDProcessor, "_fast_insert", _spy)
+
+        status, _, _ = mo_crud_kit.create(df_dict, batch_size=batch_size)
+        assert status == "ok"
+        assert self._author_model.objects.count() == 10
+        # Every chunk is bounded by batch_size and they sum to all rows.
+        assert seen_batches and all(h <= batch_size for h in seen_batches)
+        assert sum(seen_batches) == 10
+
+    def test_create_columns_only_skips_row_and_fk_validation(self):
+        """C3: columns_only writes DB-ready rows and skips the row/FK passes.
+
+        The caller supplies database-ready values; only column normalization runs.
+        We prove the row pass is skipped by leaving an untrimmed title that
+        RowValidator would otherwise strip — it must persist verbatim.
+        """
+        seeded = self._seed(1, 0)  # one validated author in the DB
+        author_pk = seeded[self._author_model]["id"][0]
+        book = self._book_model
+        pk_col = book._meta.pk.column
+        fk_col = next(
+            f.column
+            for f in book._meta.concrete_fields
+            if isinstance(f, models.ForeignKey)
+        )
+        book_id = uuid.uuid4().hex
+        book_df = pl.DataFrame(
+            {
+                pk_col: [book_id],
+                "title": ["  Untrimmed  "],
+                "pages": [42],
+                fk_col: [author_pk],
+            }
+        )
+
+        status, _, invalid = mo_crud_kit.create(
+            {book: book_df}, validation_level="columns_only"
+        )
+        assert status == "ok"
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+        assert book.objects.count() == 1
+        # RowValidator (which trims text) was skipped, so the title is verbatim.
+        assert book.objects.get(pk=book_id).title == "  Untrimmed  "
+
+    def test_create_columns_only_missing_pk_rejected_at_write(self):
+        """C3: columns_only trusts the caller; a missing PK is rejected by the DB.
+
+        ColumnValidator normalizes shape (adds the missing PK column as null) but
+        does not synthesize a value, so the NOT NULL primary key is enforced at
+        write time and surfaces as a wrapped RuntimeError.
+        """
+        df_no_pk = pl.DataFrame({"name": ["NoPk"]})
+        with pytest.raises(RuntimeError):
+            mo_crud_kit.create(
+                {self._author_model: df_no_pk}, validation_level="columns_only"
+            )
+
+    def test_update_columns_only_skips_row_validation(self):
+        """C3: update() shares validation_level; columns_only skips the row pass.
+
+        An untrimmed name persists verbatim, proving RowValidator was skipped
+        while the missing-column fetch and column normalization still ran.
+        """
+        seeded = self._seed(1, 0)
+        author_pk = seeded[self._author_model]["id"][0]
+        pk_col = self._author_model._meta.pk.column
+        df = pl.DataFrame({pk_col: [author_pk], "name": ["  Kept  "]})
+
+        status, _, invalid = mo_crud_kit.update(
+            {self._author_model: df}, validation_level="columns_only"
+        )
+        assert status == "ok"
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+        assert self._author_model.objects.get(pk=author_pk).name == "  Kept  "
+
+    def test_update_skip_db_fill_skips_prefetch(self):
+        """E1: skip_db_fill skips the missing-column back-fill prefetch.
+
+        With the prefetch (default), an omitted column is fetched from the DB and
+        preserved. With skip_db_fill it is not fetched, so it is written as NULL.
+        """
+        seeded = self._seed(1, 0)
+        author_pk = seeded[self._author_model]["id"][0]
+        pk_col = self._author_model._meta.pk.column
+        # Partial frame: id + name only (nickname omitted).
+        partial = pl.DataFrame({pk_col: [author_pk], "name": ["NewName"]})
+
+        # Default: prefetch back-fills nickname from the DB, preserving it.
+        self._author_model.objects.filter(pk=author_pk).update(nickname="KeepMe")
+        mo_crud_kit.update({self._author_model: partial.clone()})
+        obj = self._author_model.objects.get(pk=author_pk)
+        assert obj.name == "NewName"
+        assert obj.nickname == "KeepMe"
+
+        # skip_db_fill: no prefetch, so the omitted nickname is written as NULL.
+        self._author_model.objects.filter(pk=author_pk).update(nickname="KeepMe2")
+        mo_crud_kit.update({self._author_model: partial.clone()}, skip_db_fill=True)
+        obj = self._author_model.objects.get(pk=author_pk)
+        assert obj.name == "NewName"
+        assert obj.nickname is None
+
+    def test_update_skip_db_fill_still_canonicalizes_pk(self):
+        """E1: skip_db_fill keeps PK canonicalization so upsert matching works.
+
+        Uses ``columns_only`` (no RowValidator) so the only place that can
+        canonicalize the hyphenated PK is the prefetch step — proving it still
+        runs even when the DB fetch is skipped.
+        """
+        seeded = self._seed(1, 0)
+        dashless = seeded[self._author_model]["id"][0]
+        hyphenated = str(uuid.UUID(dashless))  # same id, canonical hyphenated form
+        pk_col = self._author_model._meta.pk.column
+        full = pl.DataFrame(
+            {pk_col: [hyphenated], "name": ["Canon"], "nickname": ["Nick"]}
+        )
+
+        status, _, _ = mo_crud_kit.update(
+            {self._author_model: full},
+            skip_db_fill=True,
+            validation_level="columns_only",
+        )
+        assert status == "ok"
+        # Matched the existing (dashless-stored) row: updated in place, no insert.
+        assert self._author_model.objects.count() == 1
+        assert self._author_model.objects.get(pk=dashless).name == "Canon"
+
+    def test_reflect_table_caches_and_validates_existence(self):
+        """D2: reflected Table is cached per engine; a missing table errors clearly."""
+        from ...components._crud_kit.crud_processor import CRUDProcessor
+
+        self._seed(1, 0)
+        proc = CRUDProcessor({self._author_model: pl.DataFrame()})
+        table_db = self._author_model._meta.db_table
+        with proc.engine.begin() as conn:
+            t1 = proc._reflect_table(conn, table_db)
+            t2 = proc._reflect_table(conn, table_db)
+            assert t1 is t2  # second call served from the per-engine cache
+            with pytest.raises(ValueError, match="does not exist"):
+                proc._reflect_table(conn, "no_such_table_xyz")
+
+    def test_iter_write_frames_chunking(self):
+        """B2: the write chunker slices eager/lazy frames and never drops empties."""
+        from ...components._crud_kit.crud_processor import CRUDProcessor
+
+        proc = CRUDProcessor({})
+        eager = list(proc._iter_write_frames(pl.DataFrame({"a": list(range(5))}), 2))
+        assert [c.height for c in eager] == [2, 2, 1]
+        lazy = list(proc._iter_write_frames(pl.LazyFrame({"a": list(range(5))}), 2))
+        assert sum(c.height for c in lazy) == 5
+        empty = list(
+            proc._iter_write_frames(pl.LazyFrame(schema={"a": pl.Int64}), 2)
+        )
+        assert len(empty) == 1 and empty[0].height == 0
 
     @pytest.fixture(autouse=True, scope="class")
     def _class_app(self, request):
@@ -1190,6 +1574,53 @@ class TestCRUDProcessorEngine:
         assert processor.dialect == "mysql+pymysql"
         assert captured["url"] == "mysql+pymysql://localhost/plain_db"
 
+    @pytest.mark.django_db
+    def test_sqlite_engine_not_cached(self):
+        """D1: the SQLite engine is rebuilt per call (bound to Django's conn)."""
+        from ...components._crud_kit.crud_processor import CRUDProcessor
+
+        model = self._dummy_model("DummyModelSqliteEngine")
+        p1 = CRUDProcessor({model: pl.DataFrame()})
+        p2 = CRUDProcessor({model: pl.DataFrame()})
+        assert p1.engine is not p2.engine
+
+    def test_non_sqlite_engine_cached_per_settings(self, monkeypatch):
+        """D1: non-SQLite engines are cached per resolved connection params."""
+        from ...components._crud_kit import crud_processor as cp
+
+        cp._ENGINE_CACHE.clear()
+        calls = {"n": 0}
+
+        def _fake_create_engine(url, *args, **kwargs):
+            calls["n"] += 1
+            return object()
+
+        monkeypatch.setattr(cp, "create_engine", _fake_create_engine)
+        monkeypatch.setattr(cp.connection, "ensure_connection", lambda: None)
+
+        model = self._dummy_model("DummyModelEngineCache")
+        base = {
+            **settings.DATABASES["default"],
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": "cache_db",
+            "USER": "u",
+            "PASSWORD": "p",
+            "HOST": "h",
+            "PORT": "1",
+        }
+        with override_settings(DATABASES={"default": base}):
+            e1 = cp.CRUDProcessor({model: pl.DataFrame()}).engine
+            e2 = cp.CRUDProcessor({model: pl.DataFrame()}).engine
+        assert e1 is e2
+        assert calls["n"] == 1  # second build served from cache
+
+        # Different connection params -> distinct cache entry, fresh engine build.
+        base2 = {**base, "NAME": "other_db"}
+        with override_settings(DATABASES={"default": base2}):
+            e3 = cp.CRUDProcessor({model: pl.DataFrame()}).engine
+        assert e3 is not e1
+        assert calls["n"] == 2
+
     @staticmethod
     def _dummy_model(name: str = "DummyModel"):
         meta_cls = type("Meta", (), {"app_label": "tests", "db_table": "dummy"})
@@ -1264,9 +1695,11 @@ class TestCRUDProcessorUnitPaths:
     class _FakeConn:
         def __init__(self):
             self.executed = []
+            self.exec_params = []
 
-        def execute(self, stmt):
+        def execute(self, stmt, *args):
             self.executed.append(stmt)
+            self.exec_params.append(args[0] if args else None)
 
     class _FakeBegin:
         def __init__(self, conn):
@@ -1285,37 +1718,35 @@ class TestCRUDProcessorUnitPaths:
         def begin(self):
             return TestCRUDProcessorUnitPaths._FakeBegin(self.conn)
 
-    def test_create_lazyframe_write_database_path(self, monkeypatch):
-        """ACCEPTANCE: Create lazyframe write database path."""
+    def test_create_lazyframe_fast_insert_path(self, monkeypatch):
+        """C2: create() reflects the table and inserts rows via SQLAlchemy core.
+
+        A LazyFrame input is streamed to chunks and bound through
+        ``conn.execute(table.insert(), rows)`` (no ``write_database``/pandas).
+        """
         from ...components._crud_kit.crud_processor import CRUDProcessor
 
         model = TestCRUDProcessorEngine._dummy_model("DummyModelCreateLazy")
-        calls = {"write": 0}
+        row_id = uuid.uuid4().hex
 
-        def _fake_write_database(self, **kwargs):
-            calls["write"] += 1
-
-        class _FakeInspector:
-            def get_table_names(self):
-                return ["dummy"]
-
+        fake_table = self._FakeTableForInsert(["id"])
         conn = self._FakeConn()
         processor = CRUDProcessor.__new__(CRUDProcessor)
         processor.engine = self._FakeEngine(conn)
-        processor.model_frame_map = {
-            model: pl.DataFrame({"id": [uuid.uuid4().hex]}).lazy()
-        }
+        processor.model_frame_map = {model: pl.DataFrame({"id": [row_id]}).lazy()}
 
-        monkeypatch.setattr(pl.DataFrame, "write_database", _fake_write_database)
+        # create() reflects the target table via _reflect_table -> Table(...).
         monkeypatch.setattr(
-            "apps.django_mindoff.components._crud_kit.crud_processor.inspect",
-            lambda _conn: _FakeInspector(),
+            "apps.django_mindoff.components._crud_kit.crud_processor.Table",
+            lambda *args, **kwargs: fake_table,
         )
 
         result = processor.create(batch_size=10)
         assert result["message"] == "Database Operation successful"
         assert result["affected_tables"] == ["dummy"]
-        assert calls["write"] == 1
+        # One insert statement was executed with the frame rows as parameters.
+        assert conn.executed == [fake_table._stmt]
+        assert conn.exec_params == [[{"id": row_id}]]
 
     @pytest.mark.parametrize(
         "dialect,expected_execute_tag",
@@ -1528,6 +1959,176 @@ class TestFillMissingColumnsLazy(MindoffTestCase):
         yield
         with connection.schema_editor() as editor:
             editor.delete_model(self._author_model)
+
+
+@pytest.mark.django_db(transaction=True)
+class TestReadFastPathDtypes(MindoffTestCase):
+    """Read fast path parity across temporal, decimal, boolean and JSON types."""
+
+    def _seed_rich(self):
+        import datetime
+
+        self._rich_model.objects.create(
+            name="alice",
+            count=5,
+            price=Decimal("3.14"),
+            active=True,
+            created=datetime.datetime(2024, 6, 1, 12, 0, tzinfo=datetime.timezone.utc),
+            payload={"k": 1},
+        )
+
+    def test_read_canonical_dtypes_match_map(self):
+        """ACCEPTANCE: Fast-path dtypes equal the canonical model mapping."""
+        from ...components._crud_kit.dtypes import resolve_polars_dtype
+
+        self._seed_rich()
+        df, _ = mo_crud_kit.read(self._rich_model.objects.all().values())
+        fields = {f.attname: f for f in self._rich_model._meta.concrete_fields}
+        for name, dtype in df.schema.items():
+            field = fields[name]
+            if field.__class__.__name__ == "JSONField":
+                assert dtype == pl.Utf8  # auto -> text on the fast path
+            else:
+                assert dtype == resolve_polars_dtype(field)
+
+    def test_read_datetime_is_tz_naive_microseconds(self):
+        """ACCEPTANCE: Datetime columns come back tz-naive at microsecond unit."""
+        self._seed_rich()
+        df, _ = mo_crud_kit.read(self._rich_model.objects.all().values())
+        assert df.schema["created"] == pl.Datetime("us")
+
+    def test_read_json_mode_object(self):
+        """ACCEPTANCE: json_column_mode='object' parses JSON to pl.Object."""
+        self._seed_rich()
+        df, _ = mo_crud_kit.read(
+            self._rich_model.objects.all().values(), json_column_mode="object"
+        )
+        assert df.schema["payload"] == pl.Object
+        assert df["payload"][0] == {"k": 1}
+
+    def test_read_json_mode_text(self):
+        """ACCEPTANCE: json_column_mode='text' keeps raw JSON text."""
+        self._seed_rich()
+        df, _ = mo_crud_kit.read(
+            self._rich_model.objects.all().values(), json_column_mode="text"
+        )
+        assert df.schema["payload"] == pl.Utf8
+
+    def test_read_rich_then_update_roundtrip(self):
+        """ACCEPTANCE: Rich-typed read frame (incl. JSON) round-trips via update."""
+        self._seed_rich()
+        df, _ = mo_crud_kit.read(self._rich_model.objects.all().values())
+        status, _, invalid = mo_crud_kit.update({self._rich_model: df})
+        assert status == "ok"
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+        # JSON content survives the round-trip.
+        after, _ = mo_crud_kit.read(
+            self._rich_model.objects.all().values(), json_column_mode="object"
+        )
+        assert after["payload"][0] == {"k": 1}
+
+    def test_create_with_json_then_read_back(self):
+        """ACCEPTANCE: create() persists JSON columns and reads them back."""
+        import datetime
+
+        pk = uuid.uuid4().hex
+        frm = pl.DataFrame(
+            {
+                "id": [pk],
+                "name": ["bob"],
+                "count": [7],
+                "price": ["1.50"],
+                "active": [True],
+                "created": ["2024-06-02 09:30:00"],
+                "payload": ['{"a": [1, 2], "b": "x"}'],
+            }
+        )
+        status, _, invalid = mo_crud_kit.create({self._rich_model: frm})
+        assert status == "ok"
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+        back, _ = mo_crud_kit.read(
+            self._rich_model.objects.filter(name="bob").values(),
+            json_column_mode="object",
+        )
+        assert back["payload"][0] == {"a": [1, 2], "b": "x"}
+
+    @pytest.fixture(autouse=True, scope="class")
+    def _class_app(self, request):
+        app_name = f"app_{uuid.uuid4().hex[:12]}"
+        temp_dir = Path(tempfile.mkdtemp()).resolve()
+        override = _register_app(temp_dir, app_name)
+        rich = _create_model(
+            app_name,
+            "RichModel",
+            "rich",
+            [],
+            {
+                "name": models.CharField(max_length=50),
+                "count": models.IntegerField(null=True),
+                "price": models.DecimalField(
+                    max_digits=10, decimal_places=2, null=True
+                ),
+                "active": models.BooleanField(default=True),
+                "created": models.DateTimeField(null=True),
+                "payload": models.JSONField(null=True),
+            },
+        )
+        request.cls._rich_model = rich
+        request.cls._app_name = app_name
+        request.cls._temp_dir = temp_dir
+        request.cls._override = override
+        request.addfinalizer(lambda: _unregister_app(app_name, temp_dir, override))
+
+    @pytest.fixture(autouse=True)
+    def _models(self):
+        with connection.schema_editor() as editor:
+            editor.create_model(self._rich_model)
+        _validate_model(self._rich_model)
+        yield
+        with connection.schema_editor() as editor:
+            editor.delete_model(self._rich_model)
+
+
+class TestArrowReaderUnit:
+    """Pure-function coverage for the read fast-path helpers."""
+
+    def test_resolve_polars_dtype_decimal_refines_precision(self):
+        """ACCEPTANCE: DecimalField resolves to a precision/scale-aware dtype."""
+        from ...components._crud_kit.dtypes import resolve_polars_dtype
+
+        field = models.DecimalField(max_digits=8, decimal_places=3)
+        assert resolve_polars_dtype(field) == pl.Decimal(precision=8, scale=3)
+
+    def test_resolve_polars_dtype_unknown_returns_none(self):
+        """BOUNDARY: Unmapped field types resolve to None."""
+        from ...components._crud_kit.dtypes import resolve_polars_dtype
+
+        class _Weird:
+            pass
+
+        assert resolve_polars_dtype(_Weird()) is None
+
+    def test_connectorx_uri_memory_sqlite_is_none(self):
+        """BOUNDARY: In-memory SQLite has no connectorx URI."""
+        from ...components._crud_kit.arrow_reader import _connectorx_uri
+
+        assert _connectorx_uri("default") is None
+
+    def test_connectorx_uri_postgres_built_from_settings(self):
+        """ACCEPTANCE: Postgres settings produce a connectorx URI."""
+        from ...components._crud_kit.arrow_reader import _connectorx_uri
+
+        cfg = {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": "mydb",
+            "USER": "u",
+            "PASSWORD": "p",
+            "HOST": "h",
+            "PORT": "5432",
+        }
+        with override_settings(DATABASES={**settings.DATABASES, "pg": cfg}):
+            uri = _connectorx_uri("pg")
+        assert uri == "postgresql://u:p@h:5432/mydb"
 
 
 def _register_app(temp_dir: Path, app_name: str):

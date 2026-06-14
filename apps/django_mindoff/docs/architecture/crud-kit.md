@@ -21,7 +21,7 @@ At a high level, write operations pass through one shared validation pipeline be
 
 ## Validation Pipeline
 
-`create(...)` and `update(...)` share the same ordered write pipeline when `is_validate=True`.
+`create(...)` and `update(...)` share the same ordered write pipeline at `validation_level="full"` (the default).
 
 ### 1. Column Contract Validation
 
@@ -68,7 +68,7 @@ After validation:
 - Returns `partial_ok` when invalid rows exist and `is_partial=True`.
 - Returns `ok` when all rows are valid.
 
-When `is_validate=False`, CRUD writes proceed directly and emit runtime warnings about unsafe persistence.
+When `validation_level="none"`, CRUD writes proceed directly and emit runtime warnings about unsafe persistence.
 
 ## Read Path Architecture
 
@@ -82,10 +82,30 @@ When `is_validate=False`, CRUD writes proceed directly and emit runtime warnings
 
 ### Execution Modes
 
-1. **Streaming mode** (`page_number=None`): iterates queryset in chunks and concatenates into one Polars frame.
+1. **Streaming mode** (`page_number=None`): reads the full result set.
 2. **Pagination mode** (`page_number=<n>`): returns only one page plus paginator metadata.
 
 Each mode supports eager (`pl.DataFrame`) and lazy (`pl.LazyFrame`) output.
+
+### Memory & Query Efficiency
+
+| Control | Effect |
+| --- | --- |
+| `with_stats=False` | Skips the `exists()` + `count()` queries. `total_count`/`total_pages` become `None`; pagination derives `has_next` by fetching one extra row. The fastest path when totals aren't needed. |
+| `is_lazy=True` (streaming, `auto`/`connectorx`) | A genuine larger-than-RAM scan: rows are streamed to a temporary Parquet file and the returned `LazyFrame` scans it on `collect()`. The temp file is removed when the frame is garbage-collected. (The `iterator` engine keeps the legacy deferred-`.lazy()` behavior.) |
+| `mo_crud_kit.read_batches(qs, ...)` | Returns an iterator of Polars frames pulled `batch_size` rows at a time — never concatenated — so the whole result set is never held in memory. |
+
+### Read Engines
+
+The `engine` parameter selects how rows are pulled from the database:
+
+| Engine | Mechanism | Notes |
+| --- | --- | --- |
+| `auto` (default) | Runs the queryset's compiled SQL through Django's own cursor and builds the frame column-wise — Arrow-native when the driver exposes it, otherwise from row tuples (never list-of-dicts). | Reuses Django's connection, so parameters and transactions behave normally. |
+| `connectorx` | Zero-copy DB → Arrow transfer via ConnectorX (`pl.read_database_uri`). | Opt-in. Uses its own connection, so uncommitted rows and in-memory SQLite are not visible; falls back to `auto` when unavailable. |
+| `iterator` | Legacy ORM-iterator path (`.values()` dicts). | Guaranteed-compatible escape hatch; output is left exactly as the ORM produced it. |
+
+Frames from the `auto`/`connectorx` engines are normalized to the canonical model dtypes defined in `_crud_kit/dtypes.py` (`DJANGO_TO_POLARS_TYPE_MAP`) — the same mapping the create/update validators enforce — so a read frame can be fed straight back into `update()`. `JSONField` columns follow `json_column_mode` (`auto`/`object`/`text`); on the fast path `auto` returns raw JSON text.
 
 ### Read Response Metadata
 
@@ -107,12 +127,51 @@ Each mode supports eager (`pl.DataFrame`) and lazy (`pl.LazyFrame`) output.
 
 - Builds a SQLAlchemy engine from Django `DATABASES`.
 - Supports `sqlite`, `postgresql`, and `mysql`.
-- Verifies table existence before writes.
+- Table existence is verified lazily by reflection (a missing table raises a
+  clear error) rather than scanning all table names on every operation.
+
+### Per-process caching
+
+To keep per-call latency low, two things are cached process-wide:
+
+- **Engines** are cached per database alias + resolved connection params, so
+  `create_engine` runs once per backend rather than on every CRUD call.
+  PostgreSQL/MySQL engines (with their connection pools) are reused. The SQLite
+  engine is the deliberate exception — it is bound to Django's live connection
+  via a `creator`, so it is rebuilt each call to avoid holding a stale handle.
+- **Reflected `Table` metadata** is cached per engine. A cached (PG/MySQL)
+  engine keeps its reflection warm across calls; the uncached SQLite engine gets
+  fresh metadata each call (collected with the engine), so reflection always
+  matches the current schema. Staging tables (unique per call) are never cached.
 
 ### Create Strategy
 
-- Uses append semantics (`if_table_exists="append"`).
+- Appends rows into the reflected target table using SQLAlchemy Core
+  `insert()`, which SQLAlchemy 2.x batches into a dialect-appropriate multi-row
+  INSERT (`insertmanyvalues`): PostgreSQL/SQLite emit multi-row
+  `INSERT ... VALUES`, MySQL an optimized executemany — with dialect-correct
+  type binding and no intermediate pandas conversion.
+- Honors `batch_size`: rows are written in bounded chunks (`LazyFrame` inputs
+  are streamed through Parquet, eager frames are sliced), so create is both
+  memory-bounded and competitive with — typically faster than — `bulk_create`.
 - Supports `DataFrame` and `LazyFrame` inputs.
+
+#### Validation levels
+
+Both `create(...)` and `update(...)` accept `validation_level`
+(`"full" | "columns_only" | "none"`, default `"full"`).
+
+| Level | Pipeline | When to use |
+| --- | --- | --- |
+| `full` (default) | `ColumnValidator → RowValidator → ForeignKeyValidator` + valid/invalid split; honors `is_partial`. | Untrusted/raw input. |
+| `columns_only` | `ColumnValidator` only — normalizes shape (rename to `db_column`, add missing/auto columns, drop extras), then writes. | Caller already validated rows/FKs upstream and supplies database-ready values. Lower overhead. |
+| `none` | No validation (not even column normalization); writes as-is and warns. | Trusted, already-shaped frames only. |
+
+`columns_only` deliberately skips the row pass, so field defaults,
+`auto_now`/`auto_now_add` timestamps, UUID generation, and type coercion are
+**not** applied — the caller must provide database-ready values for every
+required column. Constraints the database itself enforces (NOT NULL, foreign
+keys, types on type-strict backends) still apply at write time.
 
 ### Update Strategies (Upsert)
 
@@ -121,7 +180,44 @@ Each mode supports eager (`pl.DataFrame`) and lazy (`pl.LazyFrame`) output.
 1. **Staging merge mode** (`is_temp_table=True`, default): writes to temp table, then merges into target table.
 2. **Direct upsert mode** (`is_temp_table=False`): performs dialect-specific conflict update directly.
 
-Before validation, update flow also auto-fills missing model columns by fetching current DB values using primary keys.
+Before validation, update flow also auto-fills missing model columns by fetching
+current DB values using primary keys. Pass `skip_db_fill=True` to skip that
+prefetch `SELECT` when the caller already supplies every column to be written
+(for example a frame read in full via `read()` and modified in place) — primary
+key canonicalization and the PK presence check still run, so upsert matching is
+unaffected. Any column the frame omits is then written as `NULL` rather than
+back-filled, so only enable it for column-complete frames.
+
+### Larger-than-RAM Writes
+
+Writes never materialize the full frame. Both `create()` and `update()` write in
+bounded-memory chunks (`batch_size` rows at a time):
+
+- **`LazyFrame` inputs** are streamed to a temporary Parquet file via the Polars
+  streaming engine (the validation pipeline stays lazy until this point) and
+  re-read in Arrow batches — peak memory is one batch, not the whole dataset.
+- **`DataFrame` inputs** are sliced into `batch_size` chunks.
+
+For staging-merge updates only the temp-table *load* is chunked; the merge itself
+is a single set-based SQL statement, so it is already larger-than-RAM friendly.
+All chunks for a model run inside one transaction, so writes stay atomic.
+
+### Keeping the Lazy Path Honest
+
+When a `LazyFrame` flows through the pipeline, the validators never force an
+early plan execution to inspect structure:
+
+- Schema is resolved once per frame via `mo_polars_kit.resolve_schema(...)`
+  (`collect_schema()` under the hood) and threaded through the per-field work,
+  instead of touching `LazyFrame.schema`/`.columns` repeatedly. A schema is
+  column-names-plus-dtypes only, so it stays valid across the row-level edits
+  the validators apply; it is re-resolved only where a transform actually
+  changes a column.
+- `LazyFrame.schema` and `LazyFrame.columns` emit a Polars `PerformanceWarning`
+  (each call re-resolves the whole accumulated plan). The test suite promotes
+  that warning to an error while exercising the lazy create/read/update paths,
+  so any accidental eager schema resolution fails CI rather than silently
+  degrading the "lazy" guarantee.
 
 ## Operational Assumptions
 

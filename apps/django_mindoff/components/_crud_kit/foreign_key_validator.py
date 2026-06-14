@@ -38,17 +38,19 @@ class ForeignKeyValidator:
     def _validate_model_foreign_keys(self, model, df):
         if mo_polars_kit.is_frm_empty(df):
             return df
+        # Resolve column names once (lazy-safe). Adding ERROR_COL below does not
+        # affect FK-column membership, so this list stays valid for the loop.
+        column_names = mo_polars_kit.resolve_schema(df).names()
+        if ERROR_COL not in column_names:
+            df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias(ERROR_COL))
         for field in model._meta.concrete_fields:
-            if ERROR_COL not in df.columns:
-                df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias(ERROR_COL))
-
             if not isinstance(field, (ForeignKey, OneToOneField)):
                 continue
 
             db_col = field.db_column
             mo_validation_kit.ensure_in(
                 db_col,
-                df.columns,
+                column_names,
                 msg=f"Missing foreign key column '{db_col}' in DataFrame for model '{model.__name__}'",
                 is_exception=True,
             )

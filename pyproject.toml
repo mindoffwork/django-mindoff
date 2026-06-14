@@ -61,6 +61,7 @@ internal = [
   "model-bakery>=1.20.0,<2.0",
   "typeguard>=4.0,<5.0",
   "polars>=1.39.0,<2.0",
+  "connectorx>=0.4.0,<0.5",
   "pandas>=2.2.0,<3.0",
   "sqlalchemy>=2.0.0,<3.0",
   "orjson>=3.10.0,<4.0",

@@ -219,7 +219,7 @@ class MindoffPolarsKit:
         """
         valid_dfs, invalid_dfs = {}, {}
         for model, frm in model_frms.items():
-            schema = frm.schema
+            schema = self.resolve_schema(frm)
             work_df = frm
             if column not in schema:
                 work_df = frm.with_columns(pl.lit(None, dtype=pl.String).alias(column))
@@ -383,6 +383,34 @@ class MindoffPolarsKit:
             loaded_func=loaded_func,
         )
 
+    def resolve_schema(self, frm: pl.DataFrame | pl.LazyFrame) -> pl.Schema:
+        """Return a frame's schema using the lazy-safe API.
+
+        Usage:
+
+        ```python
+        schema = mo_polars_kit.resolve_schema(frm)
+        names = schema.names()
+        dtype = schema.get("email")
+        ```
+
+        Parameters:
+
+        - `frm` (`pl.DataFrame | pl.LazyFrame`): Frame to inspect.
+
+        Behavior:
+
+        - For `LazyFrame`, uses `collect_schema()` — the explicit, warning-free
+          schema resolution (plain `.schema`/`.columns` emit a Polars
+          `PerformanceWarning`).
+        - For `DataFrame`, returns `.schema` directly.
+
+        Possible responses:
+
+        - Returns a `pl.Schema` mapping column names to dtypes.
+        """
+        return frm.collect_schema() if isinstance(frm, pl.LazyFrame) else frm.schema
+
     def get_frm_height(self, frm: pl.DataFrame | pl.LazyFrame) -> int:
         """Get frame row count for eager or lazy Polars inputs.
 
@@ -420,7 +448,7 @@ def _apply_batch_transform(
     batch_logic: Callable[[pl.Series, Callable[..., Any], type], pl.Series],
     loaded_func: Callable[..., Any],
 ) -> pl.DataFrame | pl.LazyFrame:
-    target_dtype = dtype or fr.schema.get(column) or pl.String
+    target_dtype = dtype or mo_polars_kit.resolve_schema(fr).get(column) or pl.String
 
     def _batch_wrapper(s: pl.Series) -> pl.Series:
         return batch_logic(s, loaded_func, target_dtype)

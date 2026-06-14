@@ -113,19 +113,7 @@ def run(self, request, *args, **kwargs):
 
 ### 6. Run and Verify
 
-Before running, start your virtual environment:
-
-For Windows:
-
-```bash
-.venv\Scripts\Activate.ps1
-```
-
-For Mac/Linux:
-
-```bash
-source .venv/bin/activate
-```
+🔔 Before running, make sure your project's virtual environment is active.
 
 Run the Migrations:
 

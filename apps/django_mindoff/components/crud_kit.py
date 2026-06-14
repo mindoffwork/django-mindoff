@@ -7,7 +7,7 @@ Mindoff CRUD Kit
 
 import warnings
 from itertools import islice
-from typing import Any, Dict, List, Tuple, Type, Union
+from typing import Any, Dict, List, Literal, Tuple, Type, Union
 import polars as pl
 from typeguard import typechecked
 from django.conf import settings
@@ -16,6 +16,7 @@ from django.db import models
 from django.db.models import F
 from django.db.models import CharField
 from django.db.models.functions import Cast
+from ._crud_kit import arrow_reader
 from ._crud_kit.column_validator import ColumnValidator
 from ._crud_kit.crud_processor import CRUDProcessor
 from ._crud_kit.foreign_key_validator import ForeignKeyValidator
@@ -55,7 +56,7 @@ class MindoffCRUDHandler:
         model_frms: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
         *,
         is_partial: bool = False,
-        is_validate: bool = True,
+        validation_level: Literal["full", "columns_only", "none"] = "full",
         batch_size: int = 1000,
     ) -> Tuple[str, Dict, Dict]:
         """Create rows from model-to-frame mappings with optional validation pipeline.
@@ -71,7 +72,7 @@ class MindoffCRUDHandler:
                 OrderItemModel: order_item_df,
             },
             is_partial=False,
-            is_validate=True,
+            validation_level="full",
             batch_size=1000,
         )
         ```
@@ -81,17 +82,29 @@ class MindoffCRUDHandler:
         - `model_frms` (`dict[type[models.Model], pl.DataFrame|pl.LazyFrame]`):
           Input model-frame mapping for bulk insert.
         - `is_partial` (`bool, default=False`):
-          If `True`, allows partial save when only a subset of rows are valid.
-        - `is_validate` (`bool, default=True`):
-          If `True`, runs column, row, and foreign-key validation before insert.
+          If `True`, allows partial save when only a subset of rows are valid
+          (applies to `validation_level="full"` only).
+        - `validation_level` (`"full"|"columns_only"|"none", default="full"`):
+          Selects how much validation runs before the insert.
         - `batch_size` (`int, default=1000`):
-          Batch size used by the underlying write process.
+          Maximum number of rows written per INSERT batch.
 
         Varieties:
 
-        - Validation mode:
-          `is_validate=True` runs `ColumnValidator -> RowValidator -> ForeignKeyValidator`.
-        - Partial-save mode:
+        - `validation_level="full"` (default): runs
+          `ColumnValidator -> RowValidator -> ForeignKeyValidator` and honors
+          `is_partial`.
+        - `validation_level="columns_only"`: runs only `ColumnValidator` to
+          normalize frame shape (rename to `db_column`, add missing/auto columns,
+          drop extras) and writes directly, trusting the caller's row values and
+          foreign keys. Row-level passes are skipped, so field defaults,
+          `auto_now`/`auto_now_add` timestamps, UUID generation, and type coercion
+          are NOT applied — the caller must supply database-ready values for every
+          required column. `is_partial` does not apply (no per-row invalidation).
+        - `validation_level="none"`: skips all validation (including column
+          normalization) and writes the frames as-is; emits an unsafe-write
+          warning.
+        - Partial-save mode (full only):
           `is_partial=False` fails if any invalid rows exist;
           `is_partial=True` saves valid rows and returns invalid rows separately.
 
@@ -104,52 +117,24 @@ class MindoffCRUDHandler:
         Notes:
 
         - Invalid rows contain an error column (`POLARS_VALIDATOR_ERROR_COL` or `__error__info`).
-        - `is_validate=False` skips safety checks and may persist unsafe data.
+        - `validation_level="none"` skips safety checks and may persist unsafe data.
         """
         model_frms = mo_polars_kit.sync_model_frms_type(model_frms)
-        if is_validate:
-            # 1. Column validation
-            column_validator = ColumnValidator(
-                model_frms=model_frms,
-                is_remove_extra_columns=True,
-                is_add_missing_columns=True,
-            )
-            valid_model_frms, invalid_model_frms = column_validator.run()
-            if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
-                return "fail", valid_model_frms, invalid_model_frms
 
-            # 2. Row validation
-            row_validator = RowValidator(valid_model_frms)
-            row_validated_frms = row_validator.run()
-
-            # 3. Foreign key validation
-            fk_validator = ForeignKeyValidator(row_validated_frms)
-            fk_validated_frms = fk_validator.validate()
-            frm_dict_valid_invalid_splitter = _ModelFrmsValidInvalidSplitter(
-                fk_validated_frms
-            )
-            valid_model_frms, invalid_model_frms = frm_dict_valid_invalid_splitter.run()
-
-            # 4. Decide partial save
-            if mo_polars_kit.is_model_frms_empty(valid_model_frms):
-                return "fail", valid_model_frms, invalid_model_frms
-            if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
-                if not is_partial:
-                    return "fail", valid_model_frms, invalid_model_frms
-                status = "partial_ok"
-            else:
-                status = "ok"
-        else:
-            warnings.warn(
+        status, valid_model_frms, invalid_model_frms = _run_validation_pipeline(
+            validation_level,
+            model_frms,
+            is_partial=is_partial,
+            none_warning=(
                 "Saving without validation may store unsafe or inconsistent data, "
                 "which can affect further read/update/delete functions. "
-                "Proceed only if intentional.",
-                RuntimeWarning,
-            )
-            status = "ok"
-            valid_model_frms, invalid_model_frms = model_frms, {}
+                "Proceed only if intentional."
+            ),
+        )
+        if status == "fail":
+            return "fail", valid_model_frms, invalid_model_frms
 
-        # 5. Perform CRUD operation
+        # Perform CRUD operation
         crud_processor = CRUDProcessor(valid_model_frms)
         _ = crud_processor.create(batch_size=batch_size)
         return status, valid_model_frms, invalid_model_frms
@@ -162,6 +147,9 @@ class MindoffCRUDHandler:
         page_number: int | None = None,
         is_lazy: bool = False,
         batch_size: int = 0,
+        engine: Literal["auto", "connectorx", "iterator"] = "auto",
+        json_column_mode: Literal["auto", "object", "text"] = "auto",
+        with_stats: bool = True,
     ) -> tuple[pl.DataFrame | pl.LazyFrame, dict[str, Any]]:
         """Read queryset data into Polars with streaming/pagination variants.
 
@@ -187,12 +175,36 @@ class MindoffCRUDHandler:
           When `None`, uses streaming mode.
         - `is_lazy` (`bool, default=False`):
           If `True`, returns `pl.LazyFrame`; otherwise returns `pl.DataFrame`.
+          In streaming mode with the `auto`/`connectorx` engines this is a real
+          larger-than-RAM scan: rows are streamed to a temporary Parquet file and
+          the returned `LazyFrame` scans it lazily (the temp file is removed when
+          the frame is garbage-collected). The `iterator` engine keeps the legacy
+          deferred-`.lazy()` behavior.
         - `batch_size` (`int, default=0`):
-          Chunk/page size. Auto-resolved when `0`.
+          Chunk/page size. Auto-resolved when `0`. Drives the lazy-scan/streaming
+          fetch size and pagination; eager fast-path reads fetch in one transfer.
+        - `with_stats` (`bool, default=True`):
+          When `True`, computes `total_count`/`total_pages` (and the empty-set
+          short-circuit) via extra `exists()`/`count()` queries. Set `False` for
+          the fastest read: those queries are skipped, `total_count`/`total_pages`
+          are `None`, and pagination derives `has_next` by fetching one extra row.
+        - `engine` (`"auto"|"connectorx"|"iterator", default="auto"`):
+          Reader backend. `auto` runs the queryset's compiled SQL through
+          Django's own cursor and builds the frame column-wise (Arrow-native
+          when the driver supports it, never list-of-dicts), reusing Django's
+          connection so transactions and parameters behave normally.
+          `connectorx` opts into a zero-copy DB→Arrow transfer via ConnectorX
+          (its own connection, so uncommitted rows and in-memory SQLite are not
+          visible); it falls back to `auto` when unavailable. `iterator` forces
+          the legacy ORM-iterator path.
+        - `json_column_mode` (`"auto"|"object"|"text", default="auto"`):
+          How `JSONField` columns are returned. `text` keeps raw JSON text
+          (`Utf8`); `object` parses to `pl.Object`; `auto` picks `object` for
+          the `iterator` engine and `text` for the fast paths.
 
         Varieties:
 
-        - Streaming mode (`page_number=None`): reads full dataset in chunks.
+        - Streaming mode (`page_number=None`): reads the full dataset.
         - Pagination mode (`page_number=<n>`): reads one page and returns paging metadata.
         - Materialization mode: eager (`DataFrame`) or lazy (`LazyFrame`).
 
@@ -202,6 +214,14 @@ class MindoffCRUDHandler:
           `mode`, `batch_size`, `total_count`, `total_pages`, `current_page`, `has_next`, `has_previous`.
         - Returns empty frame with zeroed stats for empty querysets.
         - Raises validation error if queryset is not `.values()`-based.
+
+        Note:
+
+        - Frames from the `auto`/`connectorx` engines are normalized to the
+          canonical model dtypes (`_crud_kit.dtypes.DJANGO_TO_POLARS_TYPE_MAP`),
+          the same mapping the create/update validators enforce, so a read can be
+          fed straight back into `update`. The `iterator` engine returns the
+          frame exactly as the ORM produced it.
         """
         # 1. Validate and Normalize
         mo_validation_kit.ensure(
@@ -219,8 +239,8 @@ class MindoffCRUDHandler:
         if batch_size == 0:
             batch_size = 100 if page_number else 1000
 
-        # 2. Empty Queryset
-        if not qs.exists():
+        # 2. Empty queryset short-circuit (stats mode only; relies on exists()).
+        if with_stats and not qs.exists():
             frm = pl.DataFrame([]).lazy() if is_lazy else pl.DataFrame([])
             stats = _read__build_stats(
                 mode="pagination" if page_number else "streaming",
@@ -235,48 +255,97 @@ class MindoffCRUDHandler:
 
         # 3. Streaming mode
         if not page_number:
-            frm = pl.concat(
-                _read__batched_iterator(qs, batch_size, is_lazy), rechunk=False
-            )
-            stats = _read__build_stats(
-                mode="streaming",
+            return _read__stream_mode(
+                qs,
                 batch_size=batch_size,
-                total_count=qs.count(),
-                total_pages=0,
-                current_page=0,
-                has_next=False,
-                has_previous=False,
+                is_lazy=is_lazy,
+                engine=engine,
+                json_column_mode=json_column_mode,
+                with_stats=with_stats,
             )
-            return frm, stats
 
         # 4. Pagination mode
-        paginator = Paginator(qs, batch_size)
-        try:
-            page = paginator.page(page_number)
-            frm = (
-                pl.DataFrame(list(page)).lazy() if is_lazy else pl.DataFrame(list(page))
-            )
-            stats = _read__build_stats(
-                mode="pagination",
+        if not with_stats:
+            return _read__paginate_no_stats(
+                qs,
+                page_number=page_number,
                 batch_size=batch_size,
-                total_count=paginator.count,
-                total_pages=paginator.num_pages,
-                current_page=page.number,
-                has_next=page.has_next(),
-                has_previous=page.has_previous(),
+                is_lazy=is_lazy,
+                engine=engine,
+                json_column_mode=json_column_mode,
             )
-        except EmptyPage:
-            frm = pl.DataFrame([]).lazy() if is_lazy else pl.DataFrame([])
-            stats = _read__build_stats(
-                mode="pagination",
-                batch_size=batch_size,
-                total_count=paginator.count,
-                total_pages=paginator.num_pages,
-                current_page=page_number,
-                has_next=False,
-                has_previous=page_number > 1,
-            )
-        return frm, stats
+        return _read__paginate_with_stats(
+            qs,
+            page_number=page_number,
+            batch_size=batch_size,
+            is_lazy=is_lazy,
+            engine=engine,
+            json_column_mode=json_column_mode,
+        )
+
+    @typechecked
+    def read_batches(
+        self,
+        qs: models.QuerySet,
+        *,
+        batch_size: int = 0,
+        engine: Literal["auto", "connectorx", "iterator"] = "auto",
+        json_column_mode: Literal["auto", "object", "text"] = "auto",
+    ):
+        """Stream a queryset as an iterator of Polars frames (memory-bounded).
+
+        Usage:
+
+        ```python
+        from django_mindoff import mo_crud_kit
+
+        for frm in mo_crud_kit.read_batches(
+            OrderModel.objects.filter(is_active=True).values(),
+            batch_size=10_000,
+        ):
+            process(frm)
+        ```
+
+        Parameters:
+
+        - `qs` (`models.QuerySet`):
+          Queryset that must use `.values()` output.
+        - `batch_size` (`int, default=0`):
+          Rows per yielded frame. Auto-resolved to `1000` when `0`.
+        - `engine` (`"auto"|"connectorx"|"iterator", default="auto"`):
+          Reader backend. `auto`/`connectorx` stream Django's cursor and
+          normalize each batch to the canonical model dtypes; `iterator` streams
+          ORM `.values()` dicts unchanged. ConnectorX has no streaming cursor, so
+          it routes through the Django-cursor path here.
+        - `json_column_mode` (`"auto"|"object"|"text", default="auto"`):
+          JSON handling, identical to `read()`.
+
+        Possible responses:
+
+        - Returns a generator of `pl.DataFrame` chunks; never concatenated, so
+          the full result set is never held in memory at once.
+        - Raises validation error if queryset is not `.values()`-based.
+        """
+        mo_validation_kit.ensure(
+            issubclass(qs._iterable_class, models.query.ValuesIterable),
+            msg=f"Unsupported queryset type `{qs._iterable_class.__name__}`. "
+            "You must call `.values()` on the queryset before passing it to `read_batches()`.",
+            is_exception=True,
+        )
+        mo_validation_kit.ensure_greater_equal(
+            batch_size,
+            0,
+            msg=f"The 'batch_size' parameter must be a positive integer. Provided value: {batch_size}",
+            is_exception=True,
+        )
+        if batch_size == 0:
+            batch_size = 1000
+        return arrow_reader.stream_batches(
+            qs,
+            batch_size=batch_size,
+            engine=engine,
+            json_column_mode=json_column_mode,
+        )
 
     @typechecked
     def update(
@@ -284,9 +353,10 @@ class MindoffCRUDHandler:
         model_frms: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
         *,
         is_partial: bool = False,
-        is_validate: bool = True,
+        validation_level: Literal["full", "columns_only", "none"] = "full",
         batch_size: int = 1000,
         is_temp_table: bool = True,
+        skip_db_fill: bool = False,
     ):
         """Upsert rows from model-to-frame mappings with optional staged merge strategy.
 
@@ -300,7 +370,7 @@ class MindoffCRUDHandler:
                 OrderModel: order_updates_df,
             },
             is_partial=True,
-            is_validate=True,
+            validation_level="full",
             batch_size=1000,
             is_temp_table=True,
         )
@@ -311,21 +381,38 @@ class MindoffCRUDHandler:
         - `model_frms` (`dict[type[models.Model], pl.DataFrame|pl.LazyFrame]`):
           Input model-frame mapping for bulk update/upsert.
         - `is_partial` (`bool, default=False`):
-          If `True`, allows valid rows to proceed even when invalid rows exist.
-        - `is_validate` (`bool, default=True`):
-          If `True`, applies model-based column/row/FK validation before update.
+          If `True`, allows valid rows to proceed even when invalid rows exist
+          (applies to `validation_level="full"` only).
+        - `validation_level` (`"full"|"columns_only"|"none", default="full"`):
+          Selects how much validation runs before the upsert. Missing DB columns
+          are auto-fetched by primary key first (unless `skip_db_fill=True`),
+          regardless of level.
         - `batch_size` (`int, default=1000`):
           Batch size used for missing-column fetch and update processing.
         - `is_temp_table` (`bool, default=True`):
           If `True`, writes to staging table then merges;
           if `False`, performs direct dialect-specific upsert.
+        - `skip_db_fill` (`bool, default=False`):
+          When `True`, skips the missing-column prefetch (the per-PK `SELECT`
+          that back-fills columns the frame omits). Use it when the caller
+          already supplies every column to be written — e.g. a frame from
+          `read()` that was modified in place — to avoid the extra round-trip.
+          Primary-key canonicalization and the PK presence check still run, so
+          upsert matching is unaffected. Caution: any column the frame omits is
+          NOT back-filled and will be written as `NULL`, so only enable this when
+          the frame is column-complete.
 
         Varieties:
 
-        - Validation mode:
-          enabled (`is_validate=True`) or skipped (`is_validate=False`).
-        - Partial mode:
-          fail-fast (`is_partial=False`) or partial success (`is_partial=True`).
+        - `validation_level="full"` (default): runs
+          `ColumnValidator -> RowValidator -> ForeignKeyValidator` and honors
+          `is_partial`.
+        - `validation_level="columns_only"`: runs only `ColumnValidator`
+          (after the missing-column fetch) and upserts directly, trusting the
+          caller's row values and foreign keys. Row-level passes are skipped, so
+          the caller must supply database-ready values.
+        - `validation_level="none"`: skips all validation; upserts as-is and
+          emits an unsafe-write warning.
         - Upsert mode:
           staging merge (`is_temp_table=True`) or direct upsert (`is_temp_table=False`).
 
@@ -337,53 +424,28 @@ class MindoffCRUDHandler:
 
         Notes:
 
-        - Missing DB columns are auto-fetched using primary key before validation.
+        - Missing DB columns are auto-fetched using primary key before validation
+          unless `skip_db_fill=True`.
         - Invalid rows include model-aware error details in error column.
         """
-        model_frms = _update__fill_missing_columns(model_frms, batch_size=batch_size)
-        if is_validate:
-            # 1. Column validation
-            column_validator = ColumnValidator(
-                model_frms=model_frms,
-                is_remove_extra_columns=True,
-                is_add_missing_columns=True,
-            )
-            valid_model_frms, invalid_model_frms = column_validator.run()
-            if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
-                return "fail", valid_model_frms, invalid_model_frms
+        model_frms = _update__fill_missing_columns(
+            model_frms, batch_size=batch_size, skip_db_fill=skip_db_fill
+        )
 
-            # 2. Row validation
-            row_validator = RowValidator(valid_model_frms)
-            row_validated_frms = row_validator.run()
-
-            # 3. Foreign key validation
-            fk_validator = ForeignKeyValidator(row_validated_frms)
-            fk_validated_frms = fk_validator.validate()
-            frm_dict_valid_invalid_splitter = _ModelFrmsValidInvalidSplitter(
-                fk_validated_frms
-            )
-            valid_model_frms, invalid_model_frms = frm_dict_valid_invalid_splitter.run()
-
-            # 4. Decide partial save
-            if mo_polars_kit.is_model_frms_empty(valid_model_frms):
-                return "fail", valid_model_frms, invalid_model_frms
-            if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
-                if not is_partial:
-                    return "fail", valid_model_frms, invalid_model_frms
-                status = "partial_ok"
-            else:
-                status = "ok"
-        else:
-            warnings.warn(
+        status, valid_model_frms, invalid_model_frms = _run_validation_pipeline(
+            validation_level,
+            model_frms,
+            is_partial=is_partial,
+            none_warning=(
                 "Updating without validation may store unsafe or inconsistent data, "
                 "which can affect mindoff's read/update/delete functions. "
-                "Proceed only if intentional.",
-                RuntimeWarning,
-            )
-            status = "ok"
-            valid_model_frms, invalid_model_frms = model_frms, {}
+                "Proceed only if intentional."
+            ),
+        )
+        if status == "fail":
+            return "fail", valid_model_frms, invalid_model_frms
 
-        # 5. Perform CRUD operation
+        # Perform CRUD operation
         crud_processor = CRUDProcessor(valid_model_frms)
         _ = crud_processor.update(is_temp_table=is_temp_table, batch_size=batch_size)
         return status, valid_model_frms, invalid_model_frms
@@ -529,11 +591,212 @@ def _read__batched_iterator(qs: models.QuerySet, size: int, is_lazy: bool):
         yield pl.DataFrame(batch).lazy() if is_lazy else pl.DataFrame(batch)
 
 
+def _read__collect(
+    qs: models.QuerySet,
+    *,
+    batch_size: int,
+    is_lazy: bool,
+    engine: str,
+    json_column_mode: str,
+) -> Union[pl.DataFrame, pl.LazyFrame]:
+    """Materialize a full (streaming-mode) read for the chosen engine."""
+    if engine == "iterator":
+        # Legacy escape hatch: unnormalized frames, deferred .lazy() (not a scan).
+        return pl.concat(
+            _read__batched_iterator(qs, batch_size, is_lazy), rechunk=False
+        )
+    if is_lazy:
+        # Real larger-than-RAM scan: stream to disk and scan it lazily.
+        return arrow_reader.scan_to_lazy(
+            qs, batch_size=batch_size, engine=engine, json_column_mode=json_column_mode
+        )
+    return arrow_reader.read_frame(qs, engine=engine, json_column_mode=json_column_mode)
+
+
+def _read__page_frame(
+    qs: models.QuerySet, *, engine: str, json_column_mode: str
+) -> pl.DataFrame:
+    """Eagerly read one bounded page/slice for the chosen engine."""
+    if engine == "iterator":
+        return pl.DataFrame(list(qs))
+    return arrow_reader.read_frame(qs, engine=engine, json_column_mode=json_column_mode)
+
+
+def _read__materialize(
+    qs: models.QuerySet,
+    *,
+    is_lazy: bool,
+    engine: str,
+    json_column_mode: str,
+) -> Union[pl.DataFrame, pl.LazyFrame]:
+    """Materialize a single page (pagination-mode) for the chosen engine."""
+    frm = _read__page_frame(qs, engine=engine, json_column_mode=json_column_mode)
+    return frm.lazy() if is_lazy else frm
+
+
+def _read__stream_mode(
+    qs: models.QuerySet,
+    *,
+    batch_size: int,
+    is_lazy: bool,
+    engine: str,
+    json_column_mode: str,
+    with_stats: bool,
+) -> Tuple[Union[pl.DataFrame, pl.LazyFrame], dict[str, Any]]:
+    """Streaming-mode read: full dataset plus streaming stats."""
+    frm = _read__collect(
+        qs,
+        batch_size=batch_size,
+        is_lazy=is_lazy,
+        engine=engine,
+        json_column_mode=json_column_mode,
+    )
+    stats = _read__build_stats(
+        mode="streaming",
+        batch_size=batch_size,
+        total_count=qs.count() if with_stats else None,
+        total_pages=0 if with_stats else None,
+        current_page=0,
+        has_next=False,
+        has_previous=False,
+    )
+    return frm, stats
+
+
+def _read__paginate_with_stats(
+    qs: models.QuerySet,
+    *,
+    page_number: int,
+    batch_size: int,
+    is_lazy: bool,
+    engine: str,
+    json_column_mode: str,
+) -> Tuple[Union[pl.DataFrame, pl.LazyFrame], dict[str, Any]]:
+    """Pagination-mode read with full paginator metadata (uses count())."""
+    paginator = Paginator(qs, batch_size)
+    try:
+        page = paginator.page(page_number)
+        frm = _read__materialize(
+            page.object_list,
+            is_lazy=is_lazy,
+            engine=engine,
+            json_column_mode=json_column_mode,
+        )
+        stats = _read__build_stats(
+            mode="pagination",
+            batch_size=batch_size,
+            total_count=paginator.count,
+            total_pages=paginator.num_pages,
+            current_page=page.number,
+            has_next=page.has_next(),
+            has_previous=page.has_previous(),
+        )
+    except EmptyPage:
+        frm = pl.DataFrame([]).lazy() if is_lazy else pl.DataFrame([])
+        stats = _read__build_stats(
+            mode="pagination",
+            batch_size=batch_size,
+            total_count=paginator.count,
+            total_pages=paginator.num_pages,
+            current_page=page_number,
+            has_next=False,
+            has_previous=page_number > 1,
+        )
+    return frm, stats
+
+
+def _read__paginate_no_stats(
+    qs: models.QuerySet,
+    *,
+    page_number: int,
+    batch_size: int,
+    is_lazy: bool,
+    engine: str,
+    json_column_mode: str,
+) -> Tuple[Union[pl.DataFrame, pl.LazyFrame], dict[str, Any]]:
+    """Pagination-mode read without count(): `has_next` via one extra row."""
+    offset = (page_number - 1) * batch_size
+    sliced = qs[offset : offset + batch_size + 1]
+    frm = _read__page_frame(sliced, engine=engine, json_column_mode=json_column_mode)
+    has_next = frm.height > batch_size
+    if has_next:
+        frm = frm.head(batch_size)
+    if is_lazy:
+        frm = frm.lazy()
+    stats = _read__build_stats(
+        mode="pagination",
+        batch_size=batch_size,
+        total_count=None,
+        total_pages=None,
+        current_page=page_number,
+        has_next=has_next,
+        has_previous=page_number > 1,
+    )
+    return frm, stats
+
+
+def _run_validation_pipeline(
+    level: str, model_frms: Dict, *, is_partial: bool, none_warning: str
+):
+    """Run the configured validation level and return ``(status, valid, invalid)``.
+
+    Shared by ``create()`` and ``update()``. ``status`` is
+    ``"ok"``/``"partial_ok"``/``"fail"``; a ``"fail"`` status means the caller
+    must not write. ``"none"`` skips all validation (emitting ``none_warning``),
+    ``"columns_only"`` runs only column normalization, and ``"full"`` runs the
+    complete column -> row -> FK pipeline with valid/invalid splitting.
+    """
+    if level == "none":
+        warnings.warn(none_warning, RuntimeWarning)
+        return "ok", model_frms, {}
+
+    # Column validation runs for both "full" and "columns_only".
+    valid_model_frms, invalid_model_frms = ColumnValidator(
+        model_frms=model_frms,
+        is_remove_extra_columns=True,
+        is_add_missing_columns=True,
+    ).run()
+    if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
+        return "fail", valid_model_frms, invalid_model_frms
+
+    if level == "columns_only":
+        # Caller guarantees clean row values + FKs: skip the row/FK passes.
+        if mo_polars_kit.is_model_frms_empty(valid_model_frms):
+            return "fail", valid_model_frms, {}
+        return "ok", valid_model_frms, {}
+
+    # "full": row validation -> FK validation -> valid/invalid split.
+    row_validated_frms = RowValidator(valid_model_frms).run()
+    fk_validated_frms = ForeignKeyValidator(row_validated_frms).validate()
+    valid_model_frms, invalid_model_frms = _ModelFrmsValidInvalidSplitter(
+        fk_validated_frms
+    ).run()
+
+    if mo_polars_kit.is_model_frms_empty(valid_model_frms):
+        return "fail", valid_model_frms, invalid_model_frms
+    if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
+        if not is_partial:
+            return "fail", valid_model_frms, invalid_model_frms
+        return "partial_ok", valid_model_frms, invalid_model_frms
+    return "ok", valid_model_frms, invalid_model_frms
+
+
+def _canonical_uuid_expr(column: str) -> pl.Expr:
+    """Normalize a UUID column to the stored dashless, lowercase form."""
+    return (
+        pl.col(column)
+        .cast(pl.Utf8, strict=False)
+        .str.to_lowercase()
+        .str.replace_all("-", "")
+        .alias(column)
+    )
+
+
 def _read__build_stats(
     *,
     mode: str,
     batch_size: int,
-    total_count: int,
+    total_count: int | None,
     total_pages: int | None,
     current_page: int | None,
     has_next: bool,
@@ -554,10 +817,15 @@ def _update__fill_missing_columns(
     model_frms: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
     *,
     batch_size: int,
+    skip_db_fill: bool = False,
 ) -> Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]]:
     updated_model_frames = {}
     for model_cls, frm in model_frms.items():
-        df_cols = set(frm.columns)
+        # Resolve the schema once (lazy-safe); column membership is unchanged by
+        # the value-only canonicalization below, so this stays valid for the
+        # whole iteration.
+        frm_schema = mo_polars_kit.resolve_schema(frm)
+        df_cols = set(frm_schema.names())
         model_fields = {f.column or f.name for f in model_cls._meta.concrete_fields}
         missing_cols = list(model_fields - df_cols)
         pk_name = model_cls._meta.pk.name
@@ -568,40 +836,53 @@ def _update__fill_missing_columns(
             msg=f"Primary key {pk_field} must exist in DataFrame to fetch missing columns.",
             is_exception=True,
         )
+        pk_dtype = frm_schema[pk_field]
+        # Canonicalize UUID primary keys to the stored dashless/lowercase form so
+        # the join against DB-fetched keys matches regardless of the input form
+        # (e.g. hyphenated frames from `read()`) or backend (SQLite casts UUIDs
+        # to dashless hex, PostgreSQL to hyphenated). The expr casts to Utf8.
+        if isinstance(model_cls._meta.pk, models.UUIDField):
+            frm = frm.with_columns(_canonical_uuid_expr(pk_field))
+            pk_dtype = pl.Utf8
         missing_cols = [c for c in missing_cols if c != pk_field]
-        if not missing_cols:
+        # ``skip_db_fill`` skips only the DB fetch (the expensive part) — the PK
+        # canonicalization and presence check above still run, so upsert matching
+        # stays correct. The caller takes responsibility for supplying every
+        # column to be written (missing ones are not back-filled from the DB).
+        if skip_db_fill or not missing_cols:
             updated_model_frames[model_cls] = frm
             continue
-        schema = {pk_field: frm.schema[pk_field], **dict.fromkeys(missing_cols, None)}
-        base_missing_df = (
-            pl.LazyFrame(schema=schema)
-            if isinstance(frm, pl.LazyFrame)
-            else pl.DataFrame(schema=schema)
-        )
+        schema = {pk_field: pk_dtype, **dict.fromkeys(missing_cols, None)}
+        base_missing_df = pl.DataFrame(schema=schema)
         missing_df = __update__fetch_missing_chunks(
             model_cls, frm, pk_field, missing_cols, batch_size, base_missing_df
         )
-        if mo_polars_kit.is_frm_empty(missing_df):
-            for col in missing_cols:
-                frm = frm.with_columns(pl.lit(None).alias(col))
-            updated_model_frames[model_cls] = frm
-            continue
-        overlap = set(frm.columns) & set(missing_df.columns) - {pk_field}
-        mo_validation_kit.ensure_falsey(
-            overlap,
-            msg=f"Duplicate columns found during merge for model {model_cls.__name__}: {', '.join(overlap)}",
-            is_exception=True,
+        updated_model_frames[model_cls] = _update__merge_missing(
+            model_cls, frm, missing_df, missing_cols, pk_field, pk_dtype
         )
-        left_dtype = frm.schema[pk_field]
-        right_dtype = missing_df.schema.get(pk_field)
-        missing_df = (
-            missing_df.with_columns(pl.col(pk_field).cast(left_dtype))
-            if right_dtype is not None and left_dtype != right_dtype
-            else missing_df
-        )
-        frm = frm.join(missing_df, on=pk_field, how="left")
-        updated_model_frames[model_cls] = frm
     return updated_model_frames
+
+
+def _update__merge_missing(model_cls, frm, missing_df, missing_cols, pk_field, pk_dtype):
+    """Left-join DB-fetched missing columns back onto the input frame."""
+    if mo_polars_kit.is_frm_empty(missing_df):
+        return frm.with_columns([pl.lit(None).alias(col) for col in missing_cols])
+
+    frm_cols = set(mo_polars_kit.resolve_schema(frm).names())
+    overlap = frm_cols & set(missing_df.columns) - {pk_field}
+    mo_validation_kit.ensure_falsey(
+        overlap,
+        msg=f"Duplicate columns found during merge for model {model_cls.__name__}: {', '.join(overlap)}",
+        is_exception=True,
+    )
+    left_dtype = pk_dtype
+    right_dtype = missing_df.schema.get(pk_field)
+    if right_dtype is not None and left_dtype != right_dtype:
+        missing_df = missing_df.with_columns(pl.col(pk_field).cast(left_dtype))
+    # Missing columns are fetched eagerly; match the input frame's mode.
+    if isinstance(frm, pl.LazyFrame):
+        missing_df = missing_df.lazy()
+    return frm.join(missing_df, on=pk_field, how="left")
 
 
 def __update__fetch_missing_chunks(
@@ -612,8 +893,7 @@ def __update__fetch_missing_chunks(
     batch_size: int,
     base_missing_df,
 ):
-    is_lazy = isinstance(frm, pl.LazyFrame)
-    if is_lazy:
+    if isinstance(frm, pl.LazyFrame):
         pk_series = frm.select(pk_field).collect(streaming=True)[pk_field]
     else:
         pk_series = frm.get_column(pk_field)
@@ -632,14 +912,14 @@ def __update__fetch_missing_chunks(
             .annotate(**{temp_pk: Cast(F(pk_field), output_field=CharField())})
             .values(temp_pk, *missing_cols)
         )
-        chunk_df, _ = MindoffCRUDHandler().read(
-            qs,
-            is_lazy=is_lazy,
-            batch_size=batch_size,
-        )
+        # Read eagerly: chunks are pk-bounded, so this avoids the disk-sink
+        # path that `read(is_lazy=True)` would otherwise trigger.
+        chunk_df = arrow_reader.read_frame(qs)
         if mo_polars_kit.is_frm_empty(chunk_df):
             continue
         chunk_df = chunk_df.rename({temp_pk: pk_field})
+        if isinstance(model_cls._meta.pk, models.UUIDField):
+            chunk_df = chunk_df.with_columns(_canonical_uuid_expr(pk_field))
         collected_chunks.append(chunk_df)
     if not collected_chunks:
         return base_missing_df

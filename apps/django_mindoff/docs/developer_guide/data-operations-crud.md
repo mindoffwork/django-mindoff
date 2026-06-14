@@ -56,11 +56,18 @@ model_frms = {
 from django_mindoff import mo_crud_kit
 from apps.orders.models import OrderModel
 
-# CREATE
+# CREATE (full validation, written in batch_size chunks via fast multi-row insert)
 create_status, create_valid, create_invalid = mo_crud_kit.create(
     {OrderModel: order_df},
-    is_validate=True,
+    validation_level="full",   # "full" | "columns_only" | "none"
     is_partial=False,
+    batch_size=1000,
+)
+
+# CREATE (fast path: caller guarantees clean, DB-ready rows — skip row+FK passes)
+mo_crud_kit.create(
+    {OrderModel: order_df},
+    validation_level="columns_only",
 )
 
 # READ (queryset must use values())
@@ -68,14 +75,29 @@ orders_frm, stats = mo_crud_kit.read(
     OrderModel.objects.filter(is_active=True).values(),
     page_number=1,
     batch_size=100,
+    engine="auto",      # "auto" | "connectorx" | "iterator"
+    with_stats=False,   # skip exists()/count() for the fastest read
 )
+
+# LARGER-THAN-RAM: a real lazy scan (streamed to disk, scanned lazily)
+lazy_frm, _ = mo_crud_kit.read(
+    OrderModel.objects.all().values(), is_lazy=True
+)
+
+# LARGER-THAN-RAM: process in memory-bounded chunks (never concatenated)
+for chunk in mo_crud_kit.read_batches(
+    OrderModel.objects.all().values(), batch_size=10_000
+):
+    handle(chunk)
 
 # UPDATE
 update_status, update_valid, update_invalid = mo_crud_kit.update(
     {OrderModel: order_df},
-    is_validate=True,
+    validation_level="full",   # "full" | "columns_only" | "none"
     is_partial=True,
     is_temp_table=True,
+    # skip_db_fill=True,  # skip the missing-column prefetch when the frame
+    #                     # already has every column (e.g. a full read() frame)
 )
 ```
 
