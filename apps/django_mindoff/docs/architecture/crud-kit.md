@@ -2,7 +2,7 @@
 
 The CRUD Kit is the data-engineering layer of `django-mindoff`. It runs model-aware bulk `create`, `read`, and `update` operations over Polars frames while enforcing Django model constraints.
 
-It is designed for high-throughput tabular workflows where API-level validation and storage-level consistency both matter.
+It is designed for high-throughput tabular workflows where API-level validation and storage-level consistency both matter. It complements Django and DRF — it does not replace them. For individual records or small result sets, native Django serializers remain the simpler and more appropriate choice; use the CRUD Kit when dataset volume is the bottleneck.
 
 For usage-level CRUD implementation patterns, see [Developer Guide - Data Operations (CRUD)](../developer_guide/data-operations-crud.md).
 
@@ -92,20 +92,17 @@ Each mode supports eager (`pl.DataFrame`) and lazy (`pl.LazyFrame`) output.
 | Control | Effect |
 | --- | --- |
 | `with_stats=False` | Skips the `exists()` + `count()` queries. `total_count`/`total_pages` become `None`; pagination derives `has_next` by fetching one extra row. The fastest path when totals aren't needed. |
-| `is_lazy=True` (streaming, `auto`/`connectorx`) | A genuine larger-than-RAM scan: rows are streamed to a temporary Parquet file and the returned `LazyFrame` scans it on `collect()`. The temp file is removed when the frame is garbage-collected. (The `iterator` engine keeps the legacy deferred-`.lazy()` behavior.) |
+| `is_lazy=True` (streaming) | A genuine larger-than-RAM scan: rows are streamed to a temporary Parquet file and the returned `LazyFrame` scans it on `collect()`. The temp file is removed when the frame is garbage-collected. |
 | `mo_crud_kit.read_batches(qs, ...)` | Returns an iterator of Polars frames pulled `batch_size` rows at a time — never concatenated — so the whole result set is never held in memory. |
 
-### Read Engines
+### Read Mechanism
 
-The `engine` parameter selects how rows are pulled from the database:
+There is no engine to choose — a read always takes the fastest path that can still return correct data:
 
-| Engine | Mechanism | Notes |
-| --- | --- | --- |
-| `auto` (default) | Runs the queryset's compiled SQL through Django's own cursor and builds the frame column-wise — Arrow-native when the driver exposes it, otherwise from row tuples (never list-of-dicts). | Reuses Django's connection, so parameters and transactions behave normally. |
-| `connectorx` | Zero-copy DB → Arrow transfer via ConnectorX (`pl.read_database_uri`). | Opt-in. Uses its own connection, so uncommitted rows and in-memory SQLite are not visible; falls back to `auto` when unavailable. |
-| `iterator` | Legacy ORM-iterator path (`.values()` dicts). | Guaranteed-compatible escape hatch; output is left exactly as the ORM produced it. |
+- **ConnectorX** (`pl.read_database_uri`) for a zero-copy DB → Arrow transfer, used **only when the read is safe**. ConnectorX opens its own connection and cannot see uncommitted rows, so it is used only **outside an open transaction**.
+- **Django's own cursor** otherwise — inside an open transaction (Django `TestCase`, `ATOMIC_REQUESTS`, `transaction.atomic()`), with in-memory SQLite, or when ConnectorX is unreachable. It reuses Django's connection (so parameters and transaction visibility behave normally) and builds the frame column-wise from row tuples — never list-of-dicts. Streaming reads (`is_lazy=True`, `read_batches`) always use this cursor path, since ConnectorX has no streaming cursor.
 
-Frames from the `auto`/`connectorx` engines are normalized to the canonical model dtypes defined in `_crud_kit/dtypes.py` (`DJANGO_TO_POLARS_TYPE_MAP`) — the same mapping the create/update validators enforce — so a read frame can be fed straight back into `update()`. `JSONField` columns follow `json_column_mode` (`auto`/`object`/`text`); on the fast path `auto` returns raw JSON text.
+The fallback is transparent: callers never select or are warned about the path. Frames are normalized to the canonical model dtypes defined in `_crud_kit/dtypes.py` (`DJANGO_TO_POLARS_TYPE_MAP`) — the same mapping the create/update validators enforce — so a read frame can be fed straight back into `update()`. `JSONField` columns follow `json_column_mode` (`auto`/`object`/`text`); `auto` returns raw JSON text.
 
 ### Read Response Metadata
 
@@ -146,11 +143,21 @@ To keep per-call latency low, two things are cached process-wide:
 
 ### Create Strategy
 
-- Appends rows into the reflected target table using SQLAlchemy Core
-  `insert()`, which SQLAlchemy 2.x batches into a dialect-appropriate multi-row
-  INSERT (`insertmanyvalues`): PostgreSQL/SQLite emit multi-row
-  `INSERT ... VALUES`, MySQL an optimized executemany — with dialect-correct
-  type binding and no intermediate pandas conversion.
+- Appends rows with each backend's fastest **same-connection** bulk loader, so
+  the write stays inside the create's single transaction (all-or-nothing) and
+  Polars' columnar data reaches the database without a per-row Python detour:
+  - **PostgreSQL** — `COPY ... FROM STDIN` streamed from an in-memory CSV
+    buffer via psycopg2's `copy_expert`.
+  - **MySQL** — `LOAD DATA LOCAL INFILE` from a temp CSV (needs `local_infile`,
+    which the engine enables on the client; falls back to row binding when the
+    server forbids it and emits a `RuntimeWarning` — enable `local_infile` on the
+    server to restore bulk-load performance).
+  - **SQLite** — SQLAlchemy Core `insert()` executed as a DBAPI `executemany`;
+    there is no bulk-load protocol, and this path is bound to Django's live
+    connection so it works against an in-memory database.
+- On SQLite the engine is bound to Django's autocommit-mode connection, so the
+  create wraps every chunk in one explicit transaction (`BEGIN`) — without it
+  each statement would auto-commit (one fsync per row).
 - Honors `batch_size`: rows are written in bounded chunks (`LazyFrame` inputs
   are streamed through Parquet, eager frames are sliced), so create is both
   memory-bounded and competitive with — typically faster than — `bulk_create`.
@@ -173,12 +180,13 @@ Both `create(...)` and `update(...)` accept `validation_level`
 required column. Constraints the database itself enforces (NOT NULL, foreign
 keys, types on type-strict backends) still apply at write time.
 
-### Update Strategies (Upsert)
+### Update Strategy (Upsert)
 
-`update(...)` supports two upsert paths:
-
-1. **Staging merge mode** (`is_temp_table=True`, default): writes to temp table, then merges into target table.
-2. **Direct upsert mode** (`is_temp_table=False`): performs dialect-specific conflict update directly.
+`update(...)` uses a single staged-merge path: each frame is bulk-loaded into a
+per-call staging table (using the same fast loader as `create()`), then merged
+into the target with one set-based dialect-specific statement
+(`INSERT ... FROM SELECT ... ON CONFLICT/DUPLICATE`). No per-row Python
+materialization occurs, and the whole update runs in one transaction.
 
 Before validation, update flow also auto-fills missing model columns by fetching
 current DB values using primary keys. Pass `skip_db_fill=True` to skip that
@@ -198,9 +206,11 @@ bounded-memory chunks (`batch_size` rows at a time):
   re-read in Arrow batches — peak memory is one batch, not the whole dataset.
 - **`DataFrame` inputs** are sliced into `batch_size` chunks.
 
-For staging-merge updates only the temp-table *load* is chunked; the merge itself
-is a single set-based SQL statement, so it is already larger-than-RAM friendly.
-All chunks for a model run inside one transaction, so writes stay atomic.
+For staging-merge updates only the temp-table *load* is chunked — and it uses the
+same per-backend bulk loader as `create()` (PostgreSQL `COPY`, MySQL `LOAD DATA
+LOCAL INFILE`, SQLite `executemany`); the merge itself is a single set-based SQL
+statement, so it is already larger-than-RAM friendly. All chunks for a model run
+inside one transaction, so writes stay atomic.
 
 ### Keeping the Lazy Path Honest
 
@@ -236,4 +246,5 @@ Most issues fall into validation contract mismatches:
 2. **Rows unexpectedly invalid:** inspect validator error column (`POLARS_VALIDATOR_ERROR_COL` or `__error__info`).
 3. **FK validation failures:** ensure related IDs exist in input frames or database.
 4. **Read rejects queryset:** confirm `.values()` is called before `read()`.
-5. **Update conflict behavior differs by DB:** verify chosen mode (`is_temp_table`) and target dialect support.
+5. **Update conflict behavior differs by DB:** verify the target dialect supports the staged-merge upsert (`ON CONFLICT`/`ON DUPLICATE KEY`).
+6. **MySQL write performance falls back to row binding:** if you see a `RuntimeWarning` about `LOAD DATA LOCAL INFILE`, set `local_infile=1` on the MySQL server (`SET GLOBAL local_infile = 1`) and ensure the client is connecting with `local_infile` enabled.

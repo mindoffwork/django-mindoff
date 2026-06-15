@@ -16,6 +16,19 @@ Django Mindoff is an architectural framework that manages the structure and mech
 
 **Case Study**: [https://mindoff.work/projects/django-mindoff](https://mindoff.work/projects/django-mindoff/)
 
+## Philosophy
+
+Django Mindoff is not a replacement for Django or Django REST Framework — it is a purposeful complement built on top of both.
+
+Django and DRF handle the things they were designed for extremely well: request routing, authentication, permissions, serializer-driven row-level validation, and the request/response lifecycle. Mindoff uses Django and DRF internally for exactly that and does not compete with them. What they were not designed for is **high-volume tabular data**: fetching 100 000 rows through a serializer loop, bulk-inserting a Polars DataFrame with FK integrity checks across related models, or streaming a dataset that exceeds available RAM without ever holding it all in memory.
+
+Mindoff fills that gap with a data-engineering layer built around **Polars DataFrames and LazyFrames**. The rule of thumb is simple:
+
+- **For everyday operations** — creating a single record, updating a user profile, listing 20 results — native Django serializers or pandas are the right tools. They are simpler to write, easier to debug, and perfectly adequate at that scale.
+- **For large dataset workflows** — bulk ingestion from external sources, high-volume exports, data transformation pipelines, update-or-insert across tens of thousands of rows — use `mo_crud_kit`. It applies the same structured, model-aware validation as a serializer, but runs it in a vectorized, loop-free pipeline and writes to the database using each backend's native bulk-load path rather than row-by-row SQL.
+
+The rest of the framework — structured APIs, validation helpers, response contracts, background queueing, test utilities — is designed to work naturally alongside standard Django/DRF patterns, not replace them.
+
 ## Key Features
 
 1. **Project Setup That Just Works**  

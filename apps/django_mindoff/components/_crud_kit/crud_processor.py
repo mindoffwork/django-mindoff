@@ -1,9 +1,11 @@
 import gc
+import io
 import os
 import tempfile
 import threading
 import time
 import uuid
+import warnings
 import weakref
 from typing import Dict, Type, Union
 from urllib.parse import quote_plus
@@ -12,7 +14,7 @@ import polars as pl
 import pyarrow.parquet as pq
 from django.conf import settings
 from django.db import connection, models
-from sqlalchemy import MetaData, Table, create_engine, literal, select
+from sqlalchemy import MetaData, Table, create_engine, event, literal, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -85,12 +87,34 @@ class CRUDProcessor:
             # (reconnects, per-test transactions) and a cached pool could go stale.
             self.dialect = "sqlite"
             connection.ensure_connection()
-            return create_engine("sqlite://", creator=lambda: connection.connection)
+            sqlite_engine = create_engine(
+                "sqlite://", creator=lambda: connection.connection
+            )
+            # Django opens SQLite with ``isolation_level=None`` (pysqlite autocommit
+            # mode). Because the DBAPI connection is owned by Django and handed to
+            # SQLAlchemy through a creator, SQLAlchemy never emits a real ``BEGIN``,
+            # so every statement in ``engine.begin()`` auto-commits — turning a bulk
+            # insert into one fsync per row (thousands of disk syncs). Emitting an
+            # explicit ``BEGIN`` on transaction start (the canonical pysqlite recipe)
+            # makes the whole batch commit once, which is ~100x faster for bulk writes.
+            event.listen(sqlite_engine, "begin", _sqlite_emit_begin)
+            return sqlite_engine
 
+        # ``self.dialect`` is the bare backend name ("mysql"/"postgresql"); the
+        # "+driver" suffix lives only in the SQLAlchemy URL. The dialect-specific
+        # upsert/merge/bulk-load branches compare against the bare name, so the
+        # two must never be conflated.
         if "mysql" in engine:
-            self.dialect = "mysql+pymysql"
+            self.dialect = "mysql"
+            driver = "mysql+pymysql"
+            # ``local_infile`` enables the LOAD DATA LOCAL INFILE bulk-load path;
+            # it transparently falls back to row binding when the server forbids
+            # it (a common managed-MySQL restriction). See ``_load_data_mysql``.
+            connect_args = {"local_infile": 1}
         elif "postgresql" in engine or "postgres" in engine:
-            self.dialect = "postgresql+psycopg2"
+            self.dialect = "postgresql"
+            driver = "postgresql+psycopg2"
+            connect_args = {}
         else:
             raise ValueError(f"Unsupported database engine: {engine}")
 
@@ -99,7 +123,7 @@ class CRUDProcessor:
         host = db.get("HOST", "localhost")
         port = db.get("PORT", "")
         name = db["NAME"]
-        cache_key = (self.db_alias, self.dialect, name, user, password, host, port)
+        cache_key = (self.db_alias, driver, name, user, password, host, port)
 
         with _ENGINE_LOCK:
             cached = _ENGINE_CACHE.get(cache_key)
@@ -109,7 +133,8 @@ class CRUDProcessor:
             port_part = f":{port}" if port else ""
             connection.ensure_connection()
             sa_engine = create_engine(
-                f"{self.dialect}://{auth_part}{host}{port_part}/{name}"
+                f"{driver}://{auth_part}{host}{port_part}/{name}",
+                connect_args=connect_args,
             )
             _ENGINE_CACHE[cache_key] = sa_engine
             return sa_engine
@@ -160,10 +185,13 @@ class CRUDProcessor:
         Insert each model DataFrame into its mapped database table.
 
         Rows are written ``batch_size`` at a time (``LazyFrame`` inputs are
-        streamed through Parquet, eager frames are sliced) using SQLAlchemy's
-        batched multi-row INSERT (``insertmanyvalues``): PostgreSQL/SQLite emit
-        multi-row ``INSERT ... VALUES`` and MySQL an optimized executemany, with
-        dialect-correct type binding and no intermediate pandas conversion.
+        streamed through Parquet, eager frames are sliced). Each chunk is bound
+        through SQLAlchemy Core ``insert()`` and sent via the DBAPI's
+        ``executemany`` (one parameterized ``INSERT ... VALUES (...)`` template
+        applied to the whole chunk), with dialect-correct type binding and no
+        intermediate pandas conversion. (SQLAlchemy's ``insertmanyvalues``
+        multi-row rewrite engages only for ``INSERT ... RETURNING``, which this
+        append path does not use.)
 
         Args:
             batch_size: Maximum number of rows written per INSERT batch.
@@ -181,13 +209,17 @@ class CRUDProcessor:
         return saved_tables
 
     @_track_time
-    def update(self, is_temp_table: bool, batch_size: int) -> list[str]:
+    def update(self, batch_size: int) -> list[str]:
         """
         Upsert each model DataFrame into its mapped database table.
 
+        Each frame is streamed into a per-call staging table using the same fast
+        bulk loader as ``create()``, then merged into the target with a single
+        set-based ``INSERT ... FROM SELECT ... ON CONFLICT/DUPLICATE`` statement —
+        so the full frame is never materialized as Python rows.
+
         Args:
-            is_temp_table: When true, stage rows into a temp table before merge.
-            batch_size: Maximum number of rows written per staging/upsert batch.
+            batch_size: Maximum number of rows written per staging batch.
 
         Returns:
             list[str]: Database table names affected by the update operation.
@@ -206,101 +238,54 @@ class CRUDProcessor:
                 pk_col = quoted_name(pk_field, quote=True)
                 temp_table_name = f"temp_upsert_{uuid.uuid4().hex}"
 
-                self._update__df_insert(
-                    df,
-                    is_temp_table=is_temp_table,
-                    temp_table_name=temp_table_name,
-                    table=table,
-                    pk_field=pk_field,
-                    pk_col=pk_col,
-                    conn=conn,
-                    batch_size=batch_size,
+                # Stage rows into the temp table in bounded-memory chunks; the
+                # merge itself is set-based SQL.
+                self._stream_write(df, temp_table_name, conn, batch_size)
+                self._update__merge_staging(
+                    table, temp_table_name, temp_metadata, pk_field, pk_col, conn
                 )
-
-                if is_temp_table:
-                    self._update__merge_staging(
-                        table, temp_table_name, temp_metadata, pk_field, pk_col, conn
-                    )
 
                 affected_tables.append(model_table)
 
         return affected_tables
 
-    def _update__df_insert(
-        self,
-        df: pl.DataFrame | pl.LazyFrame,
-        *,
-        is_temp_table: bool,
-        temp_table_name: str,
-        table,
-        pk_field: str,
-        pk_col: str,
-        conn,
-        batch_size: int = 1000,
-    ) -> None:
-        if is_temp_table:
-            # Stage rows into the temp table in bounded-memory chunks; the merge
-            # itself is set-based SQL, so the full frame is never materialized.
-            self._stream_write(df, temp_table_name, conn, batch_size)
-            return
-        # Direct dialect upsert: apply it one bounded chunk at a time.
-        for frm in self._iter_write_frames(df, batch_size):
-            rows = frm.to_arrow().to_pylist()
-            if rows:
-                self._upsert_rows(table, rows, pk_field, pk_col, conn)
-
-    def _upsert_rows(self, table, rows, pk_field, pk_col, conn) -> None:
-        if self.dialect == "postgresql":
-            insert_stmt = table.insert().values(rows)
-            update_cols = {
-                c.name: insert_stmt.excluded[c.name]
-                for c in table.columns
-                if c.name != pk_field
-            }
-            stmt = insert_stmt.on_conflict_do_update(
-                index_elements=[pk_col], set_=update_cols
-            )
-        elif self.dialect == "mysql":
-            insert_stmt = table.insert().values(rows)
-            update_cols = {
-                c.name: insert_stmt.inserted[c.name]
-                for c in table.columns
-                if c.name != pk_field
-            }
-            stmt = insert_stmt.on_duplicate_key_update(update_cols)
-        elif self.dialect == "sqlite":
-            insert_stmt = sqlite_insert(table).values(rows)
-            update_cols = {
-                c.name: insert_stmt.excluded[c.name]
-                for c in table.columns
-                if c.name != pk_field
-            }
-            stmt = insert_stmt.on_conflict_do_update(
-                index_elements=[pk_field], set_=update_cols
-            )
-        else:  # pragma: no cover - dialect already validated upstream
-            return
-        conn.execute(stmt)
-
     def _fast_insert(self, df, table, conn, batch_size: int) -> None:
         """Append a frame to an existing reflected table in bounded chunks.
 
-        Each chunk is bound through SQLAlchemy Core ``insert()``, which SQLAlchemy
-        2.x batches into a dialect-appropriate multi-row INSERT
-        (``insertmanyvalues``). This reuses the same ``to_pylist`` + reflected-table
-        binding as the direct upsert path, so type handling stays consistent.
+        Each backend uses its fastest *same-connection* bulk loader, so the write
+        stays inside the caller's single transaction (preserving ``create()``'s
+        all-or-nothing guarantee) and Polars' columnar data is handed to the
+        database without a detour through per-row Python objects:
+
+        - PostgreSQL: ``COPY ... FROM STDIN`` streamed from an in-memory CSV
+          buffer (``_copy_postgres``).
+        - MySQL: ``LOAD DATA LOCAL INFILE`` from a temp CSV, auto-falling back to
+          row binding when the server forbids ``LOCAL INFILE`` (``_load_data_mysql``).
+        - SQLite: SQLAlchemy Core ``executemany`` — there is no bulk-load
+          protocol, and this path is bound to Django's live connection so it
+          works against an in-memory database.
         """
         for frm in self._iter_write_frames(df, batch_size):
-            rows = frm.to_arrow().to_pylist()
-            if rows:
-                conn.execute(table.insert(), rows)
+            if frm.height == 0:
+                continue
+            if self.dialect == "postgresql":  # pragma: no cover - needs live PostgreSQL
+                self._copy_postgres(table.name, frm, conn)
+            elif self.dialect == "mysql":  # pragma: no cover - needs live MySQL
+                self._load_data_mysql(table.name, frm, conn)
+            else:
+                conn.execute(table.insert(), frm.to_arrow().to_pylist())
 
     def _stream_write(self, df, table_name, conn, batch_size: int) -> None:
-        """Append a frame to ``table_name`` in bounded-memory chunks.
+        """Append a frame to ``table_name`` (staging) in bounded-memory chunks.
 
-        Used for temp-table staging during updates: ``write_database`` creates the
-        (not-yet-existing) staging table from the frame schema on first append.
+        On PostgreSQL/MySQL the staging table is created once from the frame
+        schema, then loaded with the same COPY / LOAD DATA bulk path as
+        ``_fast_insert``. Other backends (SQLite) use Polars' SQLAlchemy writer,
+        which creates the staging table on first append.
         """
+        if self.dialect in ("postgresql", "mysql"):  # pragma: no cover - needs live DB
+            self._fast_stream_write(df, table_name, conn, batch_size)
+            return
         for frm in self._iter_write_frames(df, batch_size):
             frm.write_database(
                 table_name=table_name,
@@ -308,6 +293,91 @@ class CRUDProcessor:
                 if_table_exists="append",
                 engine="sqlalchemy",
             )
+
+    def _fast_stream_write(self, df, table_name, conn, batch_size):  # pragma: no cover - needs live DB
+        """Create the staging table from the frame schema, then bulk-load it."""
+        created = False
+        for frm in self._iter_write_frames(df, batch_size):
+            if not created:
+                # Cheaply materialize an empty table with the right columns/types,
+                # then stream every chunk (this one included) through the loader.
+                frm.clear().write_database(
+                    table_name=table_name,
+                    connection=conn,
+                    if_table_exists="replace",
+                    engine="sqlalchemy",
+                )
+                created = True
+            if frm.height == 0:
+                continue
+            if self.dialect == "postgresql":
+                self._copy_postgres(table_name, frm, conn)
+            else:
+                self._load_data_mysql(table_name, frm, conn)
+
+    def _copy_postgres(self, table_name, frm, conn):  # pragma: no cover - needs live PostgreSQL
+        """Bulk-load a chunk via ``COPY ... FROM STDIN`` on the same connection.
+
+        ``quote_style="non_numeric"`` quotes every string (so an empty string is
+        written as ``""``) while nulls are emitted as an unquoted empty field;
+        PostgreSQL's CSV reader treats the former as ``''`` and the latter as
+        ``NULL``, so the two never collide.
+        """
+        buffer = io.BytesIO()
+        frm.write_csv(buffer, include_header=False, quote_style="non_numeric")
+        buffer.seek(0)
+        columns = ", ".join(f'"{name}"' for name in frm.columns)
+        statement = f'COPY "{table_name}" ({columns}) FROM STDIN WITH (FORMAT CSV)'
+        raw_cursor = conn.connection.dbapi_connection.cursor()
+        try:
+            raw_cursor.copy_expert(statement, buffer)
+        finally:
+            raw_cursor.close()
+
+    def _load_data_mysql(self, table_name, frm, conn):  # pragma: no cover - needs live MySQL
+        """Bulk-load a chunk via ``LOAD DATA LOCAL INFILE`` on the same connection.
+
+        Nulls are written as the unquoted bareword ``NULL`` and every string is
+        quoted, so MySQL's loader distinguishes a real ``NULL`` from the literal
+        text ``"NULL"``. Falls back to Polars' SQLAlchemy row-binding writer when
+        the server disallows ``LOCAL INFILE``.
+        """
+        handle = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
+        tmp_path = handle.name
+        handle.close()
+        try:
+            frm.write_csv(
+                tmp_path,
+                include_header=False,
+                quote_style="non_numeric",
+                null_value="NULL",
+            )
+            columns = ", ".join(f"`{name}`" for name in frm.columns)
+            load_path = tmp_path.replace("\\", "\\\\").replace("'", "\\'")
+            statement = (
+                f"LOAD DATA LOCAL INFILE '{load_path}' INTO TABLE `{table_name}` "
+                "FIELDS TERMINATED BY ',' ENCLOSED BY '\"' ESCAPED BY '' "
+                f"LINES TERMINATED BY '\\n' ({columns})"
+            )
+            try:
+                conn.exec_driver_sql(statement)
+            except Exception:
+                warnings.warn(
+                    "LOAD DATA LOCAL INFILE is unavailable on this MySQL server "
+                    "(local_infile may be disabled). Falling back to row-binding "
+                    "writes — enable local_infile on the server for bulk-load "
+                    "performance. See: https://dev.mysql.com/doc/refman/en/load-data-local-security.html",
+                    RuntimeWarning,
+                    stacklevel=4,
+                )
+                frm.write_database(
+                    table_name=table_name,
+                    connection=conn,
+                    if_table_exists="append",
+                    engine="sqlalchemy",
+                )
+        finally:
+            _safe_unlink(tmp_path)
 
     def _iter_write_frames(self, df, batch_size: int):
         """Yield bounded-memory DataFrame chunks for writing.
@@ -409,6 +479,18 @@ class CRUDProcessor:
 # ----------------
 # Functions
 # ----------------
+def _sqlite_emit_begin(conn) -> None:
+    """Emit an explicit ``BEGIN`` so SQLite writes share one transaction.
+
+    Registered as the SQLAlchemy ``begin`` event for the Django-bound SQLite
+    engine. Django's pysqlite connection runs in autocommit mode
+    (``isolation_level=None``); without an explicit ``BEGIN`` each statement
+    commits on its own, so a bulk insert fsyncs once per row. See
+    ``_get_sqlalchemy_engine`` for the full rationale.
+    """
+    conn.exec_driver_sql("BEGIN")
+
+
 def _metadata_for_engine(engine) -> MetaData:
     """Return the reflection ``MetaData`` bound to ``engine`` (created on first use).
 

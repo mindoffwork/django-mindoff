@@ -6,7 +6,6 @@ Mindoff CRUD Kit
 """
 
 import warnings
-from itertools import islice
 from typing import Any, Dict, List, Literal, Tuple, Type, Union
 import polars as pl
 from typeguard import typechecked
@@ -118,6 +117,11 @@ class MindoffCRUDHandler:
 
         - Invalid rows contain an error column (`POLARS_VALIDATOR_ERROR_COL` or `__error__info`).
         - `validation_level="none"` skips safety checks and may persist unsafe data.
+        - Rows are written with each backend's fastest same-transaction bulk
+          loader — PostgreSQL `COPY`, MySQL `LOAD DATA LOCAL INFILE` (auto-falling
+          back to row binding when the server forbids it), SQLite `executemany` —
+          so the columnar frame reaches the database without a per-row Python
+          detour, and the whole create stays atomic.
         """
         model_frms = mo_polars_kit.sync_model_frms_type(model_frms)
 
@@ -147,7 +151,6 @@ class MindoffCRUDHandler:
         page_number: int | None = None,
         is_lazy: bool = False,
         batch_size: int = 0,
-        engine: Literal["auto", "connectorx", "iterator"] = "auto",
         json_column_mode: Literal["auto", "object", "text"] = "auto",
         with_stats: bool = True,
     ) -> tuple[pl.DataFrame | pl.LazyFrame, dict[str, Any]]:
@@ -188,19 +191,9 @@ class MindoffCRUDHandler:
           short-circuit) via extra `exists()`/`count()` queries. Set `False` for
           the fastest read: those queries are skipped, `total_count`/`total_pages`
           are `None`, and pagination derives `has_next` by fetching one extra row.
-        - `engine` (`"auto"|"connectorx"|"iterator", default="auto"`):
-          Reader backend. `auto` runs the queryset's compiled SQL through
-          Django's own cursor and builds the frame column-wise (Arrow-native
-          when the driver supports it, never list-of-dicts), reusing Django's
-          connection so transactions and parameters behave normally.
-          `connectorx` opts into a zero-copy DB→Arrow transfer via ConnectorX
-          (its own connection, so uncommitted rows and in-memory SQLite are not
-          visible); it falls back to `auto` when unavailable. `iterator` forces
-          the legacy ORM-iterator path.
         - `json_column_mode` (`"auto"|"object"|"text", default="auto"`):
           How `JSONField` columns are returned. `text` keeps raw JSON text
-          (`Utf8`); `object` parses to `pl.Object`; `auto` picks `object` for
-          the `iterator` engine and `text` for the fast paths.
+          (`Utf8`); `object` parses to `pl.Object`; `auto` resolves to `text`.
 
         Varieties:
 
@@ -217,11 +210,10 @@ class MindoffCRUDHandler:
 
         Note:
 
-        - Frames from the `auto`/`connectorx` engines are normalized to the
-          canonical model dtypes (`_crud_kit.dtypes.DJANGO_TO_POLARS_TYPE_MAP`),
-          the same mapping the create/update validators enforce, so a read can be
-          fed straight back into `update`. The `iterator` engine returns the
-          frame exactly as the ORM produced it.
+        - Frames are normalized to the canonical model dtypes
+          (`_crud_kit.dtypes.DJANGO_TO_POLARS_TYPE_MAP`), the same mapping the
+          create/update validators enforce, so a read can be fed straight back
+          into `update`.
         """
         # 1. Validate and Normalize
         mo_validation_kit.ensure(
@@ -259,7 +251,6 @@ class MindoffCRUDHandler:
                 qs,
                 batch_size=batch_size,
                 is_lazy=is_lazy,
-                engine=engine,
                 json_column_mode=json_column_mode,
                 with_stats=with_stats,
             )
@@ -271,7 +262,6 @@ class MindoffCRUDHandler:
                 page_number=page_number,
                 batch_size=batch_size,
                 is_lazy=is_lazy,
-                engine=engine,
                 json_column_mode=json_column_mode,
             )
         return _read__paginate_with_stats(
@@ -279,7 +269,6 @@ class MindoffCRUDHandler:
             page_number=page_number,
             batch_size=batch_size,
             is_lazy=is_lazy,
-            engine=engine,
             json_column_mode=json_column_mode,
         )
 
@@ -289,7 +278,6 @@ class MindoffCRUDHandler:
         qs: models.QuerySet,
         *,
         batch_size: int = 0,
-        engine: Literal["auto", "connectorx", "iterator"] = "auto",
         json_column_mode: Literal["auto", "object", "text"] = "auto",
     ):
         """Stream a queryset as an iterator of Polars frames (memory-bounded).
@@ -312,13 +300,9 @@ class MindoffCRUDHandler:
           Queryset that must use `.values()` output.
         - `batch_size` (`int, default=0`):
           Rows per yielded frame. Auto-resolved to `1000` when `0`.
-        - `engine` (`"auto"|"connectorx"|"iterator", default="auto"`):
-          Reader backend. `auto`/`connectorx` stream Django's cursor and
-          normalize each batch to the canonical model dtypes; `iterator` streams
-          ORM `.values()` dicts unchanged. ConnectorX has no streaming cursor, so
-          it routes through the Django-cursor path here.
         - `json_column_mode` (`"auto"|"object"|"text", default="auto"`):
-          JSON handling, identical to `read()`.
+          JSON handling, identical to `read()`. Each batch is streamed from
+          Django's cursor and normalized to the canonical model dtypes.
 
         Possible responses:
 
@@ -343,7 +327,6 @@ class MindoffCRUDHandler:
         return arrow_reader.stream_batches(
             qs,
             batch_size=batch_size,
-            engine=engine,
             json_column_mode=json_column_mode,
         )
 
@@ -355,10 +338,9 @@ class MindoffCRUDHandler:
         is_partial: bool = False,
         validation_level: Literal["full", "columns_only", "none"] = "full",
         batch_size: int = 1000,
-        is_temp_table: bool = True,
         skip_db_fill: bool = False,
     ):
-        """Upsert rows from model-to-frame mappings with optional staged merge strategy.
+        """Upsert rows from model-to-frame mappings via a staged merge.
 
         Usage:
 
@@ -372,7 +354,6 @@ class MindoffCRUDHandler:
             is_partial=True,
             validation_level="full",
             batch_size=1000,
-            is_temp_table=True,
         )
         ```
 
@@ -389,9 +370,6 @@ class MindoffCRUDHandler:
           regardless of level.
         - `batch_size` (`int, default=1000`):
           Batch size used for missing-column fetch and update processing.
-        - `is_temp_table` (`bool, default=True`):
-          If `True`, writes to staging table then merges;
-          if `False`, performs direct dialect-specific upsert.
         - `skip_db_fill` (`bool, default=False`):
           When `True`, skips the missing-column prefetch (the per-PK `SELECT`
           that back-fills columns the frame omits). Use it when the caller
@@ -413,8 +391,6 @@ class MindoffCRUDHandler:
           the caller must supply database-ready values.
         - `validation_level="none"`: skips all validation; upserts as-is and
           emits an unsafe-write warning.
-        - Upsert mode:
-          staging merge (`is_temp_table=True`) or direct upsert (`is_temp_table=False`).
 
         Possible responses:
 
@@ -427,6 +403,10 @@ class MindoffCRUDHandler:
         - Missing DB columns are auto-fetched using primary key before validation
           unless `skip_db_fill=True`.
         - Invalid rows include model-aware error details in error column.
+        - The staging merge loads the staging table with the same fast
+          same-transaction bulk loader as `create()` (PostgreSQL `COPY`, MySQL
+          `LOAD DATA LOCAL INFILE`, SQLite `executemany`) and then merges
+          set-based in SQL, so no per-row Python materialization occurs.
         """
         model_frms = _update__fill_missing_columns(
             model_frms, batch_size=batch_size, skip_db_fill=skip_db_fill
@@ -447,7 +427,7 @@ class MindoffCRUDHandler:
 
         # Perform CRUD operation
         crud_processor = CRUDProcessor(valid_model_frms)
-        _ = crud_processor.update(is_temp_table=is_temp_table, batch_size=batch_size)
+        _ = crud_processor.update(batch_size=batch_size)
         return status, valid_model_frms, invalid_model_frms
 
 
@@ -582,55 +562,30 @@ class _ModelFrmsValidInvalidSplitter:
 # ----------------
 # Helper Functions
 # ----------------
-def _read__batched_iterator(qs: models.QuerySet, size: int, is_lazy: bool):
-    it = qs.iterator(chunk_size=size)
-    while True:
-        batch = list(islice(it, size))
-        if not batch:
-            break
-        yield pl.DataFrame(batch).lazy() if is_lazy else pl.DataFrame(batch)
-
-
 def _read__collect(
     qs: models.QuerySet,
     *,
     batch_size: int,
     is_lazy: bool,
-    engine: str,
     json_column_mode: str,
 ) -> Union[pl.DataFrame, pl.LazyFrame]:
-    """Materialize a full (streaming-mode) read for the chosen engine."""
-    if engine == "iterator":
-        # Legacy escape hatch: unnormalized frames, deferred .lazy() (not a scan).
-        return pl.concat(
-            _read__batched_iterator(qs, batch_size, is_lazy), rechunk=False
-        )
+    """Materialize a full (streaming-mode) read."""
     if is_lazy:
         # Real larger-than-RAM scan: stream to disk and scan it lazily.
         return arrow_reader.scan_to_lazy(
-            qs, batch_size=batch_size, engine=engine, json_column_mode=json_column_mode
+            qs, batch_size=batch_size, json_column_mode=json_column_mode
         )
-    return arrow_reader.read_frame(qs, engine=engine, json_column_mode=json_column_mode)
-
-
-def _read__page_frame(
-    qs: models.QuerySet, *, engine: str, json_column_mode: str
-) -> pl.DataFrame:
-    """Eagerly read one bounded page/slice for the chosen engine."""
-    if engine == "iterator":
-        return pl.DataFrame(list(qs))
-    return arrow_reader.read_frame(qs, engine=engine, json_column_mode=json_column_mode)
+    return arrow_reader.read_frame(qs, json_column_mode=json_column_mode)
 
 
 def _read__materialize(
     qs: models.QuerySet,
     *,
     is_lazy: bool,
-    engine: str,
     json_column_mode: str,
 ) -> Union[pl.DataFrame, pl.LazyFrame]:
-    """Materialize a single page (pagination-mode) for the chosen engine."""
-    frm = _read__page_frame(qs, engine=engine, json_column_mode=json_column_mode)
+    """Materialize a single page (pagination-mode)."""
+    frm = arrow_reader.read_frame(qs, json_column_mode=json_column_mode)
     return frm.lazy() if is_lazy else frm
 
 
@@ -639,7 +594,6 @@ def _read__stream_mode(
     *,
     batch_size: int,
     is_lazy: bool,
-    engine: str,
     json_column_mode: str,
     with_stats: bool,
 ) -> Tuple[Union[pl.DataFrame, pl.LazyFrame], dict[str, Any]]:
@@ -648,7 +602,6 @@ def _read__stream_mode(
         qs,
         batch_size=batch_size,
         is_lazy=is_lazy,
-        engine=engine,
         json_column_mode=json_column_mode,
     )
     stats = _read__build_stats(
@@ -669,7 +622,6 @@ def _read__paginate_with_stats(
     page_number: int,
     batch_size: int,
     is_lazy: bool,
-    engine: str,
     json_column_mode: str,
 ) -> Tuple[Union[pl.DataFrame, pl.LazyFrame], dict[str, Any]]:
     """Pagination-mode read with full paginator metadata (uses count())."""
@@ -679,7 +631,6 @@ def _read__paginate_with_stats(
         frm = _read__materialize(
             page.object_list,
             is_lazy=is_lazy,
-            engine=engine,
             json_column_mode=json_column_mode,
         )
         stats = _read__build_stats(
@@ -711,13 +662,12 @@ def _read__paginate_no_stats(
     page_number: int,
     batch_size: int,
     is_lazy: bool,
-    engine: str,
     json_column_mode: str,
 ) -> Tuple[Union[pl.DataFrame, pl.LazyFrame], dict[str, Any]]:
     """Pagination-mode read without count(): `has_next` via one extra row."""
     offset = (page_number - 1) * batch_size
     sliced = qs[offset : offset + batch_size + 1]
-    frm = _read__page_frame(sliced, engine=engine, json_column_mode=json_column_mode)
+    frm = arrow_reader.read_frame(sliced, json_column_mode=json_column_mode)
     has_next = frm.height > batch_size
     if has_next:
         frm = frm.head(batch_size)

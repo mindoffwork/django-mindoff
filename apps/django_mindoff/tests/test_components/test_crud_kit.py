@@ -892,8 +892,7 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         status, _, _ = mo_crud_kit.update(author_only, validation_level="none")
         assert status == "ok"
 
-    @pytest.mark.parametrize("is_temp_table", [True, False])
-    def test_update_lazy_frame(self, is_temp_table):
+    def test_update_lazy_frame(self):
         """ACCEPTANCE: Update lazy frame."""
         valid = self._seed(2, 1)
         update_dict = self.mo_update_mock_model_frms(
@@ -903,7 +902,7 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
             counts=[2, 1],
         )
         author_only = {self._author_model: update_dict[self._author_model].lazy()}
-        status, _, _ = mo_crud_kit.update(author_only, is_temp_table=is_temp_table)
+        status, _, _ = mo_crud_kit.update(author_only)
         assert status == "ok"
 
     def test_fill_missing_columns_no_pk_raises(self):
@@ -945,6 +944,55 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         assert status == "ok"
         assert self._author_model.objects.get(pk=author_id).name == "  Spaced  "
 
+    def test_sqlite_create_runs_in_single_explicit_transaction(self, monkeypatch):
+        """REGRESSION: SQLite bulk create wraps all batches in ONE explicit BEGIN.
+
+        Django opens SQLite in pysqlite autocommit mode
+        (``isolation_level=None``). The SQLAlchemy engine is bound to that
+        Django-owned connection via a ``creator``, so without an explicit
+        ``BEGIN`` every batch auto-commits — fsyncing once per row and making a
+        5,000-row create ~100x slower on a file-backed DB (seconds vs tens of
+        seconds). The fix registers a ``begin`` event that emits ``BEGIN`` so the
+        whole create commits once. This guards that wiring: it asserts the
+        begin-event fires exactly once for a multi-batch create (one shared
+        transaction, not per-batch/per-row autocommit) and that every row lands.
+
+        Note: the test DB is ``:memory:`` so the *timing* symptom can't be
+        reproduced (no fsync); we assert the transaction *mechanism* instead,
+        which is what actually regressed.
+        """
+        import apps.django_mindoff.components._crud_kit.crud_processor as cp
+
+        if "sqlite" not in settings.DATABASES["default"]["ENGINE"]:
+            pytest.skip("SQLite-specific transaction regression")
+
+        begin_emits = []
+        real_emit = cp._sqlite_emit_begin
+
+        def _spy_emit(conn):
+            begin_emits.append(1)
+            return real_emit(conn)
+
+        # Engines are rebuilt per call for SQLite, so patching the module-level
+        # name makes the create()-built engine pick up the spy.
+        monkeypatch.setattr(cp, "_sqlite_emit_begin", _spy_emit)
+
+        row_count = 5000
+        df_dict = self.mo_mock_model_frms(
+            models=[self._author_model],
+            counts=[row_count],
+        )
+        # batch_size < row_count forces multiple INSERT batches inside the single
+        # transaction, so begin firing once proves the batches are shared.
+        status, _, _ = mo_crud_kit.create(df_dict, batch_size=1000)
+
+        assert status == "ok"
+        assert self._author_model.objects.count() == row_count
+        assert len(begin_emits) == 1, (
+            "SQLite create must emit exactly one explicit BEGIN for the whole "
+            f"batch; saw {len(begin_emits)} (autocommit regression?)."
+        )
+
     def test_create_all_invalid_rows_returns_fail(self):
         """REJECTION: Create all invalid rows returns fail."""
         df_dict = self.mo_mock_model_frms(
@@ -979,8 +1027,7 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         assert df.shape[0] == stats["total_count"]
         assert stats["mode"] == "streaming"
 
-    @pytest.mark.parametrize("is_temp_table", [True, False])
-    def test_update_upsert_new_row(self, is_temp_table):
+    def test_update_upsert_new_row(self):
         """ACCEPTANCE: Update upsert new row."""
         self._seed(1, 0)
         new_id = _make_uuid()
@@ -993,7 +1040,6 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         )
         status, _, _ = mo_crud_kit.update(
             {self._author_model: new_df},
-            is_temp_table=is_temp_table,
         )
         assert status == "ok"
         # Verify the new row exists in DB
@@ -1042,26 +1088,6 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         status, _, invalid = mo_crud_kit.update({self._book_model: df})
         assert status == "ok"
         assert mo_polars_kit.is_model_frms_empty(invalid)
-
-    def test_read_iterator_engine_matches_count(self):
-        """ACCEPTANCE: Iterator engine returns the legacy frame unchanged."""
-        valid = self._seed(4, 2)
-        expected = valid[self._book_model].shape[0]
-        df, stats = mo_crud_kit.read(
-            self._book_model.objects.all().values(), engine="iterator"
-        )
-        assert df.shape[0] == expected == stats["total_count"]
-
-    def test_read_connectorx_falls_back_on_memory_sqlite(self):
-        """BOUNDARY: connectorx engine warns and falls back for in-memory SQLite."""
-        self._seed(3, 1)
-        with pytest.warns(RuntimeWarning):
-            df, stats = mo_crud_kit.read(
-                self._book_model.objects.all().values(), engine="connectorx"
-            )
-        # Fallback still yields normalized canonical output.
-        assert df.shape[0] == stats["total_count"]
-        assert df.schema["id"] == pl.Utf8
 
     def test_read_subset_then_update_fetches_missing_columns(self):
         """ACCEPTANCE: read() subset (hyphenated UUIDs) -> update fills missing cols.
@@ -1141,18 +1167,6 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         assert [b.shape[0] for b in batches] == [2, 2, 1]
         assert all(b.schema["id"] == pl.Utf8 for b in batches)
         assert sum(b.shape[0] for b in batches) == 5
-
-    def test_read_batches_iterator_engine(self):
-        """A4: read_batches honors the iterator engine (legacy frames)."""
-        self._seed(1, 3)  # 3 books
-        batches = list(
-            mo_crud_kit.read_batches(
-                self._book_model.objects.all().values(),
-                batch_size=2,
-                engine="iterator",
-            )
-        )
-        assert sum(b.shape[0] for b in batches) == 3
 
     def test_create_lazyframe_streams_in_chunks(self):
         """B2: create() writes a LazyFrame in bounded-memory chunks."""
@@ -1480,10 +1494,10 @@ class TestCRUDProcessorEngine:
             CRUDProcessor({model: pl.DataFrame()}, db_alias="nonexistent_alias")
 
     @pytest.mark.parametrize(
-        "django_engine,expected_dialect",
+        "django_engine,expected_dialect,expected_driver",
         [
-            ("django.db.backends.mysql", "mysql+pymysql"),
-            ("django.db.backends.postgresql", "postgresql+psycopg2"),
+            ("django.db.backends.mysql", "mysql", "mysql+pymysql"),
+            ("django.db.backends.postgresql", "postgresql", "postgresql+psycopg2"),
         ],
     )
     def test_mysql_and_postgres_engine_url_with_auth_port(
@@ -1491,6 +1505,7 @@ class TestCRUDProcessorEngine:
         monkeypatch,
         django_engine,
         expected_dialect,
+        expected_driver,
     ):
         """ACCEPTANCE: Mysql and postgres engine url with auth port."""
         from ...components._crud_kit.crud_processor import CRUDProcessor
@@ -1533,7 +1548,7 @@ class TestCRUDProcessorEngine:
         assert processor.dialect == expected_dialect
         assert (
             captured["url"]
-            == f"{expected_dialect}://my+user:p%40ss+word@db.local:5432/mydb"
+            == f"{expected_driver}://my+user:p%40ss+word@db.local:5432/mydb"
         )
         assert calls["ensure_connection"] == 1
 
@@ -1571,7 +1586,7 @@ class TestCRUDProcessorEngine:
         with override_settings(DATABASES=db_settings):
             processor = CRUDProcessor({model: pl.DataFrame()})
 
-        assert processor.dialect == "mysql+pymysql"
+        assert processor.dialect == "mysql"
         assert captured["url"] == "mysql+pymysql://localhost/plain_db"
 
     @pytest.mark.django_db
@@ -1733,6 +1748,7 @@ class TestCRUDProcessorUnitPaths:
         conn = self._FakeConn()
         processor = CRUDProcessor.__new__(CRUDProcessor)
         processor.engine = self._FakeEngine(conn)
+        processor.dialect = "sqlite"
         processor.model_frame_map = {model: pl.DataFrame({"id": [row_id]}).lazy()}
 
         # create() reflects the target table via _reflect_table -> Table(...).
@@ -1747,45 +1763,6 @@ class TestCRUDProcessorUnitPaths:
         # One insert statement was executed with the frame rows as parameters.
         assert conn.executed == [fake_table._stmt]
         assert conn.exec_params == [[{"id": row_id}]]
-
-    @pytest.mark.parametrize(
-        "dialect,expected_execute_tag",
-        [
-            ("postgresql", "on_conflict_do_update"),
-            ("mysql", "on_duplicate_key_update"),
-            ("sqlite", "on_conflict_do_update"),
-        ],
-    )
-    def test_update_df_insert_non_temp_dialect_paths(
-        self, monkeypatch, dialect, expected_execute_tag
-    ):
-        """ACCEPTANCE: Update df insert non temp dialect paths."""
-        from ...components._crud_kit.crud_processor import CRUDProcessor
-
-        processor = CRUDProcessor.__new__(CRUDProcessor)
-        processor.dialect = dialect
-        conn = self._FakeConn()
-        table = self._FakeTableForInsert(["id", "name"])
-        df = pl.DataFrame({"id": [uuid.uuid4().hex], "name": ["Alice"]})
-
-        if dialect == "sqlite":
-            monkeypatch.setattr(
-                "apps.django_mindoff.components._crud_kit.crud_processor.sqlite_insert",
-                lambda _table: table._stmt,
-            )
-
-        processor._update__df_insert(
-            df,
-            is_temp_table=False,
-            temp_table_name="temp_upsert",
-            table=table,
-            pk_field="id",
-            pk_col="id",
-            conn=conn,
-        )
-
-        assert len(conn.executed) == 1
-        assert conn.executed[0][0] == expected_execute_tag
 
     @pytest.mark.parametrize(
         "dialect,expected_execute_tag",
@@ -2129,6 +2106,176 @@ class TestArrowReaderUnit:
         with override_settings(DATABASES={**settings.DATABASES, "pg": cfg}):
             uri = _connectorx_uri("pg")
         assert uri == "postgresql://u:p@h:5432/mydb"
+
+    # ---- connectorx parameter inlining (safe literal rendering) ----
+
+    def test_sql_literal_scalar_types(self):
+        """ACCEPTANCE: scalars render to correct SQL literals."""
+        from decimal import Decimal
+        import datetime as _dt
+        from ...components._crud_kit.arrow_reader import _sql_literal
+
+        lit = lambda v: _sql_literal(v, mysql=False)
+        assert lit(None) == "NULL"
+        assert lit(True) == "1" and lit(False) == "0"
+        assert lit(42) == "42"
+        assert lit(-7) == "-7"
+        assert lit(3.5) == "3.5"
+        assert lit(Decimal("10.25")) == "10.25"
+        assert lit(b"\x00\xff") == "X'00ff'"
+        assert lit("hi") == "'hi'"
+        assert lit(_dt.date(2024, 1, 2)) == "'2024-01-02'"
+        assert lit(_dt.datetime(2024, 1, 2, 3, 4, 5)) == "'2024-01-02 03:04:05'"
+
+    def test_sql_literal_rejects_non_finite_and_nul(self):
+        """REJECTION: non-finite numbers and NUL bytes are refused."""
+        from decimal import Decimal
+        from ...components._crud_kit.arrow_reader import _sql_literal
+
+        for bad in (float("inf"), float("nan"), Decimal("Infinity")):
+            with pytest.raises(ValueError):
+                _sql_literal(bad, mysql=False)
+        with pytest.raises(ValueError):
+            _sql_literal("a\x00b", mysql=False)
+
+    def test_sql_literal_escapes_quotes_injection_safe(self):
+        """SECURITY: embedded single quotes are doubled, not breakable."""
+        from ...components._crud_kit.arrow_reader import _sql_literal
+
+        attack = "x'); DROP TABLE users; --"
+        out = _sql_literal(attack, mysql=False)
+        # The whole value stays inside one quoted literal (quotes doubled).
+        assert out == "'x''); DROP TABLE users; --'"
+        # Quote count is even -> the literal is balanced/closed.
+        assert out.count("'") % 2 == 0
+
+    def test_sql_literal_mysql_escapes_backslash(self):
+        """SECURITY: MySQL also escapes backslashes; standard SQL does not."""
+        from ...components._crud_kit.arrow_reader import _sql_literal
+
+        # A backslash-quote that would break a MySQL literal if left unescaped.
+        value = "a\\'b"
+        assert _sql_literal(value, mysql=True) == "'a\\\\''b'"
+        # Standard SQL (SQLite/PG) keeps backslashes literal, only doubles quotes.
+        assert _sql_literal(value, mysql=False) == "'a\\''b'"
+
+    def test_inline_params_expands_placeholders_and_percent(self):
+        """ACCEPTANCE: %s is filled from literals and %% collapses to %."""
+        from ...components._crud_kit.arrow_reader import _inline_params
+
+        sql = "SELECT * FROM t WHERE a = %s AND b LIKE %s ESCAPE '\\' OR c = %s"
+        out = _inline_params(sql, (1, "%ab%", None), mysql=False)
+        assert out == (
+            "SELECT * FROM t WHERE a = 1 AND b LIKE '%ab%' ESCAPE '\\' OR c = NULL"
+        )
+        # %% in the SQL becomes a single literal % (format-paramstyle contract).
+        assert _inline_params("SELECT 50 %% 7", (), mysql=False) == "SELECT 50 % 7"
+
+    def test_inline_params_pattern_percent_not_reinterpreted(self):
+        """SECURITY: % inside a substituted literal is not reprocessed."""
+        from ...components._crud_kit.arrow_reader import _inline_params
+
+        # Two placeholders; the first value contains %s-looking text that must
+        # NOT consume the second placeholder or raise.
+        out = _inline_params("WHERE a = %s AND b = %s", ("%s %d %%", 9), mysql=False)
+        assert out == "WHERE a = '%s %d %%' AND b = 9"
+
+    @pytest.mark.django_db
+    def test_try_connectorx_inlines_real_contains_query_safely(self, monkeypatch):
+        """E/ConnectorX: a __contains query inlines to valid, safe SQL.
+
+        Reproduces the original failure (str(qs.query) rendered LIKE patterns
+        unquoted) and proves the fix: the compiled query is inlined into valid
+        SQL with the pattern properly quoted, and the result is executable.
+        """
+        import sqlite3
+        from django.contrib.contenttypes.models import ContentType
+        from ...components._crud_kit import arrow_reader as ar
+
+        captured = {}
+        monkeypatch.setattr(ar, "_connectorx_uri", lambda _alias: "sqlite:///x.db")
+
+        def _fake_read_database_uri(sql, uri):
+            captured["sql"] = sql
+            return pl.DataFrame({"id": []})
+
+        monkeypatch.setattr(ar.pl, "read_database_uri", _fake_read_database_uri)
+
+        qs = ContentType.objects.filter(model__contains="a'b%c").values("id")
+        result = ar._try_connectorx(qs)
+        assert result is not None
+
+        inlined = captured["sql"]
+        # No leftover placeholders; the embedded single quote is doubled (so the
+        # injection-prone value stays inside one literal); quotes stay balanced.
+        assert "%s" not in inlined
+        assert "a''b" in inlined
+        assert inlined.count("'") % 2 == 0
+        # Valid, executable SQL — unlike the old str(qs.query) rendering.
+        assert sqlite3.complete_statement(inlined + ";")
+
+    # ---- read routing (ConnectorX when safe, else Django cursor) ----
+
+    def test_read_frame_uses_connectorx_only_when_usable(self, monkeypatch):
+        """ACCEPTANCE: ConnectorX is used only when the read is safe.
+
+        ``read_frame`` reaches for ConnectorX's zero-copy path only when
+        ``_connectorx_usable`` allows it (committed-data read); when it can't
+        (open transaction, in-memory SQLite), it goes straight to the Django
+        cursor without ever attempting ConnectorX.
+        """
+        from ...components._crud_kit import arrow_reader as ar
+
+        calls = {"cx": 0}
+
+        class _QS:
+            db = "default"
+            model = object()
+
+        monkeypatch.setattr(ar, "_normalize", lambda frm, *a, **k: frm)
+        monkeypatch.setattr(ar, "_execute_django", lambda qs: "django")
+
+        def _fake_cx(qs):
+            calls["cx"] += 1
+            return "connectorx"
+
+        monkeypatch.setattr(ar, "_try_connectorx", _fake_cx)
+
+        # Usable (not in a transaction): ConnectorX is used.
+        monkeypatch.setattr(ar, "_connectorx_usable", lambda _db: True)
+        assert ar.read_frame(_QS()) == "connectorx"
+        assert calls["cx"] == 1
+
+        # Not usable (open txn / in-memory): ConnectorX is never attempted.
+        monkeypatch.setattr(ar, "_connectorx_usable", lambda _db: False)
+        assert ar.read_frame(_QS()) == "django"
+        assert calls["cx"] == 1
+
+    def test_read_frame_falls_back_to_cursor_when_connectorx_returns_none(
+        self, monkeypatch
+    ):
+        """ACCEPTANCE: a None from ConnectorX transparently uses the cursor."""
+        from ...components._crud_kit import arrow_reader as ar
+
+        class _QS:
+            db = "default"
+            model = object()
+
+        monkeypatch.setattr(ar, "_normalize", lambda frm, *a, **k: frm)
+        monkeypatch.setattr(ar, "_execute_django", lambda qs: "django")
+        monkeypatch.setattr(ar, "_connectorx_usable", lambda _db: True)
+        monkeypatch.setattr(ar, "_try_connectorx", lambda qs: None)
+        assert ar.read_frame(_QS()) == "django"
+
+    @pytest.mark.django_db(transaction=True)
+    def test_connectorx_usable_reflects_transaction_state(self):
+        """BOUNDARY: auto's connectorx gate tracks the open-transaction state."""
+        from django.db import transaction
+        from ...components._crud_kit.arrow_reader import _connectorx_usable
+
+        assert _connectorx_usable("default") is True
+        with transaction.atomic():
+            assert _connectorx_usable("default") is False
 
 
 def _register_app(temp_dir: Path, app_name: str):

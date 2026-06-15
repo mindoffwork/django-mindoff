@@ -2,33 +2,33 @@
 Read fast path: build Polars frames straight from the database instead of
 materializing one Python ``dict`` per row through the ORM iterator.
 
-Engines
--------
-- ``"django"`` (also the ``"auto"`` default): execute the queryset's compiled
-  SQL through Django's own cursor. Django handles placeholder conversion,
-  parameter adaptation and transaction visibility on every backend, and the
-  result is assembled column-wise -- Arrow-native when the driver cursor
-  exposes ``fetch_arrow_table``, otherwise from row tuples (never
-  list-of-dicts).
-- ``"connectorx"``: hand the compiled SQL to ConnectorX via
-  ``pl.read_database_uri`` for a zero-copy DB -> Arrow transfer. Opt-in:
-  ConnectorX opens its own connection, so it cannot see uncommitted
-  transaction state (and cannot reach an in-memory SQLite database).
-- ``"iterator"``: the legacy ORM-iterator path. Kept as a guaranteed-compatible
-  fallback and escape hatch; its output is left exactly as the ORM produced it.
+A read always takes the fastest path that can still return correct data:
 
-Whatever the engine, frames from the ``django``/``connectorx`` paths are
-normalized to the canonical dtypes in :data:`dtypes.DJANGO_TO_POLARS_TYPE_MAP`
-so reads stay consistent with what the create/update validators expect.
+- ConnectorX's zero-copy DB -> Arrow transfer (``pl.read_database_uri``) when
+  the read is safe — i.e. outside an open transaction, since ConnectorX opens
+  its own connection and cannot see uncommitted rows (nor reach an in-memory
+  SQLite database).
+- Otherwise (open transaction, in-memory SQLite, ConnectorX unavailable) the
+  queryset's compiled SQL runs through Django's own cursor, which shares the
+  live connection — handling placeholder conversion, parameter adaptation and
+  transaction visibility on every backend — and the frame is assembled
+  column-wise: Arrow-native when the driver cursor exposes ``fetch_arrow_table``,
+  otherwise from row tuples (never list-of-dicts). Streaming reads always use
+  this cursor path, since ConnectorX has no streaming cursor.
+
+Frames are normalized to the canonical dtypes in
+:data:`dtypes.DJANGO_TO_POLARS_TYPE_MAP` so reads stay consistent with what the
+create/update validators expect.
 """
 
 import atexit
+import datetime
+import math
 import os
 import pathlib
 import tempfile
-import warnings
 import weakref
-from itertools import islice
+from decimal import Decimal
 from urllib.parse import quote_plus
 
 import orjson
@@ -49,51 +49,45 @@ _UUID_HYPHENATE = r"^(.{8})(.{4})(.{4})(.{4})(.{12})$"
 # ----------------
 # Functions
 # ----------------
-def read_frame(qs, *, engine: str = "auto", json_column_mode: str = "auto"):
-    """Return an eager ``pl.DataFrame`` for ``qs`` using the requested engine.
+def read_frame(qs, *, json_column_mode: str = "auto"):
+    """Return an eager ``pl.DataFrame`` for ``qs`` via the fastest correct path.
 
     ``qs`` must already be a ``.values()`` queryset and is expected to be sliced
-    (LIMIT/OFFSET applied) by the caller for pagination. Unknown/failed fast-path
-    engines fall back to the ORM iterator so a read never hard-fails on the
-    fast path.
+    (LIMIT/OFFSET applied) by the caller for pagination.
+
+    Uses ConnectorX's zero-copy DB->Arrow transfer when the read is safe — i.e.
+    outside an open transaction, since ConnectorX opens its own connection and
+    cannot see uncommitted rows — and otherwise (open transaction, in-memory
+    SQLite, ConnectorX unavailable) reads through Django's own cursor, which
+    shares the live connection.
     """
     model = qs.model
-
-    if engine == "iterator":
-        return _execute_iterator(qs)
-
-    if engine == "connectorx":
-        frm = _try_connectorx(qs)
-        if frm is None:
-            frm = _execute_django(qs)
-    else:  # "auto" / "django"
-        try:
-            frm = _execute_django(qs)
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            warnings.warn(
-                f"Read fast path failed ({type(exc).__name__}: {exc}); "
-                "falling back to the ORM iterator.",
-                RuntimeWarning,
-            )
-            return _execute_iterator(qs)
-
-    return _normalize(frm, model, json_column_mode, engine)
+    frm = _try_connectorx(qs) if _connectorx_usable(qs.db) else None
+    if frm is None:
+        frm = _execute_django(qs)
+    return _normalize(frm, model, json_column_mode)
 
 
-def stream_batches(qs, *, batch_size: int, engine: str = "auto",
-                   json_column_mode: str = "auto"):
+def _connectorx_usable(db_alias: str) -> bool:
+    """Whether ConnectorX may be used for ``db_alias`` right now.
+
+    ConnectorX reads over its own connection, so it cannot see rows written but
+    not yet committed in the current transaction. We therefore only reach for it
+    outside an open atomic block; inside one (Django's ``TestCase``,
+    ``ATOMIC_REQUESTS``, an explicit ``transaction.atomic()``) the read defers to
+    the Django cursor, which shares the live connection.
+    """
+    return not connections[db_alias].in_atomic_block
+
+
+def stream_batches(qs, *, batch_size: int, json_column_mode: str = "auto"):
     """Yield the queryset as a sequence of Polars frames, never concatenated.
 
-    Memory-bounded: rows are pulled from the database one ``batch_size`` chunk at
-    a time. The ``iterator`` engine streams ORM ``.values()`` dicts (output left
-    as-is); every other engine streams Django's cursor with ``fetchmany`` and
-    normalizes each batch to the canonical model dtypes. (ConnectorX has no
-    streaming cursor, so it routes through the Django-cursor path here.)
+    Memory-bounded: rows are pulled from Django's cursor one ``batch_size`` chunk
+    at a time via ``fetchmany`` and each batch is normalized to the canonical
+    model dtypes. (Streaming always uses the cursor — ConnectorX has no streaming
+    cursor.)
     """
-    if engine == "iterator":
-        yield from _iterator_batches(qs, batch_size)
-        return
-
     model = qs.model
     sql, params = qs.query.get_compiler(using=qs.db).as_sql()
     conn = connections[qs.db]
@@ -106,10 +100,10 @@ def stream_batches(qs, *, batch_size: int, engine: str = "auto",
             if not rows:
                 break
             frm = pl.from_records(rows, schema=description, orient="row")
-            yield _normalize(frm, model, json_column_mode, engine)
+            yield _normalize(frm, model, json_column_mode)
 
 
-def scan_to_lazy(qs, *, batch_size: int, engine: str = "auto",
+def scan_to_lazy(qs, *, batch_size: int,
                  json_column_mode: str = "auto") -> pl.LazyFrame:
     """Stream the queryset to a temp Parquet file and return a lazy scan.
 
@@ -126,8 +120,7 @@ def scan_to_lazy(qs, *, batch_size: int, engine: str = "auto",
     target_schema = None
     try:
         for frm in stream_batches(
-            qs, batch_size=batch_size, engine=engine,
-            json_column_mode=json_column_mode,
+            qs, batch_size=batch_size, json_column_mode=json_column_mode,
         ):
             if target_schema is None:
                 target_schema = frm.schema
@@ -152,16 +145,6 @@ def scan_to_lazy(qs, *, batch_size: int, engine: str = "auto",
     weakref.finalize(lazy, _safe_unlink, tmp_path)
     atexit.register(_safe_unlink, tmp_path)
     return lazy
-
-
-def _iterator_batches(qs, batch_size: int):
-    """Legacy streaming: ORM ``.values()`` dicts in chunks (output unchanged)."""
-    it = qs.iterator(chunk_size=batch_size)
-    while True:
-        batch = list(islice(it, batch_size))
-        if not batch:
-            break
-        yield pl.DataFrame(batch)
 
 
 def _safe_unlink(path: str) -> None:
@@ -204,38 +187,39 @@ def _execute_django(qs) -> pl.DataFrame:
     return pl.from_records(rows, schema=description, orient="row")
 
 
-def _execute_iterator(qs) -> pl.DataFrame:
-    """Legacy path: materialize ORM ``.values()`` dicts into a frame."""
-    return pl.DataFrame(list(qs))
-
-
 def _try_connectorx(qs):
-    """Read via ConnectorX, or return ``None`` to signal a fallback."""
+    """Read via ConnectorX, or return ``None`` to signal a (silent) fallback.
+
+    Returns ``None`` — so the caller transparently uses Django's cursor — when
+    ConnectorX is not importable, has no usable URI for the backend (unsupported
+    engine or in-memory SQLite), the query parameters cannot be safely inlined,
+    or the transfer itself fails.
+    """
     try:
         import connectorx  # noqa: F401
     except Exception:
-        warnings.warn(
-            "engine='connectorx' requested but connectorx is not importable; "
-            "falling back to the Django cursor engine.",
-            RuntimeWarning,
-        )
         return None
 
     uri = _connectorx_uri(qs.db)
     if uri is None:
-        warnings.warn(
-            "engine='connectorx' is not available for this database "
-            "(unsupported backend or in-memory SQLite); falling back to the "
-            "Django cursor engine.",
-            RuntimeWarning,
-        )
         return None
 
-    # ConnectorX uses its own connection and accepts only a raw SQL string, so
-    # parameters are inlined via the query's string form. The SQL aliases each
-    # column to its `.values()` key, so result column names already match.
-    sql = str(qs.query)  # pragma: no cover - requires a live external DB
-    return pl.read_database_uri(sql, uri)  # pragma: no cover
+    # ConnectorX uses its own connection and accepts only a raw SQL string (no
+    # bound parameters). Compile the *parameterized* query and inline the
+    # parameters as safely-escaped SQL literals. We must NOT use str(qs.query):
+    # it renders string/LIKE parameters unquoted, producing SQL that is both
+    # invalid and injectable. The compiled SQL aliases each column to its
+    # `.values()` key, so result column names already match.
+    engine = settings.DATABASES.get(qs.db, {}).get("ENGINE", "")
+    sql, params = qs.query.get_compiler(using=qs.db).as_sql()
+    try:
+        inlined_sql = _inline_params(sql, params, mysql="mysql" in engine)
+    except ValueError:
+        return None
+    try:  # pragma: no cover - needs live DB
+        return pl.read_database_uri(inlined_sql, uri)
+    except Exception:  # pragma: no cover - needs live DB
+        return None
 
 
 def _connectorx_uri(db_alias: str):
@@ -270,8 +254,76 @@ def _connectorx_uri(db_alias: str):
     return None
 
 
+def _inline_params(sql: str, params, *, mysql: bool) -> str:
+    """Inline parameters into format-paramstyle (``%s``) SQL as safe literals.
+
+    Django compiles querysets with ``%s`` placeholders and ``%%`` for literal
+    percent signs (the DB-API "format" paramstyle). ConnectorX accepts only a raw
+    SQL string, so each parameter is rendered as a properly-escaped SQL literal
+    and substituted with Python's ``%`` operator — which expands ``%s`` from the
+    literals and collapses ``%%`` to ``%`` exactly as the driver would. Crucially,
+    ``%`` characters *inside* the substituted literals (e.g. a ``LIKE`` pattern)
+    are not re-interpreted, so escaping is single-pass and injection-safe.
+    """
+    literals = tuple(_sql_literal(p, mysql=mysql) for p in params)
+    return sql % literals
+
+
+def _sql_literal(value, *, mysql: bool) -> str:
+    """Render a Python value as a safely-escaped SQL literal.
+
+    Every string (and any unrecognized type, via ``str()``) is wrapped in single
+    quotes with embedded quotes doubled (and backslashes escaped on MySQL), so a
+    value can never break out of its literal — this is the SQL-injection guard.
+    """
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(int(value))
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("cannot inline non-finite float")
+        return repr(value)
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("cannot inline non-finite Decimal")
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        # Hex blob literal (X'..'): only hex digits, so inherently injection-safe.
+        return "X'" + bytes(value).hex() + "'"
+    return _quote_string(_stringify(value), mysql=mysql)
+
+
+def _stringify(value) -> str:
+    """Render non-numeric values to their SQL string-literal text form."""
+    if isinstance(value, datetime.datetime):
+        # Space separator matches Django's stored SQLite datetime text.
+        return value.isoformat(sep=" ")
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    return value if isinstance(value, str) else str(value)
+
+
+def _quote_string(text: str, *, mysql: bool) -> str:
+    """Quote a string as a SQL literal, escaping for injection safety.
+
+    Standard SQL (SQLite, PostgreSQL with ``standard_conforming_strings`` on —
+    the default) treats backslashes literally, so doubling single quotes is
+    sufficient. MySQL processes backslash escapes by default, so backslashes are
+    doubled as well. A NUL byte cannot appear in a SQL string literal and is
+    rejected outright.
+    """
+    if "\x00" in text:
+        raise ValueError("NUL byte is not allowed in a SQL string literal")
+    if mysql:
+        text = text.replace("\\", "\\\\")
+    return "'" + text.replace("'", "''") + "'"
+
+
 def _normalize(
-    frm: pl.DataFrame, model, json_column_mode: str, engine: str
+    frm: pl.DataFrame, model, json_column_mode: str
 ) -> pl.DataFrame:
     """Coerce columns to the canonical model dtypes (no-op on empty frames)."""
     if frm.height == 0:
@@ -292,7 +344,7 @@ def _normalize(
         if field_cls in _UUID_FIELDS:
             exprs.append(_uuid_expr(column))
         elif field_cls == "JSONField":
-            exprs.append(_json_expr(column, json_column_mode, engine))
+            exprs.append(_json_expr(column, json_column_mode))
         elif field_cls == "DateTimeField":
             exprs.append(_datetime_expr(column, schema[column]))
         else:
@@ -333,13 +385,12 @@ def _datetime_expr(column: str, dtype) -> pl.Expr:
     )
 
 
-def _json_expr(column: str, json_column_mode: str, engine: str) -> pl.Expr:
+def _json_expr(column: str, json_column_mode: str) -> pl.Expr:
     """Return a JSON column as raw text or parsed ``pl.Object`` per the mode."""
     mode = json_column_mode
     if mode == "auto":
-        # The iterator engine already yields parsed Python objects; the
-        # fast paths surface raw JSON text.
-        mode = "object" if engine == "iterator" else "text"
+        # The DB surfaces JSON as raw text; ``object`` is an explicit opt-in.
+        mode = "text"
 
     if mode == "text":
         return pl.col(column).cast(pl.Utf8, strict=False).alias(column)
