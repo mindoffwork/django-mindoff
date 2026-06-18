@@ -1,0 +1,62 @@
+name: 🐛 Bug report
+description: Something in django-mindoff is broken or behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please confirm the bug on the
+        **latest release** of `django-mindoff` before filing.
+
+        Only the latest version is actively supported — check
+        `pip show django-mindoff` and compare with [PyPI](https://pypi.org/project/django-mindoff/).
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you start
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: I confirmed this on the latest `django-mindoff` release.
+          required: true
+        - label: This is a bug in the framework, not a usage question (those belong in Discussions).
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see, and why is it wrong?
+      placeholder: "`mo_crud_kit.bulk_create` raised… / `mo_response_kit` returned…"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Exact code or commands. A minimal repro gets a fix much faster.
+      placeholder: |
+        1. pip install django-mindoff==X.Y.Z
+        2. # minimal model + view
+        3. curl -X POST .../v1/...
+        4. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, Django version, django-mindoff version, and any relevant optional deps (DRF, Polars, Redis…).
+      placeholder: |
+        OS: Ubuntu 24.04
+        Python: 3.13
+        Django: 5.x
+        django-mindoff: 0.7.0
+        Optional deps: polars 1.x, dramatiq 1.x
+    validations:
+      required: true

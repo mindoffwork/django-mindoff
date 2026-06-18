@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Python dependencies — keeps Django, dev/test deps, and optional integration
+  # deps current. Runtime integration deps must stay in sync between
+  # pyproject.toml [internal] and checks.py; Dependabot PRs for those need
+  # both files reviewed before merging.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    target-branch: root
+    labels:
+      - internal
+    commit-message:
+      prefix: "⬆️"
+    open-pull-requests-limit: 5
+
+  # GitHub Actions used in our workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    target-branch: root
+    labels:
+      - internal
+    commit-message:
+      prefix: "⬆️"

@@ -1,0 +1,26 @@
+name: 📝 Documentation issue
+description: Something in the docs, docstrings, or README is wrong, unclear, or missing.
+labels: ["documentation"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you start
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      description: URL on django.mindoff.work, file path (e.g. `apps/django_mindoff/docs/…`), or docstring location.
+      placeholder: "https://django.mindoff.work/latest-release/api/mo_crud_kit/#bulk_create"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong or missing
+      description: Quote the current text if you can, and say what would be correct or clearer.
+    validations:
+      required: true
