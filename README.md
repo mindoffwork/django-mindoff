@@ -51,6 +51,16 @@ For the ones working with large datasets, the Framework integrates natively with
 10. **Tests With Almost No Setup**  
     Write API tests using declarative test mixins that talk to the API automatically. Focus on verifying behavior instead of crafting request calls and basic assertions, which are handled automatically by Mindoff.
 
+## Performance
+
+Benchmarked against the [django-mindoff-benchmark](https://github.com/mindoffwork/django-mindoff-benchmark) example project using a real catalog dataset. Results compare Django ORM loops vs. Mindoff's vectorized Polars pipeline.
+
+![Create benchmark](https://raw.githubusercontent.com/mindoffwork/django-mindoff-benchmark/root/benchmarks/catalog_benchmark_create.png)
+![Read benchmark](https://raw.githubusercontent.com/mindoffwork/django-mindoff-benchmark/root/benchmarks/catalog_benchmark_read.png)
+![Update benchmark](https://raw.githubusercontent.com/mindoffwork/django-mindoff-benchmark/root/benchmarks/catalog_benchmark_update.png)
+
+Full methodology and raw results: [django-mindoff-benchmark](https://github.com/mindoffwork/django-mindoff-benchmark)
+
 ## Quick Start
 
 ### 1. Install the Package
