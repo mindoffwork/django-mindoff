@@ -72,7 +72,7 @@ jobs:
             --cov-report=xml \
             --cov-fail-under=90
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.xml
           flags: root
