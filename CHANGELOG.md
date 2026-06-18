@@ -6,6 +6,7 @@
 - 📝 Document CRUD benchmark results in README ([#37](https://github.com/mindoffwork/django-mindoff/pull/37))
 
 ### Internal
+- ⬆️ Bump codecov/codecov-action from 4 to 7 ([#39](https://github.com/mindoffwork/django-mindoff/pull/39))
 - 🔧 Add GitHub issue, PR, and Dependabot templates ([#38](https://github.com/mindoffwork/django-mindoff/pull/38))
 
 ## v0.7.0
