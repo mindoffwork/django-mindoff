@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "django-mindoff"
 version = "0.6.0"
-description = "Build production-ready Django REST APIs faster with less boilerplate."
+description = "Build production-ready Django REST APIs with native Polars support and built-in queueing."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.12"
 license = "BSD-3-Clause"

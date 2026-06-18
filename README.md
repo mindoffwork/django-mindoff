@@ -1,11 +1,12 @@
 <h1>Django Mindoff</h1>
 
-_Build production-ready Django REST APIs faster with less boilerplate._
+_Build production-ready Django REST APIs with native Polars support and built-in queueing._
 
 ![Django Mindoff cover image](https://raw.githubusercontent.com/mindoffwork/mindoff.work/refs/heads/root/public/images/projects/django_mindoff/django-mindoff-cover-with-name.png)
 
-Django Mindoff is an architectural framework that manages the structure and mechanics of API development so developers can focus on business logic, with efficient data workflows powered by Polars.
+Django Mindoff is an architectural framework that covers four recurring pain points in Django API development. It scaffolds new projects and apps with a modular, production-ready layout and handles the repetitive wiring that usually fills the first day of any new project. Every API gets payload validation, standardized responses, versioning, and basic automated tests built in by default, without any extra configuration. For teams dealing with large datasets, Mindoff integrates natively with Polars so reads and writes operate on DataFrames directly, with vectorized validation and bulk database writes instead of serializer loops. And when an API needs to run in the background, switching to queue-based execution is a single config change and Mindoff manages the Dramatiq and Redis layer, including retries, cancellation, and status tracking.
 
+[![CI](https://github.com/mindoffwork/django-mindoff/actions/workflows/ci.yml/badge.svg?branch=root)](https://github.com/mindoffwork/django-mindoff/actions/workflows/ci.yml)
 [![Coverage Status](https://codecov.io/gh/mindoffwork/django-mindoff/branch/root/graph/badge.svg)](https://codecov.io/gh/mindoffwork/django-mindoff)
 [![PyPI version](https://img.shields.io/pypi/v/django-mindoff.svg?logo=pypi&logoColor=white)](https://pypi.org/project/django-mindoff/)
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white)](https://github.com/mindoffwork/django-mindoff/actions/workflows/ci.yml)
@@ -15,19 +16,6 @@ Django Mindoff is an architectural framework that manages the structure and mech
 **Source**: [https://github.com/mindoffwork/django-mindoff](https://github.com/mindoffwork/django-mindoff)
 
 **Case Study**: [https://mindoff.work/projects/django-mindoff](https://mindoff.work/projects/django-mindoff/)
-
-## Philosophy
-
-Django Mindoff is not a replacement for Django or Django REST Framework — it is a purposeful complement built on top of both.
-
-Django and DRF handle the things they were designed for extremely well: request routing, authentication, permissions, serializer-driven row-level validation, and the request/response lifecycle. Mindoff uses Django and DRF internally for exactly that and does not compete with them. What they were not designed for is **high-volume tabular data**: fetching 100 000 rows through a serializer loop, bulk-inserting a Polars DataFrame with FK integrity checks across related models, or streaming a dataset that exceeds available RAM without ever holding it all in memory.
-
-Mindoff fills that gap with a data-engineering layer built around **Polars DataFrames and LazyFrames**. The rule of thumb is simple:
-
-- **For everyday operations** — creating a single record, updating a user profile, listing 20 results — native Django serializers or pandas are the right tools. They are simpler to write, easier to debug, and perfectly adequate at that scale.
-- **For large dataset workflows** — bulk ingestion from external sources, high-volume exports, data transformation pipelines, update-or-insert across tens of thousands of rows — use `mo_crud_kit`. It applies the same structured, model-aware validation as a serializer, but runs it in a vectorized, loop-free pipeline and writes to the database using each backend's native bulk-load path rather than row-by-row SQL.
-
-The rest of the framework — structured APIs, validation helpers, response contracts, background queueing, test utilities — is designed to work naturally alongside standard Django/DRF patterns, not replace them.
 
 ## Key Features
 
