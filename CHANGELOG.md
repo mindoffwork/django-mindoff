@@ -6,6 +6,11 @@
 - 📝 Document CRUD benchmark results in README ([#37](https://github.com/mindoffwork/django-mindoff/pull/37))
 
 ### Internal
+- ⬆️ Update pandas requirement from <3.0,>=2.2.0 to >=2.2.0,<4.0 ([#43](https://github.com/mindoffwork/django-mindoff/pull/43))
+- ⬆️ Bump actions/upload-artifact from 4 to 7 ([#42](https://github.com/mindoffwork/django-mindoff/pull/42))
+- ⬆️ Bump actions/github-script from 7 to 9 ([#41](https://github.com/mindoffwork/django-mindoff/pull/41))
+- ⬆️ Bump actions/setup-python from 5 to 6 ([#40](https://github.com/mindoffwork/django-mindoff/pull/40))
+- ⬆️ Bump codecov/codecov-action from 4 to 7 ([#39](https://github.com/mindoffwork/django-mindoff/pull/39))
 - 🔧 Add GitHub issue, PR, and Dependabot templates ([#38](https://github.com/mindoffwork/django-mindoff/pull/38))
 
 ## v0.7.0
