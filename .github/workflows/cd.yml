@@ -30,7 +30,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: root
           token: ${{ secrets.PAT_TOKEN }}
@@ -55,7 +55,7 @@ jobs:
       id-token: write
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: root
           token: ${{ secrets.PAT_TOKEN }}
@@ -112,7 +112,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: root
           token: ${{ secrets.PAT_TOKEN }}
