@@ -1,11 +1,12 @@
-import os
+from django_mindoff.components._api_kit.queue_process import QueueProcess
 
-import django
+class QueueWorker:
+    def __init__(self):
+        self.queue_process = QueueProcess()
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
-django.setup()
+    def execute_queue(self):
+        # Current implementation
+        pass
 
-# Import actors so Dramatiq discovers and registers them on worker startup.
-from .components._api_kit.queue_process import dramatiq_healthcheck, execute_queue
-
-__all__ = ["execute_queue", "dramatiq_healthcheck"]
+    def dramatiq_healthcheck(self):
+        return self.queue_process.dramatiq_healthcheck()
