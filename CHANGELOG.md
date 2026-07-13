@@ -6,6 +6,17 @@
 - 📝 Document CRUD benchmark results in README ([#37](https://github.com/mindoffwork/django-mindoff/pull/37))
 
 ### Internal
+- ⬆️ Update pymdown-extensions requirement from <11.0,>=10.0 to >=10.0,<12.0 ([#49](https://github.com/mindoffwork/django-mindoff/pull/49))
+- ⬆️ Update dramatiq requirement from <2.0,>=1.17.0 to >=1.17.0,<3.0 ([#48](https://github.com/mindoffwork/django-mindoff/pull/48))
+- ⬆️ Update pyarrow requirement from <20.0.0,>=17.0.0 to >=17.0.0,<25.0.0 ([#46](https://github.com/mindoffwork/django-mindoff/pull/46))
+- ⬆️ Bump actions/checkout from 6 to 7 ([#47](https://github.com/mindoffwork/django-mindoff/pull/47))
+- ⬆️ Update pytest requirement from <9.0,>=8.0 to >=8.0,<10.0 ([#45](https://github.com/mindoffwork/django-mindoff/pull/45))
+- ⬆️ Update redis requirement from <6.0.0,>=5.0.0 to >=5.0.0,<9.0.0 ([#44](https://github.com/mindoffwork/django-mindoff/pull/44))
+- ⬆️ Update pandas requirement from <3.0,>=2.2.0 to >=2.2.0,<4.0 ([#43](https://github.com/mindoffwork/django-mindoff/pull/43))
+- ⬆️ Bump actions/upload-artifact from 4 to 7 ([#42](https://github.com/mindoffwork/django-mindoff/pull/42))
+- ⬆️ Bump actions/github-script from 7 to 9 ([#41](https://github.com/mindoffwork/django-mindoff/pull/41))
+- ⬆️ Bump actions/setup-python from 5 to 6 ([#40](https://github.com/mindoffwork/django-mindoff/pull/40))
+- ⬆️ Bump codecov/codecov-action from 4 to 7 ([#39](https://github.com/mindoffwork/django-mindoff/pull/39))
 - 🔧 Add GitHub issue, PR, and Dependabot templates ([#38](https://github.com/mindoffwork/django-mindoff/pull/38))
 
 ## v0.7.0
