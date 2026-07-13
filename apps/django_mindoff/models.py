@@ -48,11 +48,7 @@ class MOQueue(TimeStampModel):
     error = models.JSONField(null=True, blank=True)
 
     def get_user(self):
-        if not self.user_ref:
-            return None
-        from django.contrib.auth import get_user_model
-
-        return get_user_model().objects.filter(id=self.user_ref).first()
+        return self.user_ref
 
     class Meta:
         db_table = "tbl_mo_queue"
