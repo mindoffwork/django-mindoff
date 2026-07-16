@@ -2422,12 +2422,33 @@ class TestQueueProcessUtilityCoverage:
         ):
             assert cancel_queue_task(str(task.id)) == "not_cancellable"
 
-    @patch("apps.django_mindoff.components._api_kit.queue_process.redis_client")
-    def test_dramatiq_healthcheck_writes_status(self, mock_redis):
-        """ACCEPTANCE: Validates dramatiq healthcheck writes status."""
-        assert dramatiq_healthcheck("probe-1") == "ok"
-        mock_redis.hset.assert_called_once()
-        mock_redis.expire.assert_called_once()
+    @patch("apps.django_mindoff.components._api_kit.queue_process.dramatiq.get_broker")
+    def test_dramatiq_healthcheck_returns_true_when_workers_alive(self, mock_get_broker):
+        """ACCEPTANCE: Validates dramatiq healthcheck returns true when workers alive."""
+        mock_broker = MagicMock()
+        mock_broker.workers = {"worker-1"}
+        mock_get_broker.return_value = mock_broker
+
+        assert dramatiq_healthcheck("probe-1") is True
+        mock_get_broker.assert_called_once()
+
+    @patch("apps.django_mindoff.components._api_kit.queue_process.dramatiq.get_broker")
+    def test_dramatiq_healthcheck_returns_false_when_no_workers(self, mock_get_broker):
+        """REJECTION: Validates dramatiq healthcheck returns false when no workers."""
+        mock_broker = MagicMock()
+        mock_broker.workers = set()
+        mock_get_broker.return_value = mock_broker
+
+        assert dramatiq_healthcheck("probe-1") is False
+        mock_get_broker.assert_called_once()
+
+    @patch("apps.django_mindoff.components._api_kit.queue_process.dramatiq.get_broker")
+    def test_dramatiq_healthcheck_returns_false_on_broker_error(self, mock_get_broker):
+        """REJECTION: Validates dramatiq healthcheck returns false on broker error."""
+        mock_get_broker.side_effect = RuntimeError("broker down")
+
+        assert dramatiq_healthcheck("probe-1") is False
+        mock_get_broker.assert_called_once()
 
 
 @pytest.mark.django_db(transaction=True)

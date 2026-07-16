@@ -266,19 +266,13 @@ def execute_queue(queue_task_uuid: str):
         mark_failed(queue_task_uuid, error=str(exc))
 
 
-@dramatiq.actor
-def dramatiq_healthcheck(probe_id: str):
-    """Check the health of a Dramatiq worker by writing a Redis key that expires in 30 seconds."""
-    key = f"moq:health:{probe_id}"
-    redis_client.hset(
-        key,
-        mapping={
-            "status": "ok",
-            "updated_at": timezone.now().isoformat(),
-        },
-    )
-    redis_client.expire(key, 30)
-    return "ok"
+def dramatiq_healthcheck(probe_id: str) -> bool:
+    """Check whether at least one Dramatiq worker is alive by probing the broker."""
+    try:
+        broker = dramatiq.get_broker()
+        return bool(getattr(broker, "workers", set()))
+    except Exception:
+        return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
