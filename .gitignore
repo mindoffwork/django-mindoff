@@ -45,6 +45,8 @@ htmlcov/
 .ai/
 CLAUDE.md
 agents.md
+.agents
+.claude
 
 # OS
 .DS_Store

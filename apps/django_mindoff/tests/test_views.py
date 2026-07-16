@@ -268,6 +268,20 @@ class TestStatusPayload(MindoffTestCase):
 
 
 @pytest.mark.django_db
+class TestMOQueue(MindoffTestCase):
+    def test_get_user_returns_related_user(self):
+        user = User.objects.create_user(username="queue-user", password="password")
+        obj = MOQueue.objects.create(
+            owner_id="test-owner",
+            user_ref=user,
+            api_url_name="test_api",
+            job_status="pending",
+        )
+
+        assert obj.get_user() == user
+
+
+@pytest.mark.django_db
 class TestCheckOwnership(MindoffTestCase):
     def test_no_user_ref_id_allows_any_user(self):
         obj = baker.make(MOQueue, user_ref=None, job_status="pending")

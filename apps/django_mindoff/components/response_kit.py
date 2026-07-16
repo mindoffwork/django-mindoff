@@ -6,6 +6,7 @@ Mindoff Response Kit
 4. mo_response_kit.html_response
 """
 
+import copy
 import csv
 import io
 import logging
@@ -100,7 +101,7 @@ class MindoffResponseHandler:
         - HTTP status and message metadata are resolved from `responses.csv`.
         - Unknown/empty `code` falls back to `UNEXPECTED_ERR`.
         """
-        json_response_msg = default_json_response.copy()
+        json_response_msg = copy.deepcopy(default_json_response)
         if code not in MINDOFF_RESPONSES or code == "":
             e = ValueError(f"Unknown Response code: '{code}'")
             return MindoffResponseHandler().json_response(

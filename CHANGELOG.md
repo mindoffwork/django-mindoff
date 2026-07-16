@@ -1,6 +1,6 @@
 <h1>Release Notes</h1>
 
-## Recent Changes
+## v0.8.0
 
 ### Documentation
 - 📝 Document CRUD benchmark results in README ([#37](https://github.com/mindoffwork/django-mindoff/pull/37))
@@ -18,6 +18,9 @@
 - ⬆️ Bump actions/setup-python from 5 to 6 ([#40](https://github.com/mindoffwork/django-mindoff/pull/40))
 - ⬆️ Bump codecov/codecov-action from 4 to 7 ([#39](https://github.com/mindoffwork/django-mindoff/pull/39))
 - 🔧 Add GitHub issue, PR, and Dependabot templates ([#38](https://github.com/mindoffwork/django-mindoff/pull/38))
+
+### Fixes
+- 🐛 Fix MOQueue get_user foreign-key resolution ([#52](https://github.com/mindoffwork/django-mindoff/pull/52))
 
 ## v0.7.0
 
