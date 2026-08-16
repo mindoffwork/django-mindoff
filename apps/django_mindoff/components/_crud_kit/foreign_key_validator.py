@@ -22,9 +22,18 @@ class ForeignKeyValidator:
     This validator ensures that every foreign-key value in each model frame points
     to an existing related primary key, either from another provided frame or from
     the database when the related model frame is not supplied.
+
+    ``target`` is the database the rows are being written to. It matters only for
+    the database-backed branch: a reference must exist where the rows are going,
+    not wherever the default routing happens to point.
     """
-    def __init__(self, df_dict: dict[type[models.Model], pl.DataFrame | pl.LazyFrame]):
+    def __init__(
+        self,
+        df_dict: dict[type[models.Model], pl.DataFrame | pl.LazyFrame],
+        target=None,
+    ):
         self.df_dict = df_dict
+        self.target = target
 
     def validate(self) -> dict[type[models.Model], pl.DataFrame | pl.LazyFrame]:
         """
@@ -77,7 +86,7 @@ class ForeignKeyValidator:
                 fk_values = self._get_distinct_fk_values(df, db_col)
                 if not fk_values:
                     continue
-                existing_count = related_model.objects.filter(
+                existing_count = self._related_manager(related_model).filter(
                     **{f"{related_pk_name}__in": fk_values}
                 ).count()
                 is_invalid_fk = existing_count < len(fk_values)
@@ -87,6 +96,19 @@ class ForeignKeyValidator:
                 is_exception=True,
             )
         return df
+
+    def _related_manager(self, related_model):
+        """Manager for the related model, routed to the write target if named.
+
+        Resolved per lookup rather than up front, so a frame whose related models
+        are all supplied in-memory never requires the target to be reachable by
+        the ORM at all.
+        """
+        manager = related_model.objects
+        if self.target is None:
+            return manager
+        alias = self.target.orm_alias(operation="Foreign-key validation")
+        return manager if alias is None else manager.using(alias)
 
     def _get_distinct_fk_values(
         self, df: pl.DataFrame | pl.LazyFrame, col: str

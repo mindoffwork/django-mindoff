@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 import tempfile
@@ -9,7 +10,7 @@ import pytest
 from django.apps import apps
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import connection, models
+from django.db import connection, connections, models
 from django.test import override_settings
 from django.urls import clear_url_caches
 from ...components.crud_kit import mo_crud_kit
@@ -20,6 +21,7 @@ from ...components.crud_kit import (
     _update__fill_missing_columns,
 )
 from ...components._crud_kit.column_validator import ColumnValidator
+from ...components._crud_kit.db_target import find_settings_dict, resolve_db_target
 from ...components._crud_kit.row_validator import RowValidator
 from ...components._crud_kit.foreign_key_validator import ForeignKeyValidator
 from ...components.polars_kit import mo_polars_kit
@@ -1491,7 +1493,7 @@ class TestCRUDProcessorEngine:
 
         model = self._dummy_model("DummyModel2")
         with pytest.raises(ValueError, match="not found in settings.DATABASES"):
-            CRUDProcessor({model: pl.DataFrame()}, db_alias="nonexistent_alias")
+            CRUDProcessor({model: pl.DataFrame()}, using="nonexistent_alias")
 
     @pytest.mark.parametrize(
         "django_engine,expected_dialect,expected_driver",
@@ -1527,8 +1529,7 @@ class TestCRUDProcessorEngine:
             _fake_create_engine,
         )
         monkeypatch.setattr(
-            "apps.django_mindoff.components._crud_kit.crud_processor.connection.ensure_connection",
-            _fake_ensure_connection,
+            connections["default"], "ensure_connection", _fake_ensure_connection
         )
         pass_code = "p@ss word"
         db_settings = {
@@ -1568,8 +1569,7 @@ class TestCRUDProcessorEngine:
             _fake_create_engine,
         )
         monkeypatch.setattr(
-            "apps.django_mindoff.components._crud_kit.crud_processor.connection.ensure_connection",
-            lambda: None,
+            connections["default"], "ensure_connection", lambda: None
         )
 
         db_settings = {
@@ -1611,7 +1611,7 @@ class TestCRUDProcessorEngine:
             return object()
 
         monkeypatch.setattr(cp, "create_engine", _fake_create_engine)
-        monkeypatch.setattr(cp.connection, "ensure_connection", lambda: None)
+        monkeypatch.setattr(connections["default"], "ensure_connection", lambda: None)
 
         model = self._dummy_model("DummyModelEngineCache")
         base = {
@@ -1679,6 +1679,7 @@ class TestCRUDProcessorUnitPaths:
     class _Col:
         def __init__(self, name):
             self.name = name
+            self.type = f"type_{name}"
 
     class _FakeUpsertStmt:
         def __init__(self):
@@ -1699,6 +1700,9 @@ class TestCRUDProcessorUnitPaths:
     class _FakeTableForInsert:
         def __init__(self, cols):
             self.columns = [TestCRUDProcessorUnitPaths._Col(c) for c in cols]
+            # Mirrors SQLAlchemy's ``Table.c``: the merge projects the staging
+            # select onto these columns and casts to their types.
+            self.c = {c: TestCRUDProcessorUnitPaths._Col(c) for c in cols}
             self._stmt = TestCRUDProcessorUnitPaths._FakeUpsertStmt()
             for c in cols:
                 self._stmt.excluded[c] = f"excluded_{c}"
@@ -1777,9 +1781,13 @@ class TestCRUDProcessorUnitPaths:
         """ACCEPTANCE: Update merge staging mysql postgres paths."""
         from ...components._crud_kit.crud_processor import CRUDProcessor
 
+        class _FakeColumn:
+            def label(self, _name):
+                return self
+
         class _FakeSelect:
             def __init__(self):
-                self.c = {"id": object(), "name": object()}
+                self.c = {"id": _FakeColumn(), "name": _FakeColumn()}
 
             def with_only_columns(self, *args):
                 return self
@@ -1814,6 +1822,10 @@ class TestCRUDProcessorUnitPaths:
         monkeypatch.setattr(
             "apps.django_mindoff.components._crud_kit.crud_processor.select",
             lambda _tbl: _FakeSelect(),
+        )
+        monkeypatch.setattr(
+            "apps.django_mindoff.components._crud_kit.crud_processor.cast",
+            lambda column, _type: column,
         )
         if dialect == "mysql":
             monkeypatch.setattr(
@@ -2316,3 +2328,449 @@ def _convert_to_lazy_dict(df_dict: dict) -> dict:
 
 def _make_uuid() -> str:
     return uuid.uuid4().hex
+
+
+# ----------------------------------------------------------------------------
+# Explicit connection targets (dynamic / multi-tenant databases)
+# ----------------------------------------------------------------------------
+def _build_sqlite_wrapper(alias: str, path):
+    """A real SQLite connection that is not described by ``settings.DATABASES``.
+
+    Built from the default alias's settings so every backend default is already
+    filled in, then repointed at its own file.
+    """
+    from django.db.backends.sqlite3.base import DatabaseWrapper
+
+    settings_dict = {**connections["default"].settings_dict, "NAME": str(path)}
+    return DatabaseWrapper(settings_dict, alias=alias)
+
+
+_PG_REQUIRED_ENV = ("MO_TEST_PG_NAME", "MO_TEST_PG_USER", "MO_TEST_PG_HOST")
+_HAS_POSTGRES = all(os.environ.get(name) for name in _PG_REQUIRED_ENV)
+
+
+def _build_postgres_wrapper(alias: str):
+    """A PostgreSQL connection built from environment credentials.
+
+    Routed through a throwaway `ConnectionHandler` so Django fills in every
+    backend default, exactly as it would for a configured alias — the resulting
+    connection is then registered by hand, never through `settings.DATABASES`.
+    """
+    from django.db.utils import ConnectionHandler
+
+    handler = ConnectionHandler(
+        {
+            # ConnectionHandler insists on a "default" key. It is never connected
+            # to; only the tenant alias below is.
+            "default": {},
+            alias: {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": os.environ["MO_TEST_PG_NAME"],
+                "USER": os.environ["MO_TEST_PG_USER"],
+                "PASSWORD": os.environ.get("MO_TEST_PG_PASSWORD", ""),
+                "HOST": os.environ["MO_TEST_PG_HOST"],
+                "PORT": os.environ.get("MO_TEST_PG_PORT", "5432"),
+            },
+        }
+    )
+    return handler[alias]
+
+
+def _create_author_table(wrapper) -> None:
+    """Create the author table on ``wrapper`` without going through the ORM.
+
+    ``schema_editor()`` opens an atomic block keyed by alias, which resolves
+    through ``django.db.connections`` — the one thing an unregistered connection
+    does not have.
+    """
+    with wrapper.cursor() as cursor:
+        cursor.execute(
+            'CREATE TABLE "tbl_author" ('
+            '"id" char(32) NOT NULL PRIMARY KEY, '
+            '"name" varchar(50) NOT NULL)'
+        )
+
+
+@pytest.fixture()
+def tenant_connection(tmp_path):
+    """A database reachable only through ``django.db.connections``.
+
+    Mirrors a runtime-provisioned tenant: real credentials and a real connection,
+    registered under a synthetic alias, deliberately absent from
+    ``settings.DATABASES``.
+    """
+    alias = f"tenant_{uuid.uuid4().hex[:8]}"
+    wrapper = _build_sqlite_wrapper(alias, tmp_path / "tenant.sqlite3")
+    connections[alias] = wrapper
+    try:
+        yield wrapper
+    finally:
+        wrapper.close()
+        del connections[alias]
+
+
+class TestDbTargetResolution:
+
+    def test_no_target_defaults_and_stays_implicit(self):
+        """ACCEPTANCE: `using=None` resolves to default without claiming routing."""
+        target = resolve_db_target(None)
+        assert target.alias == "default"
+        assert target.is_explicit is False
+        assert target.settings_dict is settings.DATABASES["default"]
+
+    def test_implicit_target_leaves_orm_routing_untouched(self):
+        """ACCEPTANCE: an unrequested target never pins ORM queries."""
+        assert resolve_db_target(None).orm_alias(operation="anything") is None
+
+    def test_alias_target_is_explicit(self):
+        """ACCEPTANCE: naming an alias marks the target explicit."""
+        target = resolve_db_target("default")
+        assert target.alias == "default"
+        assert target.is_explicit is True
+        assert target.orm_alias(operation="anything") == "default"
+
+    def test_unknown_alias_raises(self):
+        """REJECTION: an alias in neither source is rejected."""
+        with pytest.raises(ValueError, match="not found in settings.DATABASES"):
+            resolve_db_target("no_such_alias_anywhere")
+
+    def test_find_settings_dict_returns_none_for_unknown_alias(self):
+        """ACCEPTANCE: the soft lookup reports absence instead of raising."""
+        assert find_settings_dict("no_such_alias_anywhere") is None
+
+    def test_resolution_is_idempotent(self):
+        """ACCEPTANCE: an already-resolved target passes straight through."""
+        target = resolve_db_target("default")
+        assert resolve_db_target(target) is target
+
+    def test_alias_absent_from_settings_resolves_from_connections(
+        self, tenant_connection
+    ):
+        """ACCEPTANCE: a live-only alias resolves via django.db.connections."""
+        alias = tenant_connection.alias
+        assert alias not in settings.DATABASES
+        target = resolve_db_target(alias)
+        assert target.settings_dict is tenant_connection.settings_dict
+        assert target.connection is tenant_connection
+
+    def test_connection_object_carries_its_own_alias_and_settings(
+        self, tenant_connection
+    ):
+        """ACCEPTANCE: a connection object is taken at face value."""
+        target = resolve_db_target(tenant_connection)
+        assert target.alias == tenant_connection.alias
+        assert target.settings_dict is tenant_connection.settings_dict
+        assert target.is_explicit is True
+        assert target.orm_alias(operation="anything") == tenant_connection.alias
+
+    def test_settings_take_precedence_over_live_connection(self, tenant_connection):
+        """ACCEPTANCE: a configured alias resolves from settings, not the wrapper."""
+        alias = tenant_connection.alias
+        configured = {**settings.DATABASES["default"], "NAME": "from_settings"}
+        with override_settings(DATABASES={**settings.DATABASES, alias: configured}):
+            assert resolve_db_target(alias).settings_dict["NAME"] == "from_settings"
+
+    def test_unregistered_connection_rejects_orm_routing(self, tmp_path):
+        """REJECTION: ORM-dependent steps refuse an unreachable alias."""
+        wrapper = _build_sqlite_wrapper("never_registered", tmp_path / "x.sqlite3")
+        target = resolve_db_target(wrapper)
+        with pytest.raises(ValueError, match="not registered in django.db.connections"):
+            target.orm_alias(operation="Foreign-key validation")
+
+
+class TestEngineCacheBounding:
+
+    def test_cache_evicts_least_recently_used_and_disposes(self):
+        """ACCEPTANCE: the engine cache is bounded and closes what it drops."""
+        from ...components._crud_kit import crud_processor as cp
+
+        class _Engine:
+            def __init__(self):
+                self.disposed = False
+
+            def dispose(self):
+                self.disposed = True
+
+        cp._ENGINE_CACHE.clear()
+        try:
+            first, second, third = _Engine(), _Engine(), _Engine()
+            with override_settings(MO_CRUD_ENGINE_CACHE_SIZE=2):
+                cp._cache_engine(("a",), first)
+                cp._cache_engine(("b",), second)
+                cp._cache_engine(("c",), third)
+            assert list(cp._ENGINE_CACHE) == [("b",), ("c",)]
+            assert first.disposed is True
+            assert second.disposed is False
+        finally:
+            cp._ENGINE_CACHE.clear()
+
+    def test_zero_size_keeps_cache_unbounded(self):
+        """ACCEPTANCE: opting out of the ceiling keeps every engine."""
+        from ...components._crud_kit import crud_processor as cp
+
+        cp._ENGINE_CACHE.clear()
+        try:
+            with override_settings(MO_CRUD_ENGINE_CACHE_SIZE=0):
+                for index in range(40):
+                    cp._cache_engine((index,), object())
+            assert len(cp._ENGINE_CACHE) == 40
+        finally:
+            cp._ENGINE_CACHE.clear()
+
+
+@pytest.mark.django_db(transaction=True)
+class TestExplicitConnectionWrites(MindoffTestCase):
+    """Writes aimed at a database that `settings.DATABASES` has never heard of."""
+
+    def test_create_writes_to_named_alias_only(self, tenant):
+        """ACCEPTANCE: create() lands rows in the target, not the default DB."""
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[3])
+        status, _valid, _invalid = mo_crud_kit.create(frms, using=tenant.alias)
+
+        assert status == "ok"
+        assert self._author_model.objects.using(tenant.alias).count() == 3
+        assert self._author_model.objects.count() == 0
+
+    def test_create_accepts_a_connection_object(self, tenant):
+        """ACCEPTANCE: the connection itself is a valid target."""
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+        status, _valid, _invalid = mo_crud_kit.create(frms, using=tenant)
+
+        assert status == "ok"
+        assert self._author_model.objects.using(tenant.alias).count() == 2
+        assert self._author_model.objects.count() == 0
+
+    def test_update_upserts_against_the_named_alias(self, tenant):
+        """ACCEPTANCE: update() merges into the target database."""
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+        mo_crud_kit.create(frms, using=tenant.alias)
+
+        renamed = frms[self._author_model].with_columns(
+            pl.lit("renamed").alias("name")
+        )
+        status, _valid, _invalid = mo_crud_kit.update(
+            {self._author_model: renamed}, using=tenant.alias
+        )
+
+        assert status == "ok"
+        stored = self._author_model.objects.using(tenant.alias).values_list(
+            "name", flat=True
+        )
+        assert set(stored) == {"renamed"}
+        assert self._author_model.objects.count() == 0
+
+    def test_update_backfill_reads_the_target_database(self, tenant):
+        """ACCEPTANCE: omitted columns are back-filled from the target, not default.
+
+        The row exists only in the tenant database. Had the back-fill read the
+        default database it would have found nothing, leaving `name` null and
+        failing row validation.
+        """
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[1])
+        mo_crud_kit.create(frms, using=tenant.alias)
+        original_name = frms[self._author_model]["name"][0]
+
+        pk_only = frms[self._author_model].select("id")
+        status, _valid, _invalid = mo_crud_kit.update(
+            {self._author_model: pk_only}, using=tenant.alias
+        )
+
+        assert status == "ok"
+        stored = self._author_model.objects.using(tenant.alias).get()
+        assert stored.name == original_name
+
+    def test_foreign_key_validation_checks_the_target_database(self, tenant):
+        """ACCEPTANCE: an FK is resolved where the rows are going.
+
+        The author exists only in the tenant database, so FK validation against
+        the default database would reject this book.
+        """
+        author_frms = self.mo_mock_model_frms(models=[self._author_model], counts=[1])
+        mo_crud_kit.create(author_frms, using=tenant.alias)
+        author_id = author_frms[self._author_model]["id"][0]
+
+        book_df = pl.DataFrame(
+            {
+                "id": [str(uuid.uuid4())],
+                "title": ["Routed"],
+                "author_ref_id": [author_id],
+            }
+        )
+        status, _valid, _invalid = mo_crud_kit.create(
+            {self._book_model: book_df}, using=tenant.alias
+        )
+
+        assert status == "ok"
+        assert self._book_model.objects.using(tenant.alias).count() == 1
+
+    def test_unregistered_connection_writes_with_columns_only(self, tmp_path):
+        """ACCEPTANCE: a connection outside the ORM still works when nothing queries it."""
+        wrapper = _build_sqlite_wrapper("solo_unregistered", tmp_path / "solo.sqlite3")
+        _create_author_table(wrapper)
+        try:
+            frms = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+            status, _valid, _invalid = mo_crud_kit.create(
+                frms, using=wrapper, validation_level="columns_only"
+            )
+            assert status == "ok"
+            with wrapper.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) FROM tbl_author")
+                assert cursor.fetchone()[0] == 2
+        finally:
+            wrapper.close()
+
+    def test_unregistered_connection_rejects_backfill(self, tmp_path):
+        """REJECTION: a step that needs the ORM names the escape hatch."""
+        wrapper = _build_sqlite_wrapper("solo_backfill", tmp_path / "solo2.sqlite3")
+        try:
+            pk_only = pl.DataFrame({"id": [str(uuid.uuid4())]})
+            with pytest.raises(
+                ValueError, match="not registered in django.db.connections"
+            ):
+                mo_crud_kit.update({self._author_model: pk_only}, using=wrapper)
+        finally:
+            wrapper.close()
+
+    def test_default_target_still_writes_to_the_default_database(self):
+        """REGRESSION: omitting `using` behaves exactly as before."""
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+        status, _valid, _invalid = mo_crud_kit.create(frms)
+
+        assert status == "ok"
+        assert self._author_model.objects.count() == 2
+
+    @pytest.fixture()
+    def tenant(self, tenant_connection):
+        """Tenant database with this test class's tables already created in it."""
+        with tenant_connection.schema_editor() as editor:
+            editor.create_model(self._author_model)
+            editor.create_model(self._book_model)
+        return tenant_connection
+
+    @pytest.fixture(autouse=True, scope="class")
+    def _class_app(self, request):
+        app_name = f"app_{uuid.uuid4().hex[:12]}"
+        temp_dir = Path(tempfile.mkdtemp()).resolve()
+        override = _register_app(temp_dir, app_name)
+        author = _create_model(
+            app_name,
+            "AuthorModel",
+            "author",
+            [],
+            {"name": models.CharField(max_length=50)},
+        )
+        book = _create_model(
+            app_name,
+            "BookModel",
+            "book",
+            [(app_name, "AuthorModel", "required")],
+            {"title": models.CharField(max_length=50)},
+        )
+        request.cls._author_model = author
+        request.cls._book_model = book
+        request.cls._app_name = app_name
+        request.cls._temp_dir = temp_dir
+        request.cls._override = override
+        request.addfinalizer(lambda: _unregister_app(app_name, temp_dir, override))
+
+    @pytest.fixture(autouse=True)
+    def _models(self):
+        with connection.schema_editor() as editor:
+            editor.create_model(self._author_model)
+            editor.create_model(self._book_model)
+        _validate_model(self._author_model)
+        _validate_model(self._book_model)
+        yield
+        with connection.schema_editor() as editor:
+            editor.delete_model(self._book_model)
+            editor.delete_model(self._author_model)
+
+
+@pytest.mark.skipif(
+    not _HAS_POSTGRES,
+    reason="No PostgreSQL test database configured (set MO_TEST_PG_NAME/USER/HOST)",
+)
+@pytest.mark.django_db(transaction=True)
+class TestExplicitConnectionPostgres(MindoffTestCase):
+    """End-to-end writes to a PostgreSQL database absent from settings.DATABASES.
+
+    Covers the backend-specific write paths SQLite cannot reach: the `COPY` bulk
+    loader on create, and the staged-merge `ON CONFLICT` upsert on update.
+    """
+
+    def test_create_bulk_loads_into_postgres_target(self, pg_tenant):
+        """ACCEPTANCE: create() COPYs into the target, leaving default untouched."""
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[5])
+        status, _valid, _invalid = mo_crud_kit.create(frms, using=pg_tenant.alias)
+
+        assert status == "ok"
+        assert self._author_model.objects.using(pg_tenant.alias).count() == 5
+        assert self._author_model.objects.count() == 0
+
+    def test_update_upserts_into_postgres_target(self, pg_tenant):
+        """ACCEPTANCE: update() merges rows through the staging table."""
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[5])
+        mo_crud_kit.create(frms, using=pg_tenant.alias)
+
+        renamed = frms[self._author_model].with_columns(
+            pl.lit("renamed").alias("name")
+        )
+        status, _valid, _invalid = mo_crud_kit.update(
+            {self._author_model: renamed}, using=pg_tenant.alias
+        )
+
+        assert status == "ok"
+        rows = self._author_model.objects.using(pg_tenant.alias)
+        # Upsert, not insert: the same five rows come back renamed.
+        assert rows.count() == 5
+        assert set(rows.values_list("name", flat=True)) == {"renamed"}
+
+    def test_create_accepts_a_postgres_connection_object(self, pg_tenant):
+        """ACCEPTANCE: the connection object targets PostgreSQL directly."""
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+        status, _valid, _invalid = mo_crud_kit.create(frms, using=pg_tenant)
+
+        assert status == "ok"
+        assert self._author_model.objects.using(pg_tenant.alias).count() == 2
+
+    @pytest.fixture()
+    def pg_tenant(self):
+        alias = f"pg_tenant_{uuid.uuid4().hex[:8]}"
+        wrapper = _build_postgres_wrapper(alias)
+        connections[alias] = wrapper
+        with wrapper.schema_editor() as editor:
+            editor.create_model(self._author_model)
+        try:
+            yield wrapper
+        finally:
+            with wrapper.schema_editor() as editor:
+                editor.delete_model(self._author_model)
+            wrapper.close()
+            del connections[alias]
+
+    @pytest.fixture(autouse=True, scope="class")
+    def _class_app(self, request):
+        app_name = f"app_{uuid.uuid4().hex[:12]}"
+        temp_dir = Path(tempfile.mkdtemp()).resolve()
+        override = _register_app(temp_dir, app_name)
+        author = _create_model(
+            app_name,
+            "AuthorModel",
+            "author",
+            [],
+            {"name": models.CharField(max_length=50)},
+        )
+        request.cls._author_model = author
+        request.cls._app_name = app_name
+        request.cls._temp_dir = temp_dir
+        request.cls._override = override
+        request.addfinalizer(lambda: _unregister_app(app_name, temp_dir, override))
+
+    @pytest.fixture(autouse=True)
+    def _models(self):
+        with connection.schema_editor() as editor:
+            editor.create_model(self._author_model)
+        _validate_model(self._author_model)
+        yield
+        with connection.schema_editor() as editor:
+            editor.delete_model(self._author_model)

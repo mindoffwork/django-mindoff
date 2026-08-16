@@ -7,14 +7,15 @@ import time
 import uuid
 import warnings
 import weakref
+from collections import OrderedDict
 from typing import Dict, Type, Union
 from urllib.parse import quote_plus
 
 import polars as pl
 import pyarrow.parquet as pq
 from django.conf import settings
-from django.db import connection, models
-from sqlalchemy import MetaData, Table, create_engine, event, literal, select
+from django.db import models
+from sqlalchemy import MetaData, Table, cast, create_engine, event, literal, select
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -29,8 +30,13 @@ from typeguard import typechecked
 # cache one per (alias + resolved connection params). The SQLite engine is the
 # deliberate exception: it is bound to Django's live connection via a creator and
 # is rebuilt every call (see ``_get_sqlalchemy_engine``).
-_ENGINE_CACHE: dict = {}
+#
+# The cache is bounded (LRU) because a caller may target an open-ended number of
+# dynamically-provisioned databases; unbounded, every tenant ever touched would
+# keep a connection pool alive for the life of the process.
+_ENGINE_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
 _ENGINE_LOCK = threading.Lock()
+DEFAULT_ENGINE_CACHE_SIZE = 32
 
 # Reflected ``Table`` metadata is cached per engine. Cached engines keep their
 # reflection warm across calls; the uncached SQLite engine gets a fresh metadata
@@ -41,6 +47,7 @@ _REFLECT_LOCK = threading.RLock()
 
 from ..polars_kit import mo_polars_kit
 from ..response_kit import mo_validation_kit
+from .db_target import DbTargetLike, resolve_db_target
 
 
 # ----------------
@@ -57,7 +64,8 @@ class CRUDProcessor:
     and MySQL.
 
     Responsibilities:
-    1. Resolve the configured Django database alias to a SQLAlchemy engine.
+    1. Resolve the target database (configured alias or explicit connection) to a
+       SQLAlchemy engine.
     2. Perform append-style inserts for `create`.
     3. Perform upsert-style updates for `update`, with optional staging-table merge.
     4. Return operation metadata such as affected tables and execution time.
@@ -65,20 +73,19 @@ class CRUDProcessor:
     def __init__(
         self,
         model_frame_map: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
-        db_alias: str = "default",
+        using: DbTargetLike = None,
     ):
         self.model_frame_map = model_frame_map
-        self.db_alias = db_alias
+        self.target = resolve_db_target(using)
+        self.db_alias = self.target.alias
         self.dialect = None
         self.engine = self._get_sqlalchemy_engine()
 
     def _get_sqlalchemy_engine(self):
-        if self.db_alias not in settings.DATABASES:
-            raise ValueError(
-                f"Database alias '{self.db_alias}' not found in settings.DATABASES"
-            )
-
-        db = settings.DATABASES[self.db_alias]
+        # Only the settings mapping is read up front. The live connection is
+        # resolved inside the branches below, so an unsupported backend is
+        # rejected by name without first importing that backend's driver.
+        db = self.target.settings_dict
         engine = db["ENGINE"]
 
         if "sqlite" in engine:
@@ -86,9 +93,10 @@ class CRUDProcessor:
             # NOT cached: the underlying DBAPI connection can change between calls
             # (reconnects, per-test transactions) and a cached pool could go stale.
             self.dialect = "sqlite"
-            connection.ensure_connection()
+            django_connection = self.target.connection
+            django_connection.ensure_connection()
             sqlite_engine = create_engine(
-                "sqlite://", creator=lambda: connection.connection
+                "sqlite://", creator=lambda: django_connection.connection
             )
             # Django opens SQLite with ``isolation_level=None`` (pysqlite autocommit
             # mode). Because the DBAPI connection is owned by Django and handed to
@@ -128,15 +136,16 @@ class CRUDProcessor:
         with _ENGINE_LOCK:
             cached = _ENGINE_CACHE.get(cache_key)
             if cached is not None:
+                _ENGINE_CACHE.move_to_end(cache_key)
                 return cached
             auth_part = f"{user}:{password}@" if user or password else ""
             port_part = f":{port}" if port else ""
-            connection.ensure_connection()
+            self.target.connection.ensure_connection()
             sa_engine = create_engine(
                 f"{driver}://{auth_part}{host}{port_part}/{name}",
                 connect_args=connect_args,
             )
-            _ENGINE_CACHE[cache_key] = sa_engine
+            _cache_engine(cache_key, sa_engine)
             return sa_engine
 
     def _reflect_table(self, conn, table_db: str):
@@ -439,8 +448,8 @@ class CRUDProcessor:
             if not other_cols:
                 return
             col_names = [pk_col] + other_cols
-            ordered_temp = temp_select.with_only_columns(
-                *(temp_select.c[name] for name in col_names)
+            ordered_temp = self._ordered_staging_select(
+                temp_select, table, col_names, cast_to_target=False
             ).where(literal(True))
             insert_stmt = sqlite_insert(table).from_select(col_names, ordered_temp)
             update_cols = {c: insert_stmt.excluded[c] for c in other_cols}
@@ -450,9 +459,11 @@ class CRUDProcessor:
             conn.execute(stmt)
 
         elif self.dialect == "mysql":
-            insert_stmt = mysql_insert(table).from_select(
-                [c.name for c in table.columns], temp_select
+            col_names = [c.name for c in table.columns]
+            ordered_temp = self._ordered_staging_select(
+                temp_select, table, col_names, cast_to_target=True
             )
+            insert_stmt = mysql_insert(table).from_select(col_names, ordered_temp)
             update_cols = {
                 c.name: insert_stmt.inserted[c.name]
                 for c in table.columns
@@ -462,9 +473,11 @@ class CRUDProcessor:
             conn.execute(stmt)
 
         elif self.dialect == "postgresql":
-            insert_stmt = pg_insert(table).from_select(
-                [c.name for c in table.columns], temp_select
+            col_names = [c.name for c in table.columns]
+            ordered_temp = self._ordered_staging_select(
+                temp_select, table, col_names, cast_to_target=True
             )
+            insert_stmt = pg_insert(table).from_select(col_names, ordered_temp)
             update_cols = {
                 c.name: insert_stmt.excluded[c.name]
                 for c in table.columns
@@ -475,10 +488,60 @@ class CRUDProcessor:
             )
             conn.execute(stmt)
 
+    @staticmethod
+    def _ordered_staging_select(temp_select, table, col_names, *, cast_to_target):
+        """Project the staging select onto ``col_names``, in that exact order.
+
+        ``from_select`` pairs the target column list with the SELECT positionally,
+        so the staging table's own column order must never be assumed to match the
+        target table's. Without this projection a mismatch writes each value into
+        the wrong column — loudly when the types disagree, silently when they do
+        not.
+
+        ``cast_to_target`` additionally casts each column to the target column's
+        type. The staging table is created from the frame's Polars schema, so a
+        UUID or timestamp lands there as text; strictly-typed backends refuse to
+        merge that into a typed column, while SQLite's dynamic typing accepts it
+        as-is and needs no cast.
+        """
+        columns = []
+        for name in col_names:
+            column = temp_select.c[name]
+            if cast_to_target:
+                column = cast(column, table.c[name].type)
+            columns.append(column.label(name))
+        return temp_select.with_only_columns(*columns)
+
 
 # ----------------
 # Functions
 # ----------------
+def _cache_engine(cache_key: tuple, sa_engine) -> None:
+    """Cache ``sa_engine``, evicting the least recently used entry past the cap.
+
+    Callers must already hold ``_ENGINE_LOCK``.
+
+    A fixed set of configured databases never reaches the cap, so ordinary
+    projects behave as before. The ceiling exists for callers that target many
+    dynamically-provisioned databases: each engine owns a connection pool, and
+    without eviction every database ever touched would hold one open for the life
+    of the process. Evicted engines are disposed so their pooled sockets close.
+    Set ``MO_CRUD_ENGINE_CACHE_SIZE`` to ``0`` to keep the cache unbounded.
+    """
+    _ENGINE_CACHE[cache_key] = sa_engine
+    _ENGINE_CACHE.move_to_end(cache_key)
+    max_size = getattr(
+        settings, "MO_CRUD_ENGINE_CACHE_SIZE", DEFAULT_ENGINE_CACHE_SIZE
+    )
+    if not max_size or max_size <= 0:
+        return
+    while len(_ENGINE_CACHE) > max_size:
+        _, evicted = _ENGINE_CACHE.popitem(last=False)
+        dispose = getattr(evicted, "dispose", None)
+        if callable(dispose):
+            dispose()
+
+
 def _sqlite_emit_begin(conn) -> None:
     """Emit an explicit ``BEGIN`` so SQLite writes share one transaction.
 

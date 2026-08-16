@@ -34,9 +34,9 @@ from urllib.parse import quote_plus
 import orjson
 import polars as pl
 import pyarrow.parquet as pq
-from django.conf import settings
 from django.db import connections
 
+from .db_target import find_settings_dict
 from .dtypes import resolve_polars_dtype
 
 # ----------------
@@ -210,7 +210,7 @@ def _try_connectorx(qs):
     # it renders string/LIKE parameters unquoted, producing SQL that is both
     # invalid and injectable. The compiled SQL aliases each column to its
     # `.values()` key, so result column names already match.
-    engine = settings.DATABASES.get(qs.db, {}).get("ENGINE", "")
+    engine = (find_settings_dict(qs.db) or {}).get("ENGINE", "")
     sql, params = qs.query.get_compiler(using=qs.db).as_sql()
     try:
         inlined_sql = _inline_params(sql, params, mysql="mysql" in engine)
@@ -223,8 +223,13 @@ def _try_connectorx(qs):
 
 
 def _connectorx_uri(db_alias: str):
-    """Build a ConnectorX connection URI from Django's database settings."""
-    db = settings.DATABASES.get(db_alias, {})
+    """Build a ConnectorX connection URI from Django's database settings.
+
+    Resolves through the shared target lookup, so an alias that exists only as a
+    live connection (a runtime-provisioned database) still gets the zero-copy
+    path instead of silently falling back to the cursor reader.
+    """
+    db = find_settings_dict(db_alias) or {}
     engine = db.get("ENGINE", "")
     name = db.get("NAME", "")
 
