@@ -1,4 +1,5 @@
 import argparse
+import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import patch
@@ -90,7 +91,7 @@ class TestDjangoAppCreator:
             lambda argv, check: calls.append(argv),
         )
         creator._run_startapp()
-        assert calls == [["python", "manage.py", "startapp", "shop", creator.app_dir]]
+        assert calls == [[sys.executable, "manage.py", "startapp", "shop", creator.app_dir]]
 
     def test_overwrite_apps_py_writes_correct_content(self, tmp_path, monkeypatch):
         """ACCEPTANCE: Validates overwrite apps py writes correct content."""

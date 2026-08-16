@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from ..helper_kit import mo_helper_kit
@@ -54,7 +55,7 @@ class DjangoAppCreator:
     def _run_startapp(self):
         print(f"[ACTION] Creating App at: {self.app_dir}.")
         subprocess.run(
-            ["python", "manage.py", "startapp", self.app_name, self.app_dir], check=True
+            [sys.executable, "manage.py", "startapp", self.app_name, self.app_dir], check=True
         )
 
     def _overwrite_apps_py(self):
