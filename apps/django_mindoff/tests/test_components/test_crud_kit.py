@@ -12,13 +12,15 @@ from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import connection, connections, models
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import clear_url_caches
 from ...components.crud_kit import mo_crud_kit
 from ...components.crud_kit import MindoffCRUDHandler
 from ...components.crud_kit import (
+    ERROR_COL,
     _ModelFrmsValidInvalidSplitter,
     _read__build_stats,
-    _update__fill_missing_columns,
+    _update__prepare_frames,
 )
 from ...components._crud_kit.column_validator import ColumnValidator
 from ...components._crud_kit.db_target import find_settings_dict, resolve_db_target
@@ -1035,26 +1037,33 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         status, _, _ = mo_crud_kit.update(author_only)
         assert status == "ok"
 
-    def test_fill_missing_columns_no_pk_raises(self):
-        """REJECTION: Fill missing columns no pk raises."""
+    def test_prepare_frames_no_pk_raises(self):
+        """REJECTION: A frame without its primary key cannot be matched for update."""
         df_no_pk = pl.DataFrame({"name": ["Alice"]})
         with pytest.raises(Exception):
-            _update__fill_missing_columns(
-                {self._author_model: df_no_pk}, batch_size=100
-            )
+            _update__prepare_frames({self._author_model: df_no_pk})
 
-    def test_fill_missing_columns_all_present_no_fetch(self):
-        """ACCEPTANCE: Fill missing columns all present no fetch."""
+    def test_prepare_frames_all_present_reports_nothing_unset(self):
+        """ACCEPTANCE: A column-complete frame leaves nothing unset."""
         valid = self._seed(1, 0)
         author_df = valid.get(self._author_model)
         if author_df is None:
             return
-        # All columns already present — should return unchanged
-        result, spills = _update__fill_missing_columns(
-            {self._author_model: author_df}, batch_size=100
-        )
+        result, unset = _update__prepare_frames({self._author_model: author_df})
         assert set(result[self._author_model].columns) == set(author_df.columns)
-        assert spills == {}  # nothing fetched, so nothing spilled to disk
+        assert unset[self._author_model] == set()
+
+    def test_prepare_frames_reports_omitted_columns(self):
+        """ACCEPTANCE: Omitted model columns are reported, not fetched or filled."""
+        pk_col = self._author_model._meta.pk.column
+        partial = pl.DataFrame({pk_col: [_make_uuid()], "name": ["Alice"]})
+
+        result, unset = _update__prepare_frames({self._author_model: partial})
+
+        assert unset[self._author_model] == {"nickname"}
+        # Left absent: a NULL placeholder would be indistinguishable from a
+        # deliberate NULL by the time the merge builds its SET clause.
+        assert "nickname" not in result[self._author_model].columns
 
     def test_create_no_validate_persists_unchecked_data(self):
         """C3/contract: validation_level='none' persists data as-is, no row checks.
@@ -1176,20 +1185,25 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         # Verify the new row exists in DB
         assert self._author_model.objects.filter(**{"id": new_id}).exists()
 
-    def test_update_only_pk_column(self):
-        """BOUNDARY: Update only pk column."""
+    def test_update_only_pk_column_is_a_warned_noop(self):
+        """BOUNDARY: A PK-only frame has nothing to write, and says so.
+
+        Every other column is unset, so the merge has an empty SET clause. That
+        is a no-op by construction — but a silent one would look like a
+        successful update, so it warns.
+        """
         valid = self._seed(2, 0)
         author_df = valid.get(self._author_model)
         if author_df is None:
             return
         pk_only = author_df.select("id")
-        # _update__fill_missing_columns should fetch missing cols
-        result, spills = _update__fill_missing_columns(
-            {self._author_model: pk_only}, batch_size=100
-        )
-        assert "name" in result[self._author_model].columns
-        # Eager input keeps an eager back-fill, so no spill file is retained.
-        assert spills == {}
+        before = dict(self._author_model.objects.values_list("id", "name"))
+
+        with pytest.warns(RuntimeWarning, match="only the primary key"):
+            status, _, _ = mo_crud_kit.update({self._author_model: pk_only})
+
+        assert status == "ok"
+        assert dict(self._author_model.objects.values_list("id", "name")) == before
 
     def test_create_duplicate_pk_raises(self):
         """REJECTION: Create duplicate pk raises."""
@@ -1222,21 +1236,24 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         assert status == "ok"
         assert mo_polars_kit.is_model_frms_empty(invalid)
 
-    def test_read_subset_then_update_fetches_missing_columns(self):
-        """ACCEPTANCE: read() subset (hyphenated UUIDs) -> update fills missing cols.
+    def test_read_subset_then_update_leaves_omitted_columns_alone(self):
+        """ACCEPTANCE: read() subset (hyphenated UUIDs) -> update touches only it.
 
-        Guards the UUID PK join in `_update__fill_missing_columns`: read returns
-        hyphenated UUIDs while the DB casts UUID PKs to dashless hex, so the join
-        must canonicalize both sides.
+        Guards the UUID PK canonicalization in `_update__prepare_frames`: read
+        returns hyphenated UUIDs while the DB stores UUID PKs dashless, so the
+        upsert would otherwise insert duplicates instead of matching.
         """
         self._seed(2, 3)
         # Read only id + title; pages and the FK column are intentionally absent.
         subset, _ = mo_crud_kit.read(
             self._book_model.objects.all().values("id", "title")
         )
+        before = self._book_model.objects.count()
         status, _, _ = mo_crud_kit.update({self._book_model: subset})
         assert status == "ok"
-        # pages must be preserved (would be NULL if the PK join had failed).
+        # Matched in place rather than inserting alongside.
+        assert self._book_model.objects.count() == before
+        # pages was never written, so the stored value stands.
         after, _ = mo_crud_kit.read(self._book_model.objects.all().values())
         assert after["pages"].null_count() == 0
 
@@ -1488,11 +1505,12 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         assert mo_polars_kit.is_model_frms_empty(invalid)
         assert self._author_model.objects.get(pk=author_pk).name == "  Kept  "
 
-    def test_update_skip_db_fill_skips_prefetch(self):
-        """E1: skip_db_fill skips the missing-column back-fill prefetch.
+    def test_update_omitted_column_is_preserved_either_way(self):
+        """E1: an omitted column is left alone, with or without skip_db_fill.
 
-        With the prefetch (default), an omitted column is fetched from the DB and
-        preserved. With skip_db_fill it is not fetched, so it is written as NULL.
+        ``skip_db_fill`` used to be the difference between "fetch it back" and
+        "write NULL over it". Neither happens now — the column is simply not in
+        the statement — so the flag is inert and both paths agree.
         """
         seeded = self._seed(1, 0)
         author_pk = seeded[self._author_model]["id"][0]
@@ -1500,38 +1518,70 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         # Partial frame: id + name only (nickname omitted).
         partial = pl.DataFrame({pk_col: [author_pk], "name": ["NewName"]})
 
-        # Default: prefetch back-fills nickname from the DB, preserving it.
         self._author_model.objects.filter(pk=author_pk).update(nickname="KeepMe")
         mo_crud_kit.update({self._author_model: partial.clone()})
         obj = self._author_model.objects.get(pk=author_pk)
         assert obj.name == "NewName"
         assert obj.nickname == "KeepMe"
 
-        # skip_db_fill: no prefetch, so the omitted nickname is written as NULL.
         self._author_model.objects.filter(pk=author_pk).update(nickname="KeepMe2")
-        mo_crud_kit.update({self._author_model: partial.clone()}, skip_db_fill=True)
+        with pytest.warns(DeprecationWarning, match="skip_db_fill"):
+            mo_crud_kit.update({self._author_model: partial.clone()}, skip_db_fill=True)
         obj = self._author_model.objects.get(pk=author_pk)
         assert obj.name == "NewName"
-        assert obj.nickname is None
+        assert obj.nickname == "KeepMe2"
 
-    def test_update_skip_db_fill_still_canonicalizes_pk(self):
-        """E1: skip_db_fill keeps PK canonicalization so upsert matching works.
+    def test_update_explicit_null_still_clears_the_column(self):
+        """E1: omitting a column and setting it to NULL are different requests.
 
-        Uses ``columns_only`` (no RowValidator) so the only place that can
-        canonicalize the hyphenated PK is the prefetch step — proving it still
-        runs even when the DB fetch is skipped.
+        This is the distinction the old back-fill could not express, and the
+        reason omitted columns must stay absent rather than become NULL.
+        """
+        seeded = self._seed(1, 0)
+        author_pk = seeded[self._author_model]["id"][0]
+        pk_col = self._author_model._meta.pk.column
+        self._author_model.objects.filter(pk=author_pk).update(nickname="ClearMe")
+
+        explicit = pl.DataFrame(
+            {pk_col: [author_pk], "name": ["NewName"], "nickname": [None]},
+            schema_overrides={"nickname": pl.Utf8},
+        )
+        mo_crud_kit.update({self._author_model: explicit})
+
+        assert self._author_model.objects.get(pk=author_pk).nickname is None
+
+    def test_update_does_not_read_before_writing(self):
+        """REGRESSION: preparing a partial frame issues no SELECT.
+
+        The back-fill's per-PK prefetch is gone; the only statements should be
+        the ones that write.
+        """
+        seeded = self._seed(1, 0)
+        author_pk = seeded[self._author_model]["id"][0]
+        pk_col = self._author_model._meta.pk.column
+        partial = pl.DataFrame({pk_col: [author_pk], "name": ["NewName"]})
+
+        with CaptureQueriesContext(connection) as captured:
+            _, unset = _update__prepare_frames({self._author_model: partial})
+
+        assert unset[self._author_model] == {"nickname"}
+        assert captured.captured_queries == []
+
+    def test_update_partial_frame_canonicalizes_pk(self):
+        """E1: PK canonicalization runs for a partial frame too.
+
+        Uses ``columns_only`` (no RowValidator) so preparation is the only stage
+        that can canonicalize the hyphenated PK — if it did not, the upsert would
+        insert a second row instead of matching the stored dashless one.
         """
         seeded = self._seed(1, 0)
         dashless = seeded[self._author_model]["id"][0]
         hyphenated = str(uuid.UUID(dashless))  # same id, canonical hyphenated form
         pk_col = self._author_model._meta.pk.column
-        full = pl.DataFrame(
-            {pk_col: [hyphenated], "name": ["Canon"], "nickname": ["Nick"]}
-        )
+        partial = pl.DataFrame({pk_col: [hyphenated], "name": ["Canon"]})
 
         status, _, _ = mo_crud_kit.update(
-            {self._author_model: full},
-            skip_db_fill=True,
+            {self._author_model: partial},
             validation_level="columns_only",
         )
         assert status == "ok"
@@ -1851,10 +1901,12 @@ class TestCRUDProcessorUnitPaths:
             return ("on_duplicate_key_update", update_cols)
 
     class _FakeTableForInsert:
-        def __init__(self, cols):
+        def __init__(self, cols, name="dummy"):
+            self.name = name
             self.columns = [TestCRUDProcessorUnitPaths._Col(c) for c in cols]
             # Mirrors SQLAlchemy's ``Table.c``: the merge projects the staging
-            # select onto these columns and casts to their types.
+            # select onto these columns and casts to their types. The merge also
+            # reads its keys to learn which columns the frame actually staged.
             self.c = {c: TestCRUDProcessorUnitPaths._Col(c) for c in cols}
             self._stmt = TestCRUDProcessorUnitPaths._FakeUpsertStmt()
             for c in cols:
@@ -1921,273 +1973,328 @@ class TestCRUDProcessorUnitPaths:
         assert conn.executed == [fake_table._stmt]
         assert conn.exec_params == [[{"id": row_id}]]
 
-    @pytest.mark.parametrize(
-        "dialect,expected_execute_tag",
-        [
-            ("mysql", "on_duplicate_key_update"),
-            ("postgresql", "on_conflict_do_update"),
-        ],
-    )
-    def test_update_merge_staging_mysql_postgres_paths(
-        self, monkeypatch, dialect, expected_execute_tag
-    ):
-        """ACCEPTANCE: Update merge staging mysql postgres paths."""
+    @staticmethod
+    def _merge_sql(dialect, target_cols, staged_cols):
+        """Compile what `_update__merge_staging` emits, for a given dialect.
+
+        Real SQLAlchemy tables and a real dialect compiler, so the MySQL and
+        PostgreSQL branches are covered as the SQL they actually produce rather
+        than as call shapes against stand-ins.
+        """
+        import sqlalchemy as sa
+        from sqlalchemy.dialects import mysql, postgresql, sqlite
+
         from ...components._crud_kit.crud_processor import CRUDProcessor
 
-        class _FakeColumn:
-            def label(self, _name):
-                return self
-
-        class _FakeSelect:
-            def __init__(self):
-                self.c = {"id": _FakeColumn(), "name": _FakeColumn()}
-
-            def with_only_columns(self, *args):
-                return self
-
-            def where(self, *_args, **_kwargs):
-                return self
-
-        class _FakeDialectInsert:
-            def __init__(self):
-                self.excluded = {"id": "excluded_id", "name": "excluded_name"}
-                self.inserted = {"id": "inserted_id", "name": "inserted_name"}
-
-            def from_select(self, _cols, _select):
-                return self
-
-            def on_duplicate_key_update(self, update_cols):
-                return ("on_duplicate_key_update", update_cols)
-
-            def on_conflict_do_update(self, **kwargs):
-                return ("on_conflict_do_update", kwargs)
+        metadata = sa.MetaData()
+        target = sa.Table(
+            "tbl_target",
+            metadata,
+            *[
+                sa.Column(name, type_, primary_key=(name == "id"))
+                for name, type_ in target_cols.items()
+            ],
+        )
+        staging = sa.Table(
+            "tmp_stage",
+            metadata,
+            *[sa.Column(name, sa.String()) for name in staged_cols],
+        )
 
         processor = CRUDProcessor.__new__(CRUDProcessor)
         processor.dialect = dialect
-        conn = self._FakeConn()
-        metadata = object()
-        table = self._FakeTableForInsert(["id", "name"])
-
-        monkeypatch.setattr(
-            "apps.django_mindoff.components._crud_kit.crud_processor.Table",
-            lambda *args, **kwargs: self._FakeTableForInsert(["id", "name"]),
-        )
-        monkeypatch.setattr(
-            "apps.django_mindoff.components._crud_kit.crud_processor.select",
-            lambda _tbl: _FakeSelect(),
-        )
-        monkeypatch.setattr(
-            "apps.django_mindoff.components._crud_kit.crud_processor.cast",
-            lambda column, _type: column,
-        )
-        if dialect == "mysql":
-            monkeypatch.setattr(
-                "apps.django_mindoff.components._crud_kit.crud_processor.mysql_insert",
-                lambda _table: _FakeDialectInsert(),
+        conn = TestCRUDProcessorUnitPaths._FakeConn()
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(
+                "apps.django_mindoff.components._crud_kit.crud_processor.Table",
+                lambda *_a, **_kw: staging,
             )
-        else:
-            monkeypatch.setattr(
-                "apps.django_mindoff.components._crud_kit.crud_processor.pg_insert",
-                lambda _table: _FakeDialectInsert(),
-            )
+            processor._update__merge_staging(target, "tmp_stage", metadata, "id", conn)
 
-        processor._update__merge_staging(
-            table,
-            "tmp_staging",
-            metadata,
-            "id",
-            "id",
-            conn,
+        compiler = {
+            "sqlite": sqlite.dialect(),
+            "mysql": mysql.dialect(),
+            "postgresql": postgresql.dialect(),
+        }[dialect]
+        return [
+            " ".join(str(stmt.compile(dialect=compiler)).split())
+            for stmt in conn.executed
+        ]
+
+    @pytest.mark.parametrize("dialect", ["sqlite", "mysql", "postgresql"])
+    def test_update_merge_staging_writes_only_staged_columns(self, dialect):
+        """ACCEPTANCE: the merge names the supplied columns and no others.
+
+        `pages` exists on the target but not in the frame, so it must appear in
+        neither the assignment list nor the INSERT column list — that absence is
+        what leaves an existing row's value intact.
+        """
+        import sqlalchemy as sa
+
+        update_sql, insert_sql = self._merge_sql(
+            dialect,
+            {"id": sa.String(), "title": sa.String(), "pages": sa.Integer()},
+            ["id", "title"],
         )
 
-        assert len(conn.executed) == 1
-        assert conn.executed[0][0] == expected_execute_tag
+        assert update_sql.startswith("UPDATE tbl_target")
+        assert "title=" in update_sql and "pages" not in update_sql
+        assert insert_sql.startswith("INSERT INTO tbl_target (id, title) SELECT")
+        assert "pages" not in insert_sql
+        # New keys only: a row that already exists is handled by the UPDATE.
+        # Anti-join rather than NOT EXISTS — MySQL rejects a subquery that reads
+        # the table being inserted into.
+        assert "LEFT OUTER JOIN tbl_target" in insert_sql
+        assert insert_sql.endswith("WHERE tbl_target.id IS NULL")
+        assert "EXISTS" not in insert_sql
 
-    def test_update_merge_staging_sqlite_no_other_cols_returns(self, monkeypatch):
-        """REJECTION: Update merge staging sqlite no other cols returns."""
+    @pytest.mark.parametrize(
+        "dialect,expected",
+        [
+            # SQLite types dynamically, so nothing is cast on either side.
+            ("sqlite", "FROM tmp_stage WHERE tbl_target.id = tmp_stage.id"),
+            # Typed backends must cast the staging side of the match key.
+            (
+                "postgresql",
+                "FROM tmp_stage WHERE tbl_target.id = CAST(tmp_stage.id AS VARCHAR)",
+            ),
+            # MySQL has no UPDATE..FROM; SQLAlchemy renders a multi-table UPDATE.
+            ("mysql", "UPDATE tbl_target, tmp_stage SET"),
+        ],
+    )
+    def test_update_merge_staging_dialect_update_form(self, dialect, expected):
+        """ACCEPTANCE: each backend gets its own correlated-UPDATE syntax."""
+        import sqlalchemy as sa
+
+        update_sql, _ = self._merge_sql(
+            dialect, {"id": sa.String(), "title": sa.String()}, ["id", "title"]
+        )
+        assert expected in update_sql
+
+    def test_update_merge_staging_casts_to_target_types_off_sqlite(self):
+        """ACCEPTANCE: typed backends cast staged text back to the column type.
+
+        The staging table comes from the frame's Polars schema, so an integer
+        arrives as text. SQLite's dynamic typing accepts it; PostgreSQL will not.
+        """
+        import sqlalchemy as sa
+
+        cols = {"id": sa.String(), "pages": sa.Integer()}
+        pg_update, _ = self._merge_sql("postgresql", cols, ["id", "pages"])
+        sqlite_update, _ = self._merge_sql("sqlite", cols, ["id", "pages"])
+
+        assert "CAST(tmp_stage.pages AS INTEGER)" in pg_update
+        assert "CAST" not in sqlite_update
+
+    def test_update_merge_staging_casts_the_match_key_too(self):
+        """REGRESSION: the join key needs the cast as much as the values do.
+
+        The staging table is text-typed throughout, so matching it against a
+        `uuid` primary key raised `operator does not exist: uuid = text` on
+        PostgreSQL. Only the staging side is cast — casting the target's column
+        instead would work but would give up its primary-key index.
+        """
+        import sqlalchemy as sa
+
+        update_sql, insert_sql = self._merge_sql(
+            "postgresql", {"id": sa.Uuid(), "name": sa.String(50)}, ["id", "name"]
+        )
+
+        assert update_sql.endswith("WHERE tbl_target.id = CAST(tmp_stage.id AS UUID)")
+        assert "ON tbl_target.id = CAST(tmp_stage.id AS UUID)" in insert_sql
+
+    def test_update_merge_staging_pk_only_frame_warns_and_writes_nothing(self):
+        """REJECTION: a frame with nothing but the key has nothing to merge."""
+        import sqlalchemy as sa
+
         from ...components._crud_kit.crud_processor import CRUDProcessor
 
-        class _FakeSelect:
-            def __init__(self):
-                self.c = {"id": object()}
-
-            def with_only_columns(self, *args):
-                return self
-
-            def where(self, *_args, **_kwargs):
-                return self
+        metadata = sa.MetaData()
+        target = sa.Table(
+            "only_pk_table",
+            metadata,
+            sa.Column("id", sa.String(), primary_key=True),
+            sa.Column("title", sa.String()),
+        )
+        staging = sa.Table("tmp_stage", metadata, sa.Column("id", sa.String()))
 
         processor = CRUDProcessor.__new__(CRUDProcessor)
         processor.dialect = "sqlite"
         conn = self._FakeConn()
-        metadata = object()
-        table = self._FakeTableForInsert(["id"])
-        table.c = {"id": object()}
-        table.name = "only_pk_table"
 
-        monkeypatch.setattr(
-            "apps.django_mindoff.components._crud_kit.crud_processor.Table",
-            lambda *args, **kwargs: self._FakeTableForInsert(["id"]),
-        )
-        monkeypatch.setattr(
-            "apps.django_mindoff.components._crud_kit.crud_processor.select",
-            lambda _tbl: _FakeSelect(),
-        )
-
-        processor._update__merge_staging(
-            table,
-            "tmp_staging",
-            metadata,
-            "id",
-            "id",
-            conn,
-        )
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(
+                "apps.django_mindoff.components._crud_kit.crud_processor.Table",
+                lambda *_a, **_kw: staging,
+            )
+            with pytest.warns(RuntimeWarning, match="only_pk_table"):
+                processor._update__merge_staging(
+                    target, "tmp_stage", metadata, "id", conn
+                )
 
         assert conn.executed == []
 
 
 @pytest.mark.django_db(transaction=True)
-class TestFillMissingColumnsLazy(MindoffTestCase):
+class TestUpdatePartialColumns(MindoffTestCase):
+    """`update()` writes the columns it was given, and only those."""
 
-    def test_fill_missing_columns_lazy_frame(self):
-        """ACCEPTANCE: Fill missing columns lazy frame."""
+    def test_prepare_frames_keeps_a_lazy_frame_lazy(self):
+        """ACCEPTANCE: preparation never changes the caller's execution mode."""
         df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[3])
         mo_crud_kit.create(df_dict)
-        author_df = df_dict[self._author_model]
 
-        # pk-only lazy frame: fill should fetch missing columns from DB
-        pk_only_lazy = author_df.select("id").lazy()
-        result, spills = _update__fill_missing_columns(
-            {self._author_model: pk_only_lazy}, batch_size=100
-        )
-        assert isinstance(result[self._author_model], pl.LazyFrame)
-        collected = result[self._author_model].collect()
-        assert "name" in collected.columns
-        # A lazy back-fill spills to Parquet; the caller owns that file.
-        assert self._author_model in spills
-        for path in spills.values():
-            os.unlink(path)
+        partial_lazy = df_dict[self._author_model].select("id", "name").lazy()
+        result, unset = _update__prepare_frames({self._author_model: partial_lazy})
 
-    def test_fill_missing_columns_pk_absent_raises(self):
-        """REJECTION: Fill missing columns pk absent raises."""
+        out = result[self._author_model]
+        assert isinstance(out, pl.LazyFrame)
+        assert unset[self._author_model] == {"nickname"}
+        # No query ran, so nothing was fetched to fill the gap.
+        assert "nickname" not in out.collect_schema().names()
+
+    def test_prepare_frames_pk_absent_raises(self):
+        """REJECTION: without a primary key there is no row to match."""
         df_no_pk = pl.DataFrame({"name": ["Alice"]})
         with pytest.raises(Exception):
-            _update__fill_missing_columns(
-                {self._author_model: df_no_pk}, batch_size=100
-            )
-
-    def test_lazy_backfill_streams_pk_chunks_and_spills_to_disk(self, monkeypatch):
-        """REGRESSION: PKs reach Python one batch at a time and results spill.
-
-        The bug this replaces collected the whole PK column, listed it into
-        Python objects, then concatenated every fetched chunk — all three O(rows)
-        regardless of `batch_size`.
-        """
-        from ...components._crud_kit import frame_stream as fs
-
-        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[25])
-        mo_crud_kit.create(df_dict)
-        pk_only_lazy = df_dict[self._author_model].select("id").lazy()
-
-        chunk_sizes = []
-        original_iter = fs.iter_frames
-
-        def _spy(df, batch_size):
-            for chunk in original_iter(df, batch_size):
-                chunk_sizes.append(chunk.height)
-                yield chunk
-
-        monkeypatch.setattr("apps.django_mindoff.components.crud_kit.frame_stream.iter_frames", _spy)
-
-        result, spills = _update__fill_missing_columns(
-            {self._author_model: pk_only_lazy}, batch_size=5
-        )
-
-        # PKs were walked in chunks, never listed as one 25-element block.
-        assert chunk_sizes and max(chunk_sizes) <= 5
-        # The fetched rows went to a Parquet spill, not an in-memory concat.
-        spill = spills[self._author_model]
-        assert os.path.exists(spill)
-        collected = result[self._author_model].collect()
-        assert collected.height == 25
-        assert set(collected["name"]) == set(df_dict[self._author_model]["name"])
-        fs.safe_unlink(spill)
+            _update__prepare_frames({self._author_model: df_no_pk})
 
     @pytest.mark.parametrize("batch_size", [3, 1000])
     @pytest.mark.parametrize("is_lazy", [True, False])
-    def test_backfill_parity_across_batch_sizes_and_modes(self, batch_size, is_lazy):
-        """ACCEPTANCE: chunking changes memory, never the result."""
-        from ...components._crud_kit import frame_stream as fs
-
+    def test_partial_update_preserves_omitted_column(self, batch_size, is_lazy):
+        """ACCEPTANCE: batching and frame type change neither the write nor the rest."""
         df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[10])
         mo_crud_kit.create(df_dict)
-        pk_only = df_dict[self._author_model].select("id")
-        frm = pk_only.lazy() if is_lazy else pk_only
+        self._author_model.objects.all().update(nickname="Untouched")
 
-        result, spills = _update__fill_missing_columns(
+        partial = df_dict[self._author_model].select("id", "name").with_columns(
+            (pl.col("name") + pl.lit(" Edited")).alias("name")
+        )
+        frm = partial.lazy() if is_lazy else partial
+
+        status, valid, _ = mo_crud_kit.update(
             {self._author_model: frm}, batch_size=batch_size
         )
-        out = result[self._author_model]
-        # The caller's execution mode is preserved, not silently converted.
-        assert isinstance(out, pl.LazyFrame if is_lazy else pl.DataFrame)
-        collected = out.collect() if is_lazy else out
-        assert collected.height == 10
-        assert set(collected["name"]) == set(df_dict[self._author_model]["name"])
-        for path in spills.values():
-            fs.safe_unlink(path)
 
-    def test_update_keeps_returned_lazy_frame_collectable(self):
-        """CONTRACT: a LazyFrame handed back by update() still collects.
+        assert status == "ok"
+        # The caller's execution mode survives the round trip.
+        assert isinstance(valid[self._author_model], pl.LazyFrame if is_lazy else pl.DataFrame)
+        rows = list(self._author_model.objects.values_list("name", "nickname"))
+        assert len(rows) == 10
+        assert all(name.endswith(" Edited") for name, _ in rows)
+        assert {nickname for _, nickname in rows} == {"Untouched"}
 
-        The spill file backing it must outlive the call, so it cannot simply be
-        unlinked when the write finishes.
-        """
+    def test_returned_frame_carries_only_the_written_columns(self):
+        """CONTRACT: the frames handed back describe what was actually written."""
         df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[6])
         mo_crud_kit.create(df_dict)
-        pk_only_lazy = df_dict[self._author_model].select("id").lazy()
+        partial_lazy = df_dict[self._author_model].select("id", "name").lazy()
 
         status, valid, _invalid = mo_crud_kit.update(
-            {self._author_model: pk_only_lazy}, batch_size=2
+            {self._author_model: partial_lazy}, batch_size=2
         )
 
         assert status == "ok"
         returned = valid[self._author_model]
         assert isinstance(returned, pl.LazyFrame)
-        assert returned.collect().height == 6  # would raise if the spill were gone
+        collected = returned.collect()
+        assert collected.height == 6
+        # No NULL placeholder for the column that was never written.
+        assert "nickname" not in collected.columns
 
-    def test_update_removes_spill_when_the_write_fails(self, monkeypatch):
-        """BOUNDARY: a failed update leaves no spill file behind."""
-        from ...components import crud_kit as ck
-        from ...components._crud_kit import frame_stream as fs
+    def test_concurrent_writer_to_an_omitted_column_is_not_clobbered(self, monkeypatch):
+        """REGRESSION: an omitted column is never read-modify-written.
 
-        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[4])
+        The back-fill this replaces fetched every omitted column and put it back
+        in the SET clause, so anything committed between the fetch and the write
+        was silently overwritten with the stale value. Nothing is fetched now, so
+        the column is not in the statement at all and the other writer survives.
+        """
+        from ...components._crud_kit.crud_processor import CRUDProcessor
+
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[1])
         mo_crud_kit.create(df_dict)
-        pk_only_lazy = df_dict[self._author_model].select("id").lazy()
+        author_pk = df_dict[self._author_model]["id"][0]
+        self._author_model.objects.filter(pk=author_pk).update(nickname="Original")
 
-        created_paths = []
-        original_sink = fs.sink_frames_to_lazy
+        partial = pl.DataFrame({"id": [author_pk], "name": ["Mine"]})
+        author_model = self._author_model
+        original_update = CRUDProcessor.update
 
-        def _record(frames):
-            lazy, path = original_sink(frames)
-            if path is not None:
-                created_paths.append(path)
-            return lazy, path
+        def _interleaved(processor, *args, **kwargs):
+            # Another writer commits to a column our frame does not carry, after
+            # we prepared the frame and before our statement runs.
+            author_model.objects.filter(pk=author_pk).update(nickname="Theirs")
+            return original_update(processor, *args, **kwargs)
 
-        monkeypatch.setattr(
-            "apps.django_mindoff.components.crud_kit.frame_stream.sink_frames_to_lazy",
-            _record,
+        monkeypatch.setattr(CRUDProcessor, "update", _interleaved)
+        mo_crud_kit.update({author_model: partial})
+
+        obj = self._author_model.objects.get(pk=author_pk)
+        assert obj.name == "Mine"  # our column landed
+        assert obj.nickname == "Theirs"  # theirs was not rolled back
+
+    def test_new_row_missing_a_required_column_fails_at_the_database(self):
+        """BOUNDARY: an upsert-insert must still satisfy the table's constraints.
+
+        Documented trade-off: an omitted NOT NULL column with no database default
+        is fine for a row that exists (it keeps its value) but cannot be inserted,
+        so a brand-new primary key surfaces the database's own integrity error.
+        """
+        partial = pl.DataFrame({"id": [_make_uuid()], "nickname": ["NoNameGiven"]})
+
+        with pytest.raises(RuntimeError, match="(?i)not null"):
+            mo_crud_kit.update({self._author_model: partial})
+
+    def test_update_omitting_a_foreign_key_column_validates(self):
+        """ACCEPTANCE: an absent FK is not a broken FK — there is nothing to check."""
+        df_dict = self.mo_mock_model_frms(
+            models=[self._author_model, self._book_model], counts=[2, 2]
+        )
+        mo_crud_kit.create(df_dict)
+        books = df_dict[self._book_model]
+        # title only: the FK column the validator would normally resolve is gone.
+        partial = books.select("id", "title").with_columns(
+            pl.lit("Retitled").alias("title")
         )
 
-        def _boom(*args, **kwargs):
-            raise RuntimeError("write exploded")
+        status, _, invalid = mo_crud_kit.update({self._book_model: partial})
 
-        monkeypatch.setattr(ck, "CRUDProcessor", _boom)
+        assert status == "ok"
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+        assert set(self._book_model.objects.values_list("title", flat=True)) == {
+            "Retitled"
+        }
+        # The FK was left alone, so every book still points at its author.
+        assert self._book_model.objects.filter(author_ref__isnull=True).count() == 0
 
-        with pytest.raises(RuntimeError, match="write exploded"):
-            mo_crud_kit.update({self._author_model: pk_only_lazy}, batch_size=2)
+    def test_splitter_skips_relations_the_frame_cannot_supply(self):
+        """BOUNDARY: invalid-row propagation tolerates an omitted FK column.
 
-        assert created_paths, "expected the back-fill to spill before the failure"
-        assert not any(os.path.exists(p) for p in created_paths)
+        Propagation reads the FK column off the child frame; a partial update may
+        not carry it, and a foreign key may point outside the batch entirely.
+        Either way the relation is unusable and must be skipped, not faulted on.
+        """
+        author_id, book_id = _make_uuid(), _make_uuid()
+        splitter = _ModelFrmsValidInvalidSplitter(
+            {
+                # Book omits author_ref_id; Author is in the batch and flagged.
+                self._book_model: pl.DataFrame(
+                    {"id": [book_id], "title": ["T"], ERROR_COL: ["boom"]}
+                ),
+                self._author_model: pl.DataFrame(
+                    {"id": [author_id], "name": ["A"], ERROR_COL: [None]},
+                    schema_overrides={ERROR_COL: pl.Utf8},
+                ),
+            }
+        )
+        assert splitter.relations == []
+
+        valid, invalid = splitter.run()
+        assert valid[self._book_model].height == 0
+        assert invalid[self._book_model].height == 1
+        # The author frame is clean and nothing propagated to it.
+        assert valid[self._author_model].height == 1
 
     @pytest.fixture(autouse=True, scope="class")
     def _class_app(self, request):
@@ -2204,7 +2311,18 @@ class TestFillMissingColumnsLazy(MindoffTestCase):
                 "nickname": models.CharField(max_length=50, blank=True, null=True),
             },
         )
+        book = _create_model(
+            app_name,
+            "BookModel",
+            "book",
+            [(app_name, "AuthorModel", "required")],
+            {
+                "title": models.CharField(max_length=100),
+                "pages": models.IntegerField(),
+            },
+        )
         request.cls._author_model = author
+        request.cls._book_model = book
         request.cls._app_name = app_name
         request.cls._temp_dir = temp_dir
         request.cls._override = override
@@ -2214,9 +2332,12 @@ class TestFillMissingColumnsLazy(MindoffTestCase):
     def _models(self):
         with connection.schema_editor() as editor:
             editor.create_model(self._author_model)
+            editor.create_model(self._book_model)
         _validate_model(self._author_model)
+        _validate_model(self._book_model)
         yield
         with connection.schema_editor() as editor:
+            editor.delete_model(self._book_model)
             editor.delete_model(self._author_model)
 
 
@@ -3077,15 +3198,26 @@ class TestExplicitConnectionWrites(MindoffTestCase):
         finally:
             wrapper.close()
 
-    def test_unregistered_connection_rejects_backfill(self, tmp_path):
-        """REJECTION: a step that needs the ORM names the escape hatch."""
-        wrapper = _build_sqlite_wrapper("solo_backfill", tmp_path / "solo2.sqlite3")
+    def test_unregistered_connection_rejects_foreign_key_validation(self, tmp_path):
+        """REJECTION: the one step that needs the ORM names the escape hatch.
+
+        Removing the missing-column back-fill left foreign-key validation as the
+        only stage in `update()` that issues an ORM query, so it is the only one
+        that can require the connection to be registered.
+        """
+        wrapper = _build_sqlite_wrapper("solo_fk", tmp_path / "solo2.sqlite3")
         try:
-            pk_only = pl.DataFrame({"id": [str(uuid.uuid4())]})
+            book = pl.DataFrame(
+                {
+                    "id": [str(uuid.uuid4())],
+                    "title": ["Unrouted"],
+                    "author_ref_id": [str(uuid.uuid4())],
+                }
+            )
             with pytest.raises(
                 ValueError, match="not registered in django.db.connections"
             ):
-                mo_crud_kit.update({self._author_model: pk_only}, using=wrapper)
+                mo_crud_kit.update({self._book_model: book}, using=wrapper)
         finally:
             wrapper.close()
 
@@ -3239,27 +3371,28 @@ class TestExplicitConnectionPostgres(MindoffTestCase):
     reason="No PostgreSQL test database configured (set MO_TEST_PG_NAME/USER/HOST)",
 )
 @pytest.mark.django_db(transaction=True)
-class TestUpdateBackfillPostgres(MindoffTestCase):
-    """Back-fill behaviour that SQLite structurally cannot exercise.
+class TestUpdatePartialColumnsPostgres(MindoffTestCase):
+    """Partial-column merges that SQLite structurally cannot exercise.
 
-    SQLite's dynamic typing accepts the text a back-fill produces, so it takes
-    the `cast_to_target=False` merge branch and never proves that UUID/timestamp
-    columns survive the round-trip into strictly-typed columns. These run the
-    `cast_to_target=True` branch, the `COPY` bulk loader, and the chunked fetch
-    against a real server.
+    SQLite's dynamic typing accepts whatever the staging table holds, so it takes
+    the `cast_to_target=False` merge branch and never proves that a *narrowed*
+    column list still casts and lines up against strictly-typed columns. These
+    run the `cast_to_target=True` branch and the `COPY` bulk loader with a frame
+    that deliberately omits columns, against a real server.
     """
 
-    def test_backfill_merges_typed_columns(self, pg_tenant):
-        """ACCEPTANCE: text-shaped back-fill values merge into typed PG columns.
+    def test_partial_merge_casts_the_narrowed_column_list(self, pg_tenant):
+        """ACCEPTANCE: omitted typed columns keep their values on a real merge.
 
-        The staging table is built from the frame's Polars schema, so the UUID
-        pk and the timestamp arrive as text; the merge must cast them back.
+        The staging table is built from the frame's Polars schema, so the UUID pk
+        arrives as text and must be cast back — and the projection has to line up
+        positionally even though it no longer spans every target column.
         """
         frms = self.mo_mock_model_frms(models=[self._author_model], counts=[6])
         assert mo_crud_kit.create(frms, using=pg_tenant.alias)[0] == "ok"
         original = frms[self._author_model]
 
-        # Only the pk and one column: `published_at` and `rank` are back-filled.
+        # `published_at` and `rank` are absent: they must be left untouched.
         partial = original.select(["id", "name"]).with_columns(
             pl.lit("renamed").alias("name")
         )
@@ -3271,44 +3404,47 @@ class TestUpdateBackfillPostgres(MindoffTestCase):
         rows = self._author_model.objects.using(pg_tenant.alias)
         assert rows.count() == 6
         assert set(rows.values_list("name", flat=True)) == {"renamed"}
-        # The back-filled columns survived rather than being nulled or mangled.
+        # Never written, so never nulled.
         assert rows.filter(published_at__isnull=True).count() == 0
         assert rows.filter(rank__isnull=True).count() == 0
 
-    def test_backfill_chunks_against_real_server(self, pg_tenant):
+    def test_partial_merge_chunks_against_real_server(self, pg_tenant):
         """ACCEPTANCE: a row count well above batch_size round-trips correctly."""
         frms = self.mo_mock_model_frms(models=[self._author_model], counts=[50])
         assert mo_crud_kit.create(frms, using=pg_tenant.alias)[0] == "ok"
 
-        pk_only = frms[self._author_model].select("id")
+        renamed = frms[self._author_model].select("id", "name").with_columns(
+            pl.lit("bulk").alias("name")
+        )
         status, _valid, _invalid = mo_crud_kit.update(
-            {self._author_model: pk_only}, using=pg_tenant.alias, batch_size=7
+            {self._author_model: renamed}, using=pg_tenant.alias, batch_size=7
         )
 
         assert status == "ok"
         rows = self._author_model.objects.using(pg_tenant.alias)
         assert rows.count() == 50
-        # Every column was back-filled, so nothing was overwritten with NULL.
+        assert set(rows.values_list("name", flat=True)) == {"bulk"}
+        # Chunking the COPY load never split a row away from its other columns.
         assert rows.filter(published_at__isnull=True).count() == 0
-        expected = set(frms[self._author_model]["name"])
-        assert set(rows.values_list("name", flat=True)) == expected
 
-    def test_lazy_backfill_stays_collectable_after_update(self, pg_tenant):
-        """CONTRACT: the returned lazy frame still collects once PG has the rows."""
+    def test_lazy_partial_update_returns_the_written_columns(self, pg_tenant):
+        """CONTRACT: the returned lazy frame collects and matches what was written."""
         frms = self.mo_mock_model_frms(models=[self._author_model], counts=[8])
         assert mo_crud_kit.create(frms, using=pg_tenant.alias)[0] == "ok"
 
-        pk_only_lazy = frms[self._author_model].select("id").lazy()
+        partial_lazy = frms[self._author_model].select("id", "name").lazy()
         status, valid, _invalid = mo_crud_kit.update(
-            {self._author_model: pk_only_lazy}, using=pg_tenant.alias, batch_size=3
+            {self._author_model: partial_lazy}, using=pg_tenant.alias, batch_size=3
         )
 
         assert status == "ok"
-        assert valid[self._author_model].collect().height == 8
+        collected = valid[self._author_model].collect()
+        assert collected.height == 8
+        assert "rank" not in collected.columns
 
     @pytest.fixture()
     def pg_tenant(self):
-        alias = f"pg_backfill_{uuid.uuid4().hex[:8]}"
+        alias = f"pg_partial_{uuid.uuid4().hex[:8]}"
         wrapper = _build_postgres_wrapper(alias)
         connections[alias] = wrapper
         with wrapper.schema_editor() as editor:
@@ -3333,7 +3469,8 @@ class TestUpdateBackfillPostgres(MindoffTestCase):
             [],
             {
                 "name": models.CharField(max_length=50),
-                # Typed columns the back-fill must cast back from text.
+                # Typed columns a partial frame omits, so the merge has to both
+                # narrow its column list and still cast what remains.
                 "published_at": models.DateTimeField(null=True, blank=True),
                 "rank": models.IntegerField(null=True, blank=True),
             },

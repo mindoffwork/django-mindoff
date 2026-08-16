@@ -161,14 +161,13 @@ a tenant database provisioned on demand has no entry in `settings.DATABASES`, so
 the settings lookup alone cannot reach it. Resolution therefore falls back to
 `django.db.connections`, which is where such a connection lives.
 
-Two steps of a write issue ORM queries rather than SQLAlchemy ones — the
-missing-column back-fill in `update(...)`, and foreign-key validation at
-`validation_level="full"`. Those are routed to the same target, so a reference is
-checked where the rows are actually going. They need the connection to be
-reachable by alias through `django.db.connections`; a connection that is not
-registered there raises a clear error naming the alternative — combine
-`validation_level="columns_only"` with `skip_db_fill=True`, which skips both
-queries and writes through the explicit connection alone.
+One step of a write issues ORM queries rather than SQLAlchemy ones: foreign-key
+validation at `validation_level="full"`. It is routed to the same target, so a
+reference is checked where the rows are actually going, and it needs the
+connection to be reachable by alias through `django.db.connections`. A connection
+that is not registered there raises a clear error naming the alternative —
+`validation_level="columns_only"`, which skips that query and writes through the
+explicit connection alone.
 
 ### Per-process caching
 
@@ -239,40 +238,58 @@ keys, types on type-strict backends) still apply at write time.
 
 ### Update Strategy (Upsert)
 
-`update(...)` uses a single staged-merge path: each frame is bulk-loaded into a
-per-call staging table (using the same fast loader as `create()`), then merged
-into the target with one set-based dialect-specific statement
-(`INSERT ... FROM SELECT ... ON CONFLICT/DUPLICATE`). No per-row Python
-materialization occurs, and the whole update runs in one transaction.
+`update(...)` uses a staged-merge path: each frame is bulk-loaded into a per-call
+staging table (using the same fast loader as `create()`), then merged into the
+target with set-based SQL. No per-row Python materialization occurs, and the
+whole update runs in one transaction.
 
-The merge projects the staging table onto the target's columns explicitly rather
-than relying on the two happening to share a column order, since `INSERT ... FROM
-SELECT` pairs them positionally. On PostgreSQL and MySQL each column is also cast
-to the target column's type: the staging table is created from the frame's Polars
-schema, so a UUID or timestamp arrives as text, which a strictly-typed backend
-will not merge into a typed column. SQLite needs no cast — its typing is dynamic.
+**Only the columns the frame carries are written.** The staging table is built
+from the frame, so it is the authority on what the merge may touch; a target
+column absent from it appears in neither the assignment list nor the INSERT
+column list. An existing row therefore keeps whatever it already holds, and a new
+row takes the column's database default.
 
-Before validation, update flow also auto-fills missing model columns by fetching
-current DB values using primary keys. Pass `skip_db_fill=True` to skip that
-prefetch `SELECT` when the caller already supplies every column to be written
-(for example a frame read in full via `read()` and modified in place) — primary
-key canonicalization and the PK presence check still run, so upsert matching is
-unaffected. Any column the frame omits is then written as `NULL` rather than
-back-filled, so only enable it for column-complete frames.
+That property is why the merge is two statements rather than one
+`INSERT ... ON CONFLICT`:
 
-The back-fill itself is memory-bounded. Primary keys are read off the frame one
-`batch_size` chunk at a time (never listed into Python objects wholesale), and
-each fetched chunk is streamed to a temporary Parquet file rather than
-accumulating in memory to be concatenated at the end. For a `LazyFrame` input the
-result is joined lazily, so the whole path stays bounded; for an eager
-`DataFrame` the back-fill is collected to match the caller's execution mode,
-which costs no more than the frame the caller already holds. `skip_db_fill` is
-therefore an optimization — it saves the round-trip — not a memory escape hatch.
+1. `UPDATE target SET <supplied> FROM staging WHERE target.pk = staging.pk` —
+   assigns only the supplied columns. (MySQL has no `UPDATE ... FROM`, so
+   SQLAlchemy renders the equivalent multi-table `UPDATE`.)
+2. `INSERT INTO target (<supplied>) SELECT ... FROM staging LEFT JOIN target ...
+   WHERE target.pk IS NULL` — adds only the primary keys that are genuinely new.
+   The unmatched keys are found by anti-join rather than `NOT EXISTS` because
+   MySQL refuses a subquery that reads the table being inserted into.
 
-Because a `LazyFrame` returned by `update()` may still scan its back-fill spill
-file, that file is removed once every frame referencing it has been
-garbage-collected (with a process-exit sweep as a backstop) — the same lifetime
-contract `read(is_lazy=True)` already has.
+The upsert form cannot express this: it has to name every column it inserts, and
+a `NOT NULL` column left out of that list fails the constraint *before* the
+conflict is arbitrated — so it breaks even for rows that already exist. Splitting
+the two cases is what makes a partial write possible at all. Both statements run
+inside the same transaction.
+
+Because nothing is read back before writing, two writers updating different
+columns of the same row no longer overwrite each other. The previous behaviour
+fetched every omitted column and put it back in the `SET` clause, so anything
+committed between the fetch and the write was silently lost.
+
+The projection is explicit rather than relying on the staging and target tables
+happening to share a column order, since `INSERT ... FROM SELECT` pairs them
+positionally. On PostgreSQL and MySQL each column is also cast to the target
+column's type: the staging table is created from the frame's Polars schema, so a
+UUID or timestamp arrives as text, which a strictly-typed backend will not write
+into a typed column. SQLite needs no cast — its typing is dynamic.
+
+Two consequences worth knowing:
+
+- A frame carrying *only* the primary key has nothing to write. That is a no-op,
+  and it emits a `RuntimeWarning` rather than passing silently.
+- `update()` is an upsert, so a primary key that does not exist yet is an INSERT.
+  If the frame omits a `NOT NULL` column with no database default, that INSERT
+  fails with the database's own integrity error and the call rolls back. Use
+  `create()` for genuinely new rows, or supply the column.
+
+`skip_db_fill` is deprecated and inert. It used to skip the prefetch `SELECT`
+that back-filled omitted columns; there is no back-fill left to skip, so passing
+it changes nothing and warns. It is removed in 1.0.
 
 ### Larger-than-RAM Writes
 
@@ -331,5 +348,5 @@ Most issues fall into validation contract mismatches:
 2. **Rows unexpectedly invalid:** inspect validator error column (`POLARS_VALIDATOR_ERROR_COL` or `__error__info`).
 3. **FK validation failures:** ensure related IDs exist in input frames or database.
 4. **Read rejects queryset:** confirm `.values()` is called before `read()`.
-5. **Update conflict behavior differs by DB:** verify the target dialect supports the staged-merge upsert (`ON CONFLICT`/`ON DUPLICATE KEY`).
+5. **Update inserted nothing, or raised a NOT NULL error:** `update()` writes only the columns the frame carries. A primary key that already exists is updated in place; one that does not is inserted, and that insert must satisfy the table's constraints — supply the `NOT NULL` columns or use `create()`.
 6. **MySQL write performance falls back to row binding:** if you see a `RuntimeWarning` about `LOAD DATA LOCAL INFILE`, set `local_infile=1` on the MySQL server (`SET GLOBAL local_infile = 1`) and ensure the client is connecting with `local_infile` enabled.
