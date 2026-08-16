@@ -243,15 +243,36 @@ key canonicalization and the PK presence check still run, so upsert matching is
 unaffected. Any column the frame omits is then written as `NULL` rather than
 back-filled, so only enable it for column-complete frames.
 
+The back-fill itself is memory-bounded. Primary keys are read off the frame one
+`batch_size` chunk at a time (never listed into Python objects wholesale), and
+each fetched chunk is streamed to a temporary Parquet file rather than
+accumulating in memory to be concatenated at the end. For a `LazyFrame` input the
+result is joined lazily, so the whole path stays bounded; for an eager
+`DataFrame` the back-fill is collected to match the caller's execution mode,
+which costs no more than the frame the caller already holds. `skip_db_fill` is
+therefore an optimization — it saves the round-trip — not a memory escape hatch.
+
+Because a `LazyFrame` returned by `update()` may still scan its back-fill spill
+file, that file is removed once every frame referencing it has been
+garbage-collected (with a process-exit sweep as a backstop) — the same lifetime
+contract `read(is_lazy=True)` already has.
+
 ### Larger-than-RAM Writes
 
 Writes never materialize the full frame. Both `create()` and `update()` write in
-bounded-memory chunks (`batch_size` rows at a time):
+bounded-memory chunks:
 
 - **`LazyFrame` inputs** are streamed to a temporary Parquet file via the Polars
   streaming engine (the validation pipeline stays lazy until this point) and
-  re-read in Arrow batches — peak memory is one batch, not the whole dataset.
-- **`DataFrame` inputs** are sliced into `batch_size` chunks.
+  re-read in Arrow batches. Peak memory is bounded by dataset size — but the
+  real bound is one Parquet *row group*, not one `batch_size` chunk, because
+  pyarrow decodes at row-group granularity. Polars caps row groups at roughly
+  83k rows however large the input, so the bound holds regardless of dataset
+  size; it is simply looser than `batch_size` suggests.
+- **`DataFrame` inputs** are sliced into `batch_size` chunks. The slices are
+  zero-copy views, so the incremental cost is bounded — but the caller already
+  holds the whole frame in memory, so only a `LazyFrame` gives a genuinely
+  larger-than-RAM write.
 
 For staging-merge updates only the temp-table *load* is chunked — and it uses the
 same per-backend bulk loader as `create()` (PostgreSQL `COPY`, MySQL `LOAD DATA

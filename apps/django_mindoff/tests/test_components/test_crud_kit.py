@@ -922,10 +922,11 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         if author_df is None:
             return
         # All columns already present — should return unchanged
-        result = _update__fill_missing_columns(
+        result, spills = _update__fill_missing_columns(
             {self._author_model: author_df}, batch_size=100
         )
         assert set(result[self._author_model].columns) == set(author_df.columns)
+        assert spills == {}  # nothing fetched, so nothing spilled to disk
 
     def test_create_no_validate_persists_unchecked_data(self):
         """C3/contract: validation_level='none' persists data as-is, no row checks.
@@ -1055,10 +1056,12 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
             return
         pk_only = author_df.select("id")
         # _update__fill_missing_columns should fetch missing cols
-        result = _update__fill_missing_columns(
+        result, spills = _update__fill_missing_columns(
             {self._author_model: pk_only}, batch_size=100
         )
         assert "name" in result[self._author_model].columns
+        # Eager input keeps an eager back-fill, so no spill file is retained.
+        assert spills == {}
 
     def test_create_duplicate_pk_raises(self):
         """REJECTION: Create duplicate pk raises."""
@@ -1926,12 +1929,16 @@ class TestFillMissingColumnsLazy(MindoffTestCase):
 
         # pk-only lazy frame: fill should fetch missing columns from DB
         pk_only_lazy = author_df.select("id").lazy()
-        result = _update__fill_missing_columns(
+        result, spills = _update__fill_missing_columns(
             {self._author_model: pk_only_lazy}, batch_size=100
         )
         assert isinstance(result[self._author_model], pl.LazyFrame)
         collected = result[self._author_model].collect()
         assert "name" in collected.columns
+        # A lazy back-fill spills to Parquet; the caller owns that file.
+        assert self._author_model in spills
+        for path in spills.values():
+            os.unlink(path)
 
     def test_fill_missing_columns_pk_absent_raises(self):
         """REJECTION: Fill missing columns pk absent raises."""
@@ -1940,6 +1947,119 @@ class TestFillMissingColumnsLazy(MindoffTestCase):
             _update__fill_missing_columns(
                 {self._author_model: df_no_pk}, batch_size=100
             )
+
+    def test_lazy_backfill_streams_pk_chunks_and_spills_to_disk(self, monkeypatch):
+        """REGRESSION: PKs reach Python one batch at a time and results spill.
+
+        The bug this replaces collected the whole PK column, listed it into
+        Python objects, then concatenated every fetched chunk — all three O(rows)
+        regardless of `batch_size`.
+        """
+        from ...components._crud_kit import frame_stream as fs
+
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[25])
+        mo_crud_kit.create(df_dict)
+        pk_only_lazy = df_dict[self._author_model].select("id").lazy()
+
+        chunk_sizes = []
+        original_iter = fs.iter_frames
+
+        def _spy(df, batch_size):
+            for chunk in original_iter(df, batch_size):
+                chunk_sizes.append(chunk.height)
+                yield chunk
+
+        monkeypatch.setattr("apps.django_mindoff.components.crud_kit.frame_stream.iter_frames", _spy)
+
+        result, spills = _update__fill_missing_columns(
+            {self._author_model: pk_only_lazy}, batch_size=5
+        )
+
+        # PKs were walked in chunks, never listed as one 25-element block.
+        assert chunk_sizes and max(chunk_sizes) <= 5
+        # The fetched rows went to a Parquet spill, not an in-memory concat.
+        spill = spills[self._author_model]
+        assert os.path.exists(spill)
+        collected = result[self._author_model].collect()
+        assert collected.height == 25
+        assert set(collected["name"]) == set(df_dict[self._author_model]["name"])
+        fs.safe_unlink(spill)
+
+    @pytest.mark.parametrize("batch_size", [3, 1000])
+    @pytest.mark.parametrize("is_lazy", [True, False])
+    def test_backfill_parity_across_batch_sizes_and_modes(self, batch_size, is_lazy):
+        """ACCEPTANCE: chunking changes memory, never the result."""
+        from ...components._crud_kit import frame_stream as fs
+
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[10])
+        mo_crud_kit.create(df_dict)
+        pk_only = df_dict[self._author_model].select("id")
+        frm = pk_only.lazy() if is_lazy else pk_only
+
+        result, spills = _update__fill_missing_columns(
+            {self._author_model: frm}, batch_size=batch_size
+        )
+        out = result[self._author_model]
+        # The caller's execution mode is preserved, not silently converted.
+        assert isinstance(out, pl.LazyFrame if is_lazy else pl.DataFrame)
+        collected = out.collect() if is_lazy else out
+        assert collected.height == 10
+        assert set(collected["name"]) == set(df_dict[self._author_model]["name"])
+        for path in spills.values():
+            fs.safe_unlink(path)
+
+    def test_update_keeps_returned_lazy_frame_collectable(self):
+        """CONTRACT: a LazyFrame handed back by update() still collects.
+
+        The spill file backing it must outlive the call, so it cannot simply be
+        unlinked when the write finishes.
+        """
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[6])
+        mo_crud_kit.create(df_dict)
+        pk_only_lazy = df_dict[self._author_model].select("id").lazy()
+
+        status, valid, _invalid = mo_crud_kit.update(
+            {self._author_model: pk_only_lazy}, batch_size=2
+        )
+
+        assert status == "ok"
+        returned = valid[self._author_model]
+        assert isinstance(returned, pl.LazyFrame)
+        assert returned.collect().height == 6  # would raise if the spill were gone
+
+    def test_update_removes_spill_when_the_write_fails(self, monkeypatch):
+        """BOUNDARY: a failed update leaves no spill file behind."""
+        from ...components import crud_kit as ck
+        from ...components._crud_kit import frame_stream as fs
+
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[4])
+        mo_crud_kit.create(df_dict)
+        pk_only_lazy = df_dict[self._author_model].select("id").lazy()
+
+        created_paths = []
+        original_sink = fs.sink_frames_to_lazy
+
+        def _record(frames):
+            lazy, path = original_sink(frames)
+            if path is not None:
+                created_paths.append(path)
+            return lazy, path
+
+        monkeypatch.setattr(
+            "apps.django_mindoff.components.crud_kit.frame_stream.sink_frames_to_lazy",
+            _record,
+        )
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("write exploded")
+
+        monkeypatch.setattr(ck, "CRUDProcessor", _boom)
+
+        with pytest.raises(RuntimeError, match="write exploded"):
+            mo_crud_kit.update({self._author_model: pk_only_lazy}, batch_size=2)
+
+        assert created_paths, "expected the back-fill to spill before the failure"
+        assert not any(os.path.exists(p) for p in created_paths)
 
     @pytest.fixture(autouse=True, scope="class")
     def _class_app(self, request):
@@ -2313,76 +2433,84 @@ class TestArrowReaderUnit:
 
 
 class TestLazyReadTempFileCleanup:
-    """The lazy-read temp files are tracked in a set, not the atexit registry."""
+    """Temp files are tracked in a bounded set, not the atexit registry."""
 
     @pytest.fixture(autouse=True)
     def _isolate_registry(self):
         """Snapshot and restore the module-level tracking state per test."""
-        from ...components._crud_kit import arrow_reader as ar
+        from ...components._crud_kit import frame_stream as fs
 
-        pending = set(ar._PENDING_TEMP_FILES)
-        registered = ar._TEMP_DRAIN_REGISTERED
+        pending = set(fs._PENDING_TEMP_FILES)
+        registered = fs._TEMP_DRAIN_REGISTERED
         yield
-        ar._PENDING_TEMP_FILES.clear()
-        ar._PENDING_TEMP_FILES.update(pending)
-        ar._TEMP_DRAIN_REGISTERED = registered
+        fs._PENDING_TEMP_FILES.clear()
+        fs._PENDING_TEMP_FILES.update(pending)
+        fs._TEMP_DRAIN_REGISTERED = registered
 
     def test_tracking_registers_exactly_one_atexit_handler(self):
         """REGRESSION: N tracked files add one atexit entry, not N.
 
-        The leak this replaces registered `_safe_unlink` per call, so a
+        The leak this replaces registered `safe_unlink` per call, so a
         long-running process grew the registry once per lazy read forever.
         """
         import atexit
-        from ...components._crud_kit import arrow_reader as ar
+        from ...components._crud_kit import frame_stream as fs
 
-        ar._TEMP_DRAIN_REGISTERED = False
+        fs._TEMP_DRAIN_REGISTERED = False
         before = atexit._ncallbacks()
         for index in range(50):
-            ar._track_temp_file(f"/nonexistent/mo-temp-{index}.parquet")
+            fs.track_temp_file(f"/nonexistent/mo-temp-{index}.parquet")
 
         assert atexit._ncallbacks() == before + 1
-        assert len(ar._PENDING_TEMP_FILES) >= 50
+        assert len(fs._PENDING_TEMP_FILES) >= 50
 
     def test_unlink_stops_tracking_a_removed_file(self, tmp_path):
         """ACCEPTANCE: the pending set shrinks as files are actually removed."""
-        from ...components._crud_kit import arrow_reader as ar
+        from ...components._crud_kit import frame_stream as fs
 
         target = tmp_path / "gone.parquet"
         target.write_bytes(b"x")
-        ar._track_temp_file(str(target))
-        assert str(target) in ar._PENDING_TEMP_FILES
+        fs.track_temp_file(str(target))
+        assert str(target) in fs._PENDING_TEMP_FILES
 
-        ar._safe_unlink(str(target))
+        fs.safe_unlink(str(target))
 
         assert not target.exists()
-        assert str(target) not in ar._PENDING_TEMP_FILES
+        assert str(target) not in fs._PENDING_TEMP_FILES
 
     def test_unlink_forgets_an_already_missing_file(self, tmp_path):
         """BOUNDARY: a path removed by someone else is dropped, not retried forever."""
-        from ...components._crud_kit import arrow_reader as ar
+        from ...components._crud_kit import frame_stream as fs
 
         missing = str(tmp_path / "never-existed.parquet")
-        ar._track_temp_file(missing)
+        fs.track_temp_file(missing)
 
-        ar._safe_unlink(missing)
+        fs.safe_unlink(missing)
 
-        assert missing not in ar._PENDING_TEMP_FILES
+        assert missing not in fs._PENDING_TEMP_FILES
 
     def test_drain_is_idempotent_and_survives_missing_files(self, tmp_path):
         """BOUNDARY: the atexit drain tolerates gone files and repeats safely."""
-        from ...components._crud_kit import arrow_reader as ar
+        from ...components._crud_kit import frame_stream as fs
 
         present = tmp_path / "present.parquet"
         present.write_bytes(b"x")
-        ar._track_temp_file(str(present))
-        ar._track_temp_file(str(tmp_path / "absent.parquet"))
+        fs.track_temp_file(str(present))
+        fs.track_temp_file(str(tmp_path / "absent.parquet"))
 
-        ar._drain_temp_files()
-        ar._drain_temp_files()  # second pass must not raise
+        fs.drain_temp_files()
+        fs.drain_temp_files()  # second pass must not raise
 
         assert not present.exists()
-        assert str(present) not in ar._PENDING_TEMP_FILES
+        assert str(present) not in fs._PENDING_TEMP_FILES
+
+    def test_sink_frames_to_lazy_returns_none_for_empty_iterator(self):
+        """BOUNDARY: nothing written means no scan and no leftover temp file."""
+        from ...components._crud_kit import frame_stream as fs
+
+        lazy, path = fs.sink_frames_to_lazy(iter([]))
+
+        assert lazy is None and path is None
 
 
 def _register_app(temp_dir: Path, app_name: str):
@@ -2869,3 +2997,114 @@ class TestExplicitConnectionPostgres(MindoffTestCase):
         yield
         with connection.schema_editor() as editor:
             editor.delete_model(self._author_model)
+
+
+@pytest.mark.skipif(
+    not _HAS_POSTGRES,
+    reason="No PostgreSQL test database configured (set MO_TEST_PG_NAME/USER/HOST)",
+)
+@pytest.mark.django_db(transaction=True)
+class TestUpdateBackfillPostgres(MindoffTestCase):
+    """Back-fill behaviour that SQLite structurally cannot exercise.
+
+    SQLite's dynamic typing accepts the text a back-fill produces, so it takes
+    the `cast_to_target=False` merge branch and never proves that UUID/timestamp
+    columns survive the round-trip into strictly-typed columns. These run the
+    `cast_to_target=True` branch, the `COPY` bulk loader, and the chunked fetch
+    against a real server.
+    """
+
+    def test_backfill_merges_typed_columns(self, pg_tenant):
+        """ACCEPTANCE: text-shaped back-fill values merge into typed PG columns.
+
+        The staging table is built from the frame's Polars schema, so the UUID
+        pk and the timestamp arrive as text; the merge must cast them back.
+        """
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[6])
+        assert mo_crud_kit.create(frms, using=pg_tenant.alias)[0] == "ok"
+        original = frms[self._author_model]
+
+        # Only the pk and one column: `published_at` and `rank` are back-filled.
+        partial = original.select(["id", "name"]).with_columns(
+            pl.lit("renamed").alias("name")
+        )
+        status, _valid, _invalid = mo_crud_kit.update(
+            {self._author_model: partial}, using=pg_tenant.alias, batch_size=2
+        )
+
+        assert status == "ok"
+        rows = self._author_model.objects.using(pg_tenant.alias)
+        assert rows.count() == 6
+        assert set(rows.values_list("name", flat=True)) == {"renamed"}
+        # The back-filled columns survived rather than being nulled or mangled.
+        assert rows.filter(published_at__isnull=True).count() == 0
+        assert rows.filter(rank__isnull=True).count() == 0
+
+    def test_backfill_chunks_against_real_server(self, pg_tenant):
+        """ACCEPTANCE: a row count well above batch_size round-trips correctly."""
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[50])
+        assert mo_crud_kit.create(frms, using=pg_tenant.alias)[0] == "ok"
+
+        pk_only = frms[self._author_model].select("id")
+        status, _valid, _invalid = mo_crud_kit.update(
+            {self._author_model: pk_only}, using=pg_tenant.alias, batch_size=7
+        )
+
+        assert status == "ok"
+        rows = self._author_model.objects.using(pg_tenant.alias)
+        assert rows.count() == 50
+        # Every column was back-filled, so nothing was overwritten with NULL.
+        assert rows.filter(published_at__isnull=True).count() == 0
+        expected = set(frms[self._author_model]["name"])
+        assert set(rows.values_list("name", flat=True)) == expected
+
+    def test_lazy_backfill_stays_collectable_after_update(self, pg_tenant):
+        """CONTRACT: the returned lazy frame still collects once PG has the rows."""
+        frms = self.mo_mock_model_frms(models=[self._author_model], counts=[8])
+        assert mo_crud_kit.create(frms, using=pg_tenant.alias)[0] == "ok"
+
+        pk_only_lazy = frms[self._author_model].select("id").lazy()
+        status, valid, _invalid = mo_crud_kit.update(
+            {self._author_model: pk_only_lazy}, using=pg_tenant.alias, batch_size=3
+        )
+
+        assert status == "ok"
+        assert valid[self._author_model].collect().height == 8
+
+    @pytest.fixture()
+    def pg_tenant(self):
+        alias = f"pg_backfill_{uuid.uuid4().hex[:8]}"
+        wrapper = _build_postgres_wrapper(alias)
+        connections[alias] = wrapper
+        with wrapper.schema_editor() as editor:
+            editor.create_model(self._author_model)
+        try:
+            yield wrapper
+        finally:
+            with wrapper.schema_editor() as editor:
+                editor.delete_model(self._author_model)
+            wrapper.close()
+            del connections[alias]
+
+    @pytest.fixture(autouse=True, scope="class")
+    def _class_app(self, request):
+        app_name = f"app_{uuid.uuid4().hex[:12]}"
+        temp_dir = Path(tempfile.mkdtemp()).resolve()
+        override = _register_app(temp_dir, app_name)
+        author = _create_model(
+            app_name,
+            "AuthorModel",
+            "author",
+            [],
+            {
+                "name": models.CharField(max_length=50),
+                # Typed columns the back-fill must cast back from text.
+                "published_at": models.DateTimeField(null=True, blank=True),
+                "rank": models.IntegerField(null=True, blank=True),
+            },
+        )
+        request.cls._author_model = author
+        request.cls._app_name = app_name
+        request.cls._temp_dir = temp_dir
+        request.cls._override = override
+        request.addfinalizer(lambda: _unregister_app(app_name, temp_dir, override))

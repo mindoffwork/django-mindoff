@@ -15,7 +15,7 @@ from django.db import models
 from django.db.models import F
 from django.db.models import CharField
 from django.db.models.functions import Cast
-from ._crud_kit import arrow_reader
+from ._crud_kit import arrow_reader, frame_stream
 from ._crud_kit.column_validator import ColumnValidator
 from ._crud_kit.crud_processor import CRUDProcessor
 from ._crud_kit.db_target import DbTargetLike, resolve_db_target
@@ -398,9 +398,10 @@ class MindoffCRUDHandler:
           already supplies every column to be written — e.g. a frame from
           `read()` that was modified in place — to avoid the extra round-trip.
           Primary-key canonicalization and the PK presence check still run, so
-          upsert matching is unaffected. Caution: any column the frame omits is
-          NOT back-filled and will be written as `NULL`, so only enable this when
-          the frame is column-complete.
+          upsert matching is unaffected. This is a latency optimization, not a
+          memory one: the back-fill is itself memory-bounded. Caution: any column
+          the frame omits is NOT back-filled and will be written as `NULL`, so
+          only enable this when the frame is column-complete.
 
         Varieties:
 
@@ -423,7 +424,14 @@ class MindoffCRUDHandler:
         Notes:
 
         - Missing DB columns are auto-fetched using primary key before validation
-          unless `skip_db_fill=True`.
+          unless `skip_db_fill=True`. That fetch is memory-bounded: primary keys
+          are read one `batch_size` chunk at a time and fetched rows are streamed
+          to disk rather than accumulated, so it does not scale with the size of
+          the frame.
+        - A `LazyFrame` returned in `valid_model_frms` may still scan the
+          back-fill's temporary file. It stays collectable for as long as you
+          hold the frame; the file is removed once every frame referencing it has
+          been garbage-collected, as with `read(is_lazy=True)`.
         - Invalid rows include model-aware error details in error column.
         - The staging merge loads the staging table with the same fast
           same-transaction bulk loader as `create()` (PostgreSQL `COPY`, MySQL
@@ -436,30 +444,38 @@ class MindoffCRUDHandler:
           combine `validation_level="columns_only"` with `skip_db_fill=True`.
         """
         target = resolve_db_target(using)
-        model_frms = _update__fill_missing_columns(
+        model_frms, spill_paths = _update__fill_missing_columns(
             model_frms,
             batch_size=batch_size,
             skip_db_fill=skip_db_fill,
             target=target,
         )
 
-        status, valid_model_frms, invalid_model_frms = _run_validation_pipeline(
-            validation_level,
-            model_frms,
-            is_partial=is_partial,
-            target=target,
-            none_warning=(
-                "Updating without validation may store unsafe or inconsistent data, "
-                "which can affect mindoff's read/update/delete functions. "
-                "Proceed only if intentional."
-            ),
-        )
-        if status == "fail":
-            return "fail", valid_model_frms, invalid_model_frms
+        try:
+            status, valid_model_frms, invalid_model_frms = _run_validation_pipeline(
+                validation_level,
+                model_frms,
+                is_partial=is_partial,
+                target=target,
+                none_warning=(
+                    "Updating without validation may store unsafe or inconsistent data, "
+                    "which can affect mindoff's read/update/delete functions. "
+                    "Proceed only if intentional."
+                ),
+            )
+            if status != "fail":
+                # Perform CRUD operation
+                crud_processor = CRUDProcessor(valid_model_frms, using=target)
+                _ = crud_processor.update(batch_size=batch_size)
+        except BaseException:
+            # Nothing is handed back on this path, so the spill files are dead.
+            for path in spill_paths.values():
+                frame_stream.safe_unlink(path)
+            raise
 
-        # Perform CRUD operation
-        crud_processor = CRUDProcessor(valid_model_frms, using=target)
-        _ = crud_processor.update(batch_size=batch_size)
+        # The returned frames may still scan their spill file, so the file's
+        # lifetime follows them rather than ending here.
+        _update__bind_spill_files(spill_paths, valid_model_frms, invalid_model_frms)
         return status, valid_model_frms, invalid_model_frms
 
 
@@ -810,8 +826,15 @@ def _update__fill_missing_columns(
     batch_size: int,
     skip_db_fill: bool = False,
     target=None,
-) -> Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]]:
+):
+    """Back-fill columns the frame omits, returning ``(frames, spill_paths)``.
+
+    ``spill_paths`` maps a model to the temp Parquet file its back-filled frame
+    still scans. The caller owns those files: they must outlive validation and
+    the write, and the returned frames may still reference them afterwards.
+    """
     updated_model_frames = {}
+    spill_paths = {}
     for model_cls, frm in model_frms.items():
         # Resolve the schema once (lazy-safe); column membership is unchanged by
         # the value-only canonicalization below, so this stays valid for the
@@ -854,7 +877,7 @@ def _update__fill_missing_columns(
         )
         schema = {pk_field: pk_dtype, **dict.fromkeys(missing_cols, None)}
         base_missing_df = pl.DataFrame(schema=schema)
-        missing_df = __update__fetch_missing_chunks(
+        missing_df, spill_path = __update__fetch_missing_chunks(
             model_cls,
             frm,
             pk_field,
@@ -863,10 +886,23 @@ def _update__fill_missing_columns(
             base_missing_df,
             orm_alias=orm_alias,
         )
+        if spill_path is not None:
+            spill_paths[model_cls] = spill_path
         updated_model_frames[model_cls] = _update__merge_missing(
             model_cls, frm, missing_df, missing_cols, pk_field, pk_dtype
         )
-    return updated_model_frames
+    return updated_model_frames, spill_paths
+
+
+def _update__bind_spill_files(spill_paths: Dict, *frame_maps) -> None:
+    """Hand each back-fill spill file to the frames that may still scan it."""
+    for model_cls, path in spill_paths.items():
+        holders = [
+            frames[model_cls]
+            for frames in frame_maps
+            if isinstance(frames, dict) and model_cls in frames
+        ]
+        frame_stream.bind_temp_file(path, holders)
 
 
 def _update__merge_missing(model_cls, frm, missing_df, missing_cols, pk_field, pk_dtype):
@@ -874,20 +910,27 @@ def _update__merge_missing(model_cls, frm, missing_df, missing_cols, pk_field, p
     if mo_polars_kit.is_frm_empty(missing_df):
         return frm.with_columns([pl.lit(None).alias(col) for col in missing_cols])
 
+    # Both sides may be lazy now (the back-fill spills to Parquet), so schemas
+    # are resolved rather than read off `.columns`/`.schema`, which re-plan the
+    # whole query and emit a Polars PerformanceWarning on a LazyFrame.
+    missing_schema = mo_polars_kit.resolve_schema(missing_df)
     frm_cols = set(mo_polars_kit.resolve_schema(frm).names())
-    overlap = frm_cols & set(missing_df.columns) - {pk_field}
+    overlap = frm_cols & set(missing_schema.names()) - {pk_field}
     mo_validation_kit.ensure_falsey(
         overlap,
         msg=f"Duplicate columns found during merge for model {model_cls.__name__}: {', '.join(overlap)}",
         is_exception=True,
     )
     left_dtype = pk_dtype
-    right_dtype = missing_df.schema.get(pk_field)
+    right_dtype = missing_schema.get(pk_field)
     if right_dtype is not None and left_dtype != right_dtype:
         missing_df = missing_df.with_columns(pl.col(pk_field).cast(left_dtype))
-    # Missing columns are fetched eagerly; match the input frame's mode.
-    if isinstance(frm, pl.LazyFrame):
+    # Match the input frame's execution mode, so `update()` hands back what it
+    # was given rather than silently converting eager input to lazy.
+    if isinstance(frm, pl.LazyFrame) and isinstance(missing_df, pl.DataFrame):
         missing_df = missing_df.lazy()
+    elif isinstance(frm, pl.DataFrame) and isinstance(missing_df, pl.LazyFrame):
+        missing_df = missing_df.collect()
     return frm.join(missing_df, on=pk_field, how="left")
 
 
@@ -900,43 +943,58 @@ def __update__fetch_missing_chunks(
     base_missing_df,
     orm_alias: str | None = None,
 ):
-    if isinstance(frm, pl.LazyFrame):
-        pk_series = frm.select(pk_field).collect(streaming=True)[pk_field]
-    else:
-        pk_series = frm.get_column(pk_field)
-    if pk_series.is_empty():
-        return base_missing_df
-    pk_list = pk_series.to_list()
-    total_rows = len(pk_list)
-    collected_chunks = []
+    """Fetch the missing columns by primary key, in bounded-memory chunks.
+
+    Returns ``(frame, temp_path)``, where ``temp_path`` is the spill file the
+    frame scans (``None`` when there is nothing to clean up).
+
+    Neither the primary keys nor the fetched rows are ever fully materialized:
+    PKs are read one ``batch_size`` chunk at a time straight off the frame
+    (rather than listing the whole column into Python objects), and each fetched
+    chunk is streamed to a temp Parquet file (rather than accumulating in a list
+    that is concatenated at the end). ``batch_size`` therefore bounds memory
+    here, not just the number of PKs per round-trip.
+    """
     temp_pk = "__pk_cast"
-    if not mo_polars_kit.is_frm_empty(base_missing_df):
-        collected_chunks.append(base_missing_df)
     # Back-fill must read the same database the rows are written to. Without an
     # explicit target the manager is left alone, so existing router behavior is
     # unchanged.
     manager = model_cls.objects
     if orm_alias is not None:
         manager = manager.using(orm_alias)
-    for i in range(0, total_rows, batch_size):
-        pk_chunk = pk_list[i : i + batch_size]
-        qs = (
-            manager.filter(**{f"{pk_field}__in": pk_chunk})
-            .annotate(**{temp_pk: Cast(F(pk_field), output_field=CharField())})
-            .values(temp_pk, *missing_cols)
-        )
-        # Read eagerly: chunks are pk-bounded, so this avoids the disk-sink
-        # path that `read(is_lazy=True)` would otherwise trigger.
-        chunk_df = arrow_reader.read_frame(qs)
-        if mo_polars_kit.is_frm_empty(chunk_df):
-            continue
-        chunk_df = chunk_df.rename({temp_pk: pk_field})
-        if isinstance(model_cls._meta.pk, models.UUIDField):
-            chunk_df = chunk_df.with_columns(_canonical_uuid_expr(pk_field))
-        collected_chunks.append(chunk_df)
-    if not collected_chunks:
-        return base_missing_df
-    return pl.concat(collected_chunks, rechunk=False)
+    is_uuid_pk = isinstance(model_cls._meta.pk, models.UUIDField)
+
+    def _fetched_chunks():
+        for pk_frm in frame_stream.iter_frames(frm.select(pk_field), batch_size):
+            # Only this chunk's keys become Python objects.
+            pk_chunk = pk_frm.get_column(pk_field).to_list()
+            if not pk_chunk:
+                continue
+            qs = (
+                manager.filter(**{f"{pk_field}__in": pk_chunk})
+                .annotate(**{temp_pk: Cast(F(pk_field), output_field=CharField())})
+                .values(temp_pk, *missing_cols)
+            )
+            # Read eagerly: chunks are pk-bounded, so this avoids the disk-sink
+            # path that `read(is_lazy=True)` would otherwise trigger.
+            chunk_df = arrow_reader.read_frame(qs)
+            if mo_polars_kit.is_frm_empty(chunk_df):
+                continue
+            chunk_df = chunk_df.rename({temp_pk: pk_field})
+            if is_uuid_pk:
+                chunk_df = chunk_df.with_columns(_canonical_uuid_expr(pk_field))
+            yield chunk_df
+
+    lazy, temp_path = frame_stream.sink_frames_to_lazy(_fetched_chunks())
+    if lazy is None:  # nothing matched: no spill file was kept
+        return base_missing_df, None
+    if isinstance(frm, pl.LazyFrame):
+        return lazy, temp_path
+    # Eager input: the caller already holds the whole frame in memory, so match
+    # that mode and drop the spill file instead of keeping a scan alive.
+    collected = lazy.collect()
+    frame_stream.safe_unlink(temp_path)
+    return collected, None
 
 
 # ----------------
