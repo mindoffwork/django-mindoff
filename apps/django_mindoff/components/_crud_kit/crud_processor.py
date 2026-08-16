@@ -1,7 +1,4 @@
-import gc
 import io
-import os
-import tempfile
 import threading
 import time
 import uuid
@@ -12,7 +9,6 @@ from typing import Dict, Type, Union
 from urllib.parse import quote_plus
 
 import polars as pl
-import pyarrow.parquet as pq
 from django.conf import settings
 from django.db import models
 from sqlalchemy import MetaData, Table, cast, create_engine, event, literal, select
@@ -47,6 +43,7 @@ _REFLECT_LOCK = threading.RLock()
 
 from ..polars_kit import mo_polars_kit
 from ..response_kit import mo_validation_kit
+from . import frame_stream
 from .db_target import DbTargetLike, resolve_db_target
 
 
@@ -351,9 +348,7 @@ class CRUDProcessor:
         text ``"NULL"``. Falls back to Polars' SQLAlchemy row-binding writer when
         the server disallows ``LOCAL INFILE``.
         """
-        handle = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
-        tmp_path = handle.name
-        handle.close()
+        tmp_path = frame_stream.new_temp_path(".csv")
         try:
             frm.write_csv(
                 tmp_path,
@@ -391,40 +386,10 @@ class CRUDProcessor:
     def _iter_write_frames(self, df, batch_size: int):
         """Yield bounded-memory DataFrame chunks for writing.
 
-        ``LazyFrame`` inputs are streamed to a temporary Parquet file (bounded
-        memory via the streaming engine) and re-read in Arrow batches, so the
-        full result is never held in memory. Eager frames are sliced. At least
-        one (possibly empty) frame is always yielded so the target table is
-        created even for an empty result.
+        Thin delegate to :func:`frame_stream.iter_frames`, which the update
+        back-fill shares — the chunking rules must not drift between the two.
         """
-        # Guard against a degenerate chunk size (``iter_slices``/streaming reader
-        # require >= 1); a non-positive size means "no chunking", i.e. one row.
-        batch_size = max(1, batch_size)
-        if isinstance(df, pl.LazyFrame):
-            yield from self._iter_lazy_frames(df, batch_size)
-        elif df.height == 0:
-            yield df
-        else:
-            yield from df.iter_slices(batch_size)
-
-    def _iter_lazy_frames(self, df, batch_size: int):
-        handle = tempfile.NamedTemporaryFile(suffix=".parquet", delete=False)
-        tmp_path = handle.name
-        handle.close()
-        try:
-            df.sink_parquet(tmp_path)
-            with open(tmp_path, "rb") as file_handle:
-                parquet = pq.ParquetFile(file_handle)
-                wrote = False
-                for batch in parquet.iter_batches(batch_size=batch_size):
-                    wrote = True
-                    yield pl.from_arrow(batch)
-                if not wrote:
-                    yield pl.from_arrow(parquet.schema_arrow.empty_table())
-                del parquet
-        finally:
-            gc.collect()  # release the Parquet file handle (Windows) before unlink
-            _safe_unlink(tmp_path)
+        yield from frame_stream.iter_frames(df, batch_size)
 
     def _update__merge_staging(
         self, table, temp_table_name, metadata, pk_field, pk_col, conn
@@ -569,8 +534,4 @@ def _metadata_for_engine(engine) -> MetaData:
         return metadata
 
 
-def _safe_unlink(path: str) -> None:
-    try:
-        os.unlink(path)
-    except OSError:  # pragma: no cover - best-effort cleanup
-        pass
+_safe_unlink = frame_stream.safe_unlink
