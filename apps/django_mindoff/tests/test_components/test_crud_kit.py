@@ -751,12 +751,12 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
         assert backend_limit is not None
 
         # With headroom above it, the backend's own limit must cap the chunk.
-        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", backend_limit + 1_000)
-        assert validator._fk_chunk_size(manager) == backend_limit
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=backend_limit + 1_000):
+            assert validator._fk_chunk_size(manager) == backend_limit
 
         # And the local ceiling wins when it is the tighter of the two.
-        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 100)
-        assert validator._fk_chunk_size(manager) == 100
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=100):
+            assert validator._fk_chunk_size(manager) == 100
 
     def test_chunk_size_falls_back_when_backend_reports_no_limit(self, monkeypatch):
         """BOUNDARY: psycopg2/MySQL report None, so the ceiling must apply.
@@ -778,40 +778,62 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
         monkeypatch.setattr(
             fkv, "connections", {manager.db: _NoLimitConn()}, raising=True
         )
-        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 2_500)
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=2_500):
+            assert validator._fk_chunk_size(manager) == 2_500
 
-        assert validator._fk_chunk_size(manager) == 2_500
+    @pytest.mark.parametrize("configured", [0, -1, None])
+    def test_non_positive_chunk_size_falls_back_to_the_default(
+        self, monkeypatch, configured
+    ):
+        """REJECTION: there is no "unbounded" option for the FK chunk size.
 
-    def test_fk_validation_chunks_the_in_clause(self, monkeypatch):
+        `MO_CRUD_ENGINE_CACHE_SIZE=0` means "no ceiling" because the cost is
+        memory. Here the cost is a hard SQLite error and an unbounded statement
+        everywhere else, so a non-positive value falls back rather than opting
+        out.
+        """
+        from ...components._crud_kit import foreign_key_validator as fkv
+
+        validator = ForeignKeyValidator({})
+        manager = self._author_model.objects
+
+        class _NoLimitFeatures:
+            max_query_params = None
+
+        class _NoLimitConn:
+            features = _NoLimitFeatures()
+
+        monkeypatch.setattr(
+            fkv, "connections", {manager.db: _NoLimitConn()}, raising=True
+        )
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=configured):
+            assert validator._fk_chunk_size(manager) == fkv.DEFAULT_FK_CHUNK_SIZE
+
+    def test_fk_validation_chunks_the_in_clause(self):
         """ACCEPTANCE: more distinct FKs than the chunk size still validates.
 
         The bug this replaces put every distinct value in one `IN (...)`, which
         on SQLite raises "too many SQL variables" past 32766.
         """
-        from ...components._crud_kit import foreign_key_validator as fkv
-
         authors = self._seed_authors(count=12)
         author_ids = authors["id"].to_list()
-        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 5)
 
-        books = _books_referencing(author_ids)
-        validated = ForeignKeyValidator({self._book_model: books}).validate()
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=5):
+            books = _books_referencing(author_ids)
+            validated = ForeignKeyValidator({self._book_model: books}).validate()
 
-        # All 12 references resolve even though the chunk size is 5.
-        assert validated[self._book_model].height == 12
+            # All 12 references resolve even though the chunk size is 5.
+            assert validated[self._book_model].height == 12
 
-        # And an unresolvable reference is still rejected under chunking.
-        bogus = _books_referencing(author_ids + [str(uuid.uuid4())])
-        with pytest.raises(Exception, match="couldn't resolve foreign key"):
-            ForeignKeyValidator({self._book_model: bogus}).validate()
+            # And an unresolvable reference is still rejected under chunking.
+            bogus = _books_referencing(author_ids + [str(uuid.uuid4())])
+            with pytest.raises(Exception, match="couldn't resolve foreign key"):
+                ForeignKeyValidator({self._book_model: bogus}).validate()
 
-    def test_chunked_count_stops_at_the_first_short_chunk(self, monkeypatch):
+    def test_chunked_count_stops_at_the_first_short_chunk(self):
         """ACCEPTANCE: a known-invalid FK skips the remaining round-trips."""
-        from ...components._crud_kit import foreign_key_validator as fkv
-
         authors = self._seed_authors(count=10)
         author_ids = authors["id"].to_list()
-        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 2)
 
         validator = ForeignKeyValidator({})
         calls = []
@@ -828,7 +850,8 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
                 return 0  # nothing matches: the very first chunk is short
 
         series = pl.Series("author_ref_id", author_ids)
-        total = validator._count_existing_fks(_FakeManager(), "id", series)
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=2):
+            total = validator._count_existing_fks(_FakeManager(), "id", series)
 
         assert total == 0
         assert len(calls) == 1  # stopped instead of walking all 5 chunks
@@ -2753,6 +2776,41 @@ class TestLazyReadTempFileCleanup:
         assert not present.exists()
         assert str(present) not in fs._PENDING_TEMP_FILES
 
+    @pytest.mark.parametrize(
+        "batch_size,expected_groups",
+        [
+            (1_000, 5),  # row groups track the batch
+            (2_500, 2),  # ...at any size above the floor
+            (10, 5),  # ...and the floor (1000) takes over below it
+        ],
+    )
+    def test_lazy_sink_sizes_row_groups_to_the_batch(
+        self, monkeypatch, batch_size, expected_groups
+    ):
+        """REGRESSION: peak memory is one batch, not one Polars-chosen row group.
+
+        pyarrow decodes a whole row group per batch, so leaving the sink to pick
+        made peak memory track the row group instead of `batch_size` — 33.6 MB
+        against 8.3 MB for 400k rows x 8 string columns at `batch_size=1000`.
+        """
+        from ...components._crud_kit import frame_stream as fs
+
+        seen = {}
+        original = fs.pq.ParquetFile
+
+        def _spy(handle):
+            parquet = original(handle)
+            seen["row_groups"] = parquet.num_row_groups
+            return parquet
+
+        monkeypatch.setattr(fs.pq, "ParquetFile", _spy)
+        lazy = pl.DataFrame({"n": range(5_000)}).lazy()
+
+        chunks = list(fs.iter_lazy_frames(lazy, batch_size))
+
+        assert sum(chunk.height for chunk in chunks) == 5_000
+        assert seen["row_groups"] == expected_groups
+
     def test_sink_frames_to_lazy_returns_none_for_empty_iterator(self):
         """BOUNDARY: nothing written means no scan and no leftover temp file."""
         from ...components._crud_kit import frame_stream as fs
@@ -3493,7 +3551,7 @@ class TestForeignKeyChunkingPostgres(MindoffTestCase):
     SQLite always advertises a real `max_query_params` (32766), so the SQLite
     tests only ever cover the branch where the backend limit binds. psycopg2
     reports `None` because it interpolates client-side, so the fall-back to
-    `_FK_CHUNK_CEILING` is exercised *only* here — and it is the branch the
+    `DEFAULT_FK_CHUNK_SIZE` is exercised *only* here — and it is the branch the
     production backend takes.
     """
 
@@ -3505,41 +3563,39 @@ class TestForeignKeyChunkingPostgres(MindoffTestCase):
         # Precondition: this is what makes the branch reachable at all.
         assert connections[pg_tenant.alias].features.max_query_params is None
         assert (
-            ForeignKeyValidator({})._fk_chunk_size(manager) == fkv._FK_CHUNK_CEILING
+            ForeignKeyValidator({})._fk_chunk_size(manager)
+            == fkv.DEFAULT_FK_CHUNK_SIZE
         )
 
-    def test_chunked_counting_is_exact_against_postgres(self, pg_tenant, monkeypatch):
+    def test_chunked_counting_is_exact_against_postgres(self, pg_tenant):
         """ACCEPTANCE: summed per-chunk counts match reality on a real server."""
-        from ...components._crud_kit import foreign_key_validator as fkv
-
         authors = self.mo_mock_model_frms(models=[self._author_model], counts=[12])
         assert mo_crud_kit.create(authors, using=pg_tenant.alias)[0] == "ok"
         author_ids = authors[self._author_model]["id"].to_list()
-
-        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 4)  # 12 ids -> 3 chunks
         target = resolve_db_target(pg_tenant.alias)
 
-        books = _books_referencing(author_ids)
-        validated = ForeignKeyValidator(
-            {self._book_model: books}, target=target
-        ).validate()
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=4):  # 12 ids -> 3 chunks
+            books = _books_referencing(author_ids)
+            validated = ForeignKeyValidator(
+                {self._book_model: books}, target=target
+            ).validate()
+
         assert validated[self._book_model].height == 12
 
-    def test_missing_reference_still_rejected_when_chunked(self, pg_tenant, monkeypatch):
+    def test_missing_reference_still_rejected_when_chunked(self, pg_tenant):
         """REJECTION: a genuinely absent FK fails, judged by the database itself."""
-        from ...components._crud_kit import foreign_key_validator as fkv
-
         authors = self.mo_mock_model_frms(models=[self._author_model], counts=[9])
         assert mo_crud_kit.create(authors, using=pg_tenant.alias)[0] == "ok"
         author_ids = authors[self._author_model]["id"].to_list()
-
-        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 4)
         target = resolve_db_target(pg_tenant.alias)
 
         # One reference that PostgreSQL's own foreign key would refuse.
         bogus = _books_referencing(author_ids + [str(uuid.uuid4())])
-        with pytest.raises(Exception, match="couldn't resolve foreign key"):
-            ForeignKeyValidator({self._book_model: bogus}, target=target).validate()
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=4):
+            with pytest.raises(Exception, match="couldn't resolve foreign key"):
+                ForeignKeyValidator(
+                    {self._book_model: bogus}, target=target
+                ).validate()
 
     @pytest.fixture()
     def pg_tenant(self):

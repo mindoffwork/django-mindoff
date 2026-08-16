@@ -19,7 +19,9 @@ ERROR_COL = getattr(settings, "POLARS_VALIDATOR_ERROR_COL", None) or "__error__i
 # report no limit at all, because they interpolate parameters client-side, so
 # for them this ceiling is the only thing standing between a frame with millions
 # of distinct keys and a single enormous statement.
-_FK_CHUNK_CEILING = 10_000
+#
+# Override with ``MO_CRUD_FK_CHUNK_SIZE``.
+DEFAULT_FK_CHUNK_SIZE = 10_000
 
 
 # ----------------
@@ -129,13 +131,22 @@ class ForeignKeyValidator:
         Read from the backend rather than guessed: Django exposes the real
         parameter ceiling as ``connection.features.max_query_params``, which is
         a number on SQLite and ``None`` on the client-side-binding drivers. The
-        local ceiling applies either way, so the ``None`` backends still chunk.
+        local ceiling applies either way, so the ``None`` backends still chunk,
+        and the smaller of the two always wins.
+
+        ``MO_CRUD_FK_CHUNK_SIZE`` tunes the local ceiling. Unlike
+        ``MO_CRUD_ENGINE_CACHE_SIZE``, zero is not an opt-out: an unbounded
+        ``IN (...)`` is a hard error on SQLite and an unbounded statement
+        everywhere else, so a non-positive value falls back to the default.
         """
+        ceiling = getattr(settings, "MO_CRUD_FK_CHUNK_SIZE", DEFAULT_FK_CHUNK_SIZE)
+        if not ceiling or ceiling <= 0:
+            ceiling = DEFAULT_FK_CHUNK_SIZE
         try:
             limit = connections[manager.db].features.max_query_params
         except Exception:  # pragma: no cover - defensive: exotic router/alias
             limit = None
-        return min(_FK_CHUNK_CEILING, limit or _FK_CHUNK_CEILING)
+        return min(ceiling, limit or ceiling)
 
     def _count_existing_fks(self, manager, related_pk_name: str, fk_values) -> int:
         """Count how many of ``fk_values`` exist, querying in bounded chunks.

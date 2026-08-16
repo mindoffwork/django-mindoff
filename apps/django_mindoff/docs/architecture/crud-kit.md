@@ -54,7 +54,11 @@ At a high level, write operations pass through one shared validation pipeline be
   chunk size comes from the backend's own `max_query_params` where it reports
   one (SQLite's `SQLITE_MAX_VARIABLE_NUMBER`, 32766 by default — a hard error
   once exceeded), capped by a local ceiling that also covers the drivers
-  reporting no limit because they interpolate client-side (psycopg2, MySQL).
+  reporting no limit because they interpolate client-side (psycopg2, MySQL); the
+  smaller of the two wins. Set `MO_CRUD_FK_CHUNK_SIZE` to change that ceiling
+  (default 10000). Unlike `MO_CRUD_ENGINE_CACHE_SIZE`, `0` is not an opt-out —
+  an unbounded `IN (...)` is a hard failure rather than a memory trade-off, so a
+  non-positive value falls back to the default.
   Distinct values are held as an Arrow-backed column and only one chunk at a
   time becomes Python objects. Checking stops at the first chunk that comes up
   short, since the reference is already known to be unresolvable.
@@ -298,11 +302,15 @@ bounded-memory chunks:
 
 - **`LazyFrame` inputs** are streamed to a temporary Parquet file via the Polars
   streaming engine (the validation pipeline stays lazy until this point) and
-  re-read in Arrow batches. Peak memory is bounded by dataset size — but the
-  real bound is one Parquet *row group*, not one `batch_size` chunk, because
-  pyarrow decodes at row-group granularity. Polars caps row groups at roughly
-  83k rows however large the input, so the bound holds regardless of dataset
-  size; it is simply looser than `batch_size` suggests.
+  re-read in Arrow batches. Peak memory is one `batch_size` chunk, independent of
+  dataset size. The sink is told the row-group size explicitly to make that true:
+  pyarrow decodes a whole Parquet *row group* per batch, so leaving Polars to
+  choose (row groups on the order of 10<sup>5</sup> rows) would bound peak memory
+  by the row group rather than by the batch — still bounded, but much looser. For
+  400k rows across 8 string columns at `batch_size=1000`, that is 33.6 MB of peak
+  working set against 8.3 MB with batch-sized row groups. Row groups are floored
+  at 1000 rows, so a very small `batch_size` cannot degenerate into one row group
+  per row.
 - **`DataFrame` inputs** are sliced into `batch_size` chunks. The slices are
   zero-copy views, so the incremental cost is bounded — but the caller already
   holds the whole frame in memory, so only a `LazyFrame` gives a genuinely
@@ -310,9 +318,9 @@ bounded-memory chunks:
 
 For staging-merge updates only the temp-table *load* is chunked — and it uses the
 same per-backend bulk loader as `create()` (PostgreSQL `COPY`, MySQL `LOAD DATA
-LOCAL INFILE`, SQLite `executemany`); the merge itself is a single set-based SQL
-statement, so it is already larger-than-RAM friendly. All chunks for a model run
-inside one transaction, so writes stay atomic.
+LOCAL INFILE`, SQLite `executemany`); the merge itself is set-based SQL, so it is
+already larger-than-RAM friendly. All chunks for a model run inside one
+transaction, so writes stay atomic.
 
 ### Keeping the Lazy Path Honest
 
