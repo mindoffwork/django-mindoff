@@ -97,6 +97,13 @@ Each mode supports eager (`pl.DataFrame`) and lazy (`pl.LazyFrame`) output.
 
 ### Read Mechanism
 
+Reads take no `using` argument: the database comes from the queryset, so
+`Model.objects.using("<alias>").values()` is what points a read at a non-default
+database — including one provisioned at runtime and registered only in
+`django.db.connections`. That works for both paths below; the ConnectorX URI is
+resolved through the same target lookup the writers use, so a live-only alias
+keeps the zero-copy path instead of quietly falling back to the cursor.
+
 There is no engine to choose — a read always takes the fastest path that can still return correct data:
 
 - **ConnectorX** (`pl.read_database_uri`) for a zero-copy DB → Arrow transfer, used **only when the read is safe**. ConnectorX opens its own connection and cannot see uncommitted rows, so it is used only **outside an open transaction**.
@@ -122,10 +129,38 @@ The fallback is transparent: callers never select or are warned about the path. 
 
 ### Engine & Dialect Resolution
 
-- Builds a SQLAlchemy engine from Django `DATABASES`.
+- Builds a SQLAlchemy engine from the target database's Django settings —
+  resolved from `DATABASES`, or from a live connection when the caller names one
+  (see [Choosing the target database](#choosing-the-target-database-using)).
 - Supports `sqlite`, `postgresql`, and `mysql`.
 - Table existence is verified lazily by reflection (a missing table raises a
   clear error) rather than scanning all table names on every operation.
+
+### Choosing the target database (`using`)
+
+`create(...)` and `update(...)` accept `using` to say *which* database the write
+goes to. Reads take their database from the queryset instead — call
+`Model.objects.using(...)` before handing it to `read(...)` or `read_batches(...)`.
+
+| `using` | Resolves to | Use when |
+| --- | --- | --- |
+| omitted (`None`) | The default database, with routing left untouched | Ordinary single-database projects. This is the pre-existing behavior, unchanged. |
+| `"alias"` | `settings.DATABASES["alias"]`, or a live connection registered under that alias | The database is configured, or provisioned at runtime and registered in `django.db.connections`. |
+| a Django connection object | The connection's own `settings_dict` | Credentials are resolved at runtime and never written into settings at all. |
+
+The alias and connection forms exist for **dynamic and multi-tenant databases**:
+a tenant database provisioned on demand has no entry in `settings.DATABASES`, so
+the settings lookup alone cannot reach it. Resolution therefore falls back to
+`django.db.connections`, which is where such a connection lives.
+
+Two steps of a write issue ORM queries rather than SQLAlchemy ones — the
+missing-column back-fill in `update(...)`, and foreign-key validation at
+`validation_level="full"`. Those are routed to the same target, so a reference is
+checked where the rows are actually going. They need the connection to be
+reachable by alias through `django.db.connections`; a connection that is not
+registered there raises a clear error naming the alternative — combine
+`validation_level="columns_only"` with `skip_db_fill=True`, which skips both
+queries and writes through the explicit connection alone.
 
 ### Per-process caching
 
@@ -136,6 +171,11 @@ To keep per-call latency low, two things are cached process-wide:
   PostgreSQL/MySQL engines (with their connection pools) are reused. The SQLite
   engine is the deliberate exception — it is bound to Django's live connection
   via a `creator`, so it is rebuilt each call to avoid holding a stale handle.
+  The cache is bounded (least-recently-used, default 32, set
+  `MO_CRUD_ENGINE_CACHE_SIZE` to change it or `0` to disable the ceiling).
+  A fixed set of databases never reaches the limit; the bound matters when
+  targeting many dynamic databases, where every engine would otherwise hold a
+  connection pool open for the life of the process. Evicted engines are disposed.
 - **Reflected `Table` metadata** is cached per engine. A cached (PG/MySQL)
   engine keeps its reflection warm across calls; the uncached SQLite engine gets
   fresh metadata each call (collected with the engine), so reflection always
@@ -187,6 +227,13 @@ per-call staging table (using the same fast loader as `create()`), then merged
 into the target with one set-based dialect-specific statement
 (`INSERT ... FROM SELECT ... ON CONFLICT/DUPLICATE`). No per-row Python
 materialization occurs, and the whole update runs in one transaction.
+
+The merge projects the staging table onto the target's columns explicitly rather
+than relying on the two happening to share a column order, since `INSERT ... FROM
+SELECT` pairs them positionally. On PostgreSQL and MySQL each column is also cast
+to the target column's type: the staging table is created from the frame's Polars
+schema, so a UUID or timestamp arrives as text, which a strictly-typed backend
+will not merge into a typed column. SQLite needs no cast — its typing is dynamic.
 
 Before validation, update flow also auto-fills missing model columns by fetching
 current DB values using primary keys. Pass `skip_db_fill=True` to skip that

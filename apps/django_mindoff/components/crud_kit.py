@@ -18,6 +18,7 @@ from django.db.models.functions import Cast
 from ._crud_kit import arrow_reader
 from ._crud_kit.column_validator import ColumnValidator
 from ._crud_kit.crud_processor import CRUDProcessor
+from ._crud_kit.db_target import DbTargetLike, resolve_db_target
 from ._crud_kit.foreign_key_validator import ForeignKeyValidator
 from ._crud_kit.row_validator import RowValidator
 from .polars_kit import mo_polars_kit
@@ -54,6 +55,7 @@ class MindoffCRUDHandler:
         self,
         model_frms: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
         *,
+        using: DbTargetLike = None,
         is_partial: bool = False,
         validation_level: Literal["full", "columns_only", "none"] = "full",
         batch_size: int = 1000,
@@ -80,6 +82,12 @@ class MindoffCRUDHandler:
 
         - `model_frms` (`dict[type[models.Model], pl.DataFrame|pl.LazyFrame]`):
           Input model-frame mapping for bulk insert.
+        - `using` (`str|BaseDatabaseWrapper|None, default=None`):
+          Which database to write to. `None` targets the default database and
+          leaves database routing untouched. Pass an alias to target another
+          configured database, or a live Django connection object to target one
+          provisioned at runtime whose credentials were never written into
+          `settings.DATABASES`. See the note on dynamic databases below.
         - `is_partial` (`bool, default=False`):
           If `True`, allows partial save when only a subset of rows are valid
           (applies to `validation_level="full"` only).
@@ -122,13 +130,20 @@ class MindoffCRUDHandler:
           back to row binding when the server forbids it), SQLite `executemany` —
           so the columnar frame reaches the database without a per-row Python
           detour, and the whole create stays atomic.
+        - Dynamic databases: a connection passed as `using` does not have to
+          appear in `settings.DATABASES`, but foreign-key validation issues ORM
+          queries, so at `validation_level="full"` the connection must also be
+          registered in `django.db.connections` under its alias. If it is not,
+          use `validation_level="columns_only"`.
         """
         model_frms = mo_polars_kit.sync_model_frms_type(model_frms)
+        target = resolve_db_target(using)
 
         status, valid_model_frms, invalid_model_frms = _run_validation_pipeline(
             validation_level,
             model_frms,
             is_partial=is_partial,
+            target=target,
             none_warning=(
                 "Saving without validation may store unsafe or inconsistent data, "
                 "which can affect further read/update/delete functions. "
@@ -139,7 +154,7 @@ class MindoffCRUDHandler:
             return "fail", valid_model_frms, invalid_model_frms
 
         # Perform CRUD operation
-        crud_processor = CRUDProcessor(valid_model_frms)
+        crud_processor = CRUDProcessor(valid_model_frms, using=target)
         _ = crud_processor.create(batch_size=batch_size)
         return status, valid_model_frms, invalid_model_frms
 
@@ -335,6 +350,7 @@ class MindoffCRUDHandler:
         self,
         model_frms: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
         *,
+        using: DbTargetLike = None,
         is_partial: bool = False,
         validation_level: Literal["full", "columns_only", "none"] = "full",
         batch_size: int = 1000,
@@ -361,6 +377,12 @@ class MindoffCRUDHandler:
 
         - `model_frms` (`dict[type[models.Model], pl.DataFrame|pl.LazyFrame]`):
           Input model-frame mapping for bulk update/upsert.
+        - `using` (`str|BaseDatabaseWrapper|None, default=None`):
+          Which database to write to. `None` targets the default database and
+          leaves database routing untouched. Pass an alias to target another
+          configured database, or a live Django connection object to target one
+          provisioned at runtime whose credentials were never written into
+          `settings.DATABASES`. See the note on dynamic databases below.
         - `is_partial` (`bool, default=False`):
           If `True`, allows valid rows to proceed even when invalid rows exist
           (applies to `validation_level="full"` only).
@@ -407,15 +429,25 @@ class MindoffCRUDHandler:
           same-transaction bulk loader as `create()` (PostgreSQL `COPY`, MySQL
           `LOAD DATA LOCAL INFILE`, SQLite `executemany`) and then merges
           set-based in SQL, so no per-row Python materialization occurs.
+        - Dynamic databases: a connection passed as `using` does not have to
+          appear in `settings.DATABASES`, but the missing-column back-fill and
+          foreign-key validation issue ORM queries, so the connection must also
+          be registered in `django.db.connections` under its alias. If it is not,
+          combine `validation_level="columns_only"` with `skip_db_fill=True`.
         """
+        target = resolve_db_target(using)
         model_frms = _update__fill_missing_columns(
-            model_frms, batch_size=batch_size, skip_db_fill=skip_db_fill
+            model_frms,
+            batch_size=batch_size,
+            skip_db_fill=skip_db_fill,
+            target=target,
         )
 
         status, valid_model_frms, invalid_model_frms = _run_validation_pipeline(
             validation_level,
             model_frms,
             is_partial=is_partial,
+            target=target,
             none_warning=(
                 "Updating without validation may store unsafe or inconsistent data, "
                 "which can affect mindoff's read/update/delete functions. "
@@ -426,7 +458,7 @@ class MindoffCRUDHandler:
             return "fail", valid_model_frms, invalid_model_frms
 
         # Perform CRUD operation
-        crud_processor = CRUDProcessor(valid_model_frms)
+        crud_processor = CRUDProcessor(valid_model_frms, using=target)
         _ = crud_processor.update(batch_size=batch_size)
         return status, valid_model_frms, invalid_model_frms
 
@@ -686,7 +718,12 @@ def _read__paginate_no_stats(
 
 
 def _run_validation_pipeline(
-    level: str, model_frms: Dict, *, is_partial: bool, none_warning: str
+    level: str,
+    model_frms: Dict,
+    *,
+    is_partial: bool,
+    none_warning: str,
+    target=None,
 ):
     """Run the configured validation level and return ``(status, valid, invalid)``.
 
@@ -695,6 +732,10 @@ def _run_validation_pipeline(
     must not write. ``"none"`` skips all validation (emitting ``none_warning``),
     ``"columns_only"`` runs only column normalization, and ``"full"`` runs the
     complete column -> row -> FK pipeline with valid/invalid splitting.
+
+    ``target`` is the database the operation writes to; it reaches only the FK
+    pass, which is the one stage that queries the database, so FK existence is
+    checked where the rows are actually going.
     """
     if level == "none":
         warnings.warn(none_warning, RuntimeWarning)
@@ -717,7 +758,7 @@ def _run_validation_pipeline(
 
     # "full": row validation -> FK validation -> valid/invalid split.
     row_validated_frms = RowValidator(valid_model_frms).run()
-    fk_validated_frms = ForeignKeyValidator(row_validated_frms).validate()
+    fk_validated_frms = ForeignKeyValidator(row_validated_frms, target=target).validate()
     valid_model_frms, invalid_model_frms = _ModelFrmsValidInvalidSplitter(
         fk_validated_frms
     ).run()
@@ -768,6 +809,7 @@ def _update__fill_missing_columns(
     *,
     batch_size: int,
     skip_db_fill: bool = False,
+    target=None,
 ) -> Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]]:
     updated_model_frames = {}
     for model_cls, frm in model_frms.items():
@@ -802,10 +844,24 @@ def _update__fill_missing_columns(
         if skip_db_fill or not missing_cols:
             updated_model_frames[model_cls] = frm
             continue
+        # Resolved here rather than up front: when there is nothing to back-fill
+        # there is no query to route, so an explicit connection that is not
+        # registered for ORM use stays perfectly usable.
+        orm_alias = (
+            target.orm_alias(operation="The missing-column back-fill in update()")
+            if target is not None
+            else None
+        )
         schema = {pk_field: pk_dtype, **dict.fromkeys(missing_cols, None)}
         base_missing_df = pl.DataFrame(schema=schema)
         missing_df = __update__fetch_missing_chunks(
-            model_cls, frm, pk_field, missing_cols, batch_size, base_missing_df
+            model_cls,
+            frm,
+            pk_field,
+            missing_cols,
+            batch_size,
+            base_missing_df,
+            orm_alias=orm_alias,
         )
         updated_model_frames[model_cls] = _update__merge_missing(
             model_cls, frm, missing_df, missing_cols, pk_field, pk_dtype
@@ -842,6 +898,7 @@ def __update__fetch_missing_chunks(
     missing_cols: list[str],
     batch_size: int,
     base_missing_df,
+    orm_alias: str | None = None,
 ):
     if isinstance(frm, pl.LazyFrame):
         pk_series = frm.select(pk_field).collect(streaming=True)[pk_field]
@@ -855,10 +912,16 @@ def __update__fetch_missing_chunks(
     temp_pk = "__pk_cast"
     if not mo_polars_kit.is_frm_empty(base_missing_df):
         collected_chunks.append(base_missing_df)
+    # Back-fill must read the same database the rows are written to. Without an
+    # explicit target the manager is left alone, so existing router behavior is
+    # unchanged.
+    manager = model_cls.objects
+    if orm_alias is not None:
+        manager = manager.using(orm_alias)
     for i in range(0, total_rows, batch_size):
         pk_chunk = pk_list[i : i + batch_size]
         qs = (
-            model_cls.objects.filter(**{f"{pk_field}__in": pk_chunk})
+            manager.filter(**{f"{pk_field}__in": pk_chunk})
             .annotate(**{temp_pk: Cast(F(pk_field), output_field=CharField())})
             .values(temp_pk, *missing_cols)
         )
