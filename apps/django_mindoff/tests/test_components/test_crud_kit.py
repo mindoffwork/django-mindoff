@@ -2841,44 +2841,139 @@ class TestDbTargetResolution:
             target.orm_alias(operation="Foreign-key validation")
 
 
+class _StubEngine:
+    """Stands in for a SQLAlchemy engine; records that it was disposed."""
+
+    def __init__(self):
+        self.disposed = False
+
+    def dispose(self):
+        self.disposed = True
+
+
 class TestEngineCacheBounding:
 
-    def test_cache_evicts_least_recently_used_and_disposes(self):
-        """ACCEPTANCE: the engine cache is bounded and closes what it drops."""
+    @pytest.fixture(autouse=True)
+    def _clean_cache(self):
         from ...components._crud_kit import crud_processor as cp
 
-        class _Engine:
-            def __init__(self):
-                self.disposed = False
-
-            def dispose(self):
-                self.disposed = True
-
         cp._ENGINE_CACHE.clear()
-        try:
-            first, second, third = _Engine(), _Engine(), _Engine()
-            with override_settings(MO_CRUD_ENGINE_CACHE_SIZE=2):
-                cp._cache_engine(("a",), first)
-                cp._cache_engine(("b",), second)
-                cp._cache_engine(("c",), third)
-            assert list(cp._ENGINE_CACHE) == [("b",), ("c",)]
-            assert first.disposed is True
-            assert second.disposed is False
-        finally:
-            cp._ENGINE_CACHE.clear()
+        yield
+        cp._ENGINE_CACHE.clear()
+
+    def test_cache_evicts_least_recently_used_and_returns_it(self):
+        """ACCEPTANCE: the engine cache is bounded and hands back what it drops."""
+        from ...components._crud_kit import crud_processor as cp
+
+        first, second, third = _StubEngine(), _StubEngine(), _StubEngine()
+        with override_settings(MO_CRUD_ENGINE_CACHE_SIZE=2):
+            assert cp._cache_engine(("a",), first) == []
+            assert cp._cache_engine(("b",), second) == []
+            evicted = cp._cache_engine(("c",), third)
+
+        assert list(cp._ENGINE_CACHE) == [("b",), ("c",)]
+        # Eviction reports the engine rather than closing it inline, so the
+        # caller can dispose it after releasing the lock.
+        assert evicted == [first]
+        assert first.disposed is False
+
+        cp._dispose_evicted(evicted)
+        assert first.disposed is True
+        assert second.disposed is False
+
+    def test_cache_hit_promotes_the_entry(self):
+        """REGRESSION: using an engine makes it the most recently used.
+
+        Without the promotion the cache would evict by insertion order, dropping
+        a hot engine while a cold one survived.
+        """
+        from ...components._crud_kit import crud_processor as cp
+
+        oldest, middle, newest = _StubEngine(), _StubEngine(), _StubEngine()
+        with override_settings(MO_CRUD_ENGINE_CACHE_SIZE=2):
+            cp._cache_engine(("a",), oldest)
+            cp._cache_engine(("b",), middle)
+            # Touch "a" the way `_get_sqlalchemy_engine` does on a cache hit.
+            cp._ENGINE_CACHE.move_to_end(("a",))
+            evicted = cp._cache_engine(("c",), newest)
+
+        assert evicted == [middle]  # "b" was coldest, not "a"
+        assert list(cp._ENGINE_CACHE) == [("a",), ("c",)]
+
+    def test_disposal_happens_with_the_lock_released(self):
+        """REGRESSION: dispose() must not run while `_ENGINE_LOCK` is held.
+
+        `dispose()` closes sockets and `_ENGINE_LOCK` serializes every engine
+        lookup in the process, so disposing under it stalls all of them.
+        """
+        from ...components._crud_kit import crud_processor as cp
+
+        observed = []
+
+        class _LockProbe(_StubEngine):
+            def dispose(self):
+                # `_ENGINE_LOCK` is non-reentrant: acquiring it here proves the
+                # caller is not already holding it.
+                observed.append(cp._ENGINE_LOCK.acquire(blocking=False))
+                if observed[-1]:
+                    cp._ENGINE_LOCK.release()
+                super().dispose()
+
+        probe = _LockProbe()
+        with override_settings(MO_CRUD_ENGINE_CACHE_SIZE=1):
+            cp._cache_engine(("a",), probe)
+            evicted = cp._cache_engine(("b",), _StubEngine())
+
+        with cp._ENGINE_LOCK:
+            pass  # sanity: the lock is free before we start
+        cp._dispose_evicted(evicted)
+
+        assert observed == [True]
+        assert probe.disposed is True
+
+    def test_evicting_a_real_engine_disposes_its_pool(self, tmp_path):
+        """ACCEPTANCE: a genuine SQLAlchemy engine is disposed, not just a stub.
+
+        `dispose()` closes the pooled connections and swaps in a fresh pool, so
+        pool replacement is the observable proof — and unlike `checkedin()` it
+        holds for every pool class (in-memory SQLite uses `SingletonThreadPool`,
+        which has no such counter).
+        """
+        from sqlalchemy import create_engine
+        from ...components._crud_kit import crud_processor as cp
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'evict.sqlite3'}")
+        engine.connect().close()  # materialize a pooled connection
+        original_pool = engine.pool
+
+        # `checkedin()` is a QueuePool counter — what file-based SQLite uses on
+        # SQLAlchemy 2.x, but not a guarantee across pool classes. Assert it only
+        # where the pool exposes it, so this does not become a second way for the
+        # environment to decide whether the test passes.
+        counts_idle = hasattr(original_pool, "checkedin")
+        if counts_idle:
+            assert original_pool.checkedin() == 1
+
+        with override_settings(MO_CRUD_ENGINE_CACHE_SIZE=1):
+            cp._cache_engine(("real",), engine)
+            evicted = cp._cache_engine(("other",), _StubEngine())
+        assert evicted == [engine]
+        assert engine.pool is original_pool  # not disposed while still cached
+
+        cp._dispose_evicted(evicted)
+
+        assert engine.pool is not original_pool  # fresh pool
+        if counts_idle:
+            assert original_pool.checkedin() == 0  # old connections really closed
 
     def test_zero_size_keeps_cache_unbounded(self):
         """ACCEPTANCE: opting out of the ceiling keeps every engine."""
         from ...components._crud_kit import crud_processor as cp
 
-        cp._ENGINE_CACHE.clear()
-        try:
-            with override_settings(MO_CRUD_ENGINE_CACHE_SIZE=0):
-                for index in range(40):
-                    cp._cache_engine((index,), object())
-            assert len(cp._ENGINE_CACHE) == 40
-        finally:
-            cp._ENGINE_CACHE.clear()
+        with override_settings(MO_CRUD_ENGINE_CACHE_SIZE=0):
+            for index in range(40):
+                assert cp._cache_engine((index,), _StubEngine()) == []
+        assert len(cp._ENGINE_CACHE) == 40
 
 
 @pytest.mark.django_db(transaction=True)

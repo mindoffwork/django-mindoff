@@ -183,7 +183,16 @@ To keep per-call latency low, two things are cached process-wide:
   `MO_CRUD_ENGINE_CACHE_SIZE` to change it or `0` to disable the ceiling).
   A fixed set of databases never reaches the limit; the bound matters when
   targeting many dynamic databases, where every engine would otherwise hold a
-  connection pool open for the life of the process. Evicted engines are disposed.
+  connection pool open for the life of the process. Evicted engines are disposed
+  (outside the cache lock, since closing sockets would otherwise stall every
+  other engine lookup). Disposing an engine another thread is mid-transaction on
+  is safe — SQLAlchemy closes only the idle pooled connections and swaps in a
+  fresh pool, leaving checked-out connections to finish.
+
+  Size the cache above the number of databases the process uses *concurrently*,
+  not the number it uses in total. Past that point each miss evicts an engine
+  that is about to be wanted again, so the cache thrashes and connections churn
+  instead of pooling — the very cost it exists to avoid.
 - **Reflected `Table` metadata** is cached per engine. A cached (PG/MySQL)
   engine keeps its reflection warm across calls; the uncached SQLite engine gets
   fresh metadata each call (collected with the engine), so reflection always
