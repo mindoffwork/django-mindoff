@@ -27,6 +27,7 @@ import math
 import os
 import pathlib
 import tempfile
+import threading
 import weakref
 from decimal import Decimal
 from urllib.parse import quote_plus
@@ -44,6 +45,21 @@ from .dtypes import resolve_polars_dtype
 # ----------------
 _UUID_FIELDS = ("UUIDField", "ForeignKey", "OneToOneField")
 _UUID_HYPHENATE = r"^(.{8})(.{4})(.{4})(.{4})(.{12})$"
+
+# Temp Parquet files backing live lazy scans that are still awaiting cleanup.
+#
+# ``weakref.finalize`` unlinks each file when its ``LazyFrame`` is collected,
+# which succeeds on Linux even while Polars holds the handle. On Windows that
+# unlink fails until the process tears down, so a single ``atexit`` drain makes
+# the final attempt. Registering that drain *per call* would grow the ``atexit``
+# registry once per lazy read for the life of the process, and
+# ``atexit.unregister`` cannot undo one registration without cancelling every
+# other pending path — it matches on the function object alone. So the handler
+# is registered once and the paths live here instead, in a set that shrinks as
+# files are actually removed.
+_PENDING_TEMP_FILES: set = set()
+_TEMP_FILE_LOCK = threading.Lock()
+_TEMP_DRAIN_REGISTERED = False
 
 
 # ----------------
@@ -140,18 +156,51 @@ def scan_to_lazy(qs, *, batch_size: int,
 
     lazy = pl.scan_parquet(tmp_path)
     # Linux: finalize fires at GC time; unlink succeeds on an open file.
-    # Windows: unlink fails while Polars holds the handle, so atexit provides
-    # a guaranteed second attempt once the process has fully torn down.
+    # Windows: unlink fails while Polars holds the handle, so the shared atexit
+    # drain provides a second attempt once the process has fully torn down.
+    _track_temp_file(tmp_path)
     weakref.finalize(lazy, _safe_unlink, tmp_path)
-    atexit.register(_safe_unlink, tmp_path)
     return lazy
 
 
+def _track_temp_file(path: str) -> None:
+    """Record ``path`` as awaiting cleanup, registering the drain on first use."""
+    global _TEMP_DRAIN_REGISTERED
+    with _TEMP_FILE_LOCK:
+        _PENDING_TEMP_FILES.add(path)
+        if not _TEMP_DRAIN_REGISTERED:
+            atexit.register(_drain_temp_files)
+            _TEMP_DRAIN_REGISTERED = True
+
+
+def _drain_temp_files() -> None:
+    """Best-effort removal of every still-pending temp file, at interpreter exit.
+
+    Snapshots under the lock before unlinking: ``_safe_unlink`` mutates the set
+    as files go away, and a concurrent lazy read may add to it — iterating it
+    live could raise "Set changed size during iteration".
+    """
+    with _TEMP_FILE_LOCK:
+        pending = list(_PENDING_TEMP_FILES)
+    for path in pending:
+        _safe_unlink(path)
+
+
 def _safe_unlink(path: str) -> None:
+    """Remove ``path``, forgetting it once it is actually gone.
+
+    A failure other than "already gone" leaves the path pending so the atexit
+    drain retries it — that is the Windows case, where Polars still holds the
+    file handle at GC time.
+    """
     try:
         os.unlink(path)
-    except OSError:  # pragma: no cover - best-effort cleanup
-        pass
+    except FileNotFoundError:
+        pass  # already removed: fall through and stop tracking it
+    except OSError:  # pragma: no cover - still locked; retry at exit
+        return
+    with _TEMP_FILE_LOCK:
+        _PENDING_TEMP_FILES.discard(path)
 
 
 def _field_lookup(model) -> dict:

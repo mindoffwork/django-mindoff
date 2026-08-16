@@ -1158,6 +1158,28 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         assert collected.shape[0] == 6
         assert collected.schema["id"] == pl.Utf8
 
+    def test_repeated_lazy_reads_do_not_grow_atexit(self):
+        """REGRESSION: the atexit registry stays flat across `read(is_lazy=True)`.
+
+        The leak this replaces registered one `_safe_unlink` per lazy read, so a
+        long-running process accumulated an entry per call forever.
+        """
+        import atexit
+
+        self._seed(1, 3)
+        qs = self._book_model.objects.all().values()
+
+        # The first read registers the shared drain, if nothing else has yet.
+        first, _ = mo_crud_kit.read(qs, is_lazy=True, batch_size=2)
+        assert first.collect().shape[0] == 3
+        baseline = atexit._ncallbacks()
+
+        for _ in range(10):
+            frm, _stats = mo_crud_kit.read(qs, is_lazy=True, batch_size=2)
+            assert frm.collect().shape[0] == 3
+
+        assert atexit._ncallbacks() == baseline
+
     def test_read_batches_streams_chunks(self):
         """A4: read_batches yields memory-bounded normalized chunks."""
         self._seed(1, 5)  # 5 books
@@ -2288,6 +2310,79 @@ class TestArrowReaderUnit:
         assert _connectorx_usable("default") is True
         with transaction.atomic():
             assert _connectorx_usable("default") is False
+
+
+class TestLazyReadTempFileCleanup:
+    """The lazy-read temp files are tracked in a set, not the atexit registry."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_registry(self):
+        """Snapshot and restore the module-level tracking state per test."""
+        from ...components._crud_kit import arrow_reader as ar
+
+        pending = set(ar._PENDING_TEMP_FILES)
+        registered = ar._TEMP_DRAIN_REGISTERED
+        yield
+        ar._PENDING_TEMP_FILES.clear()
+        ar._PENDING_TEMP_FILES.update(pending)
+        ar._TEMP_DRAIN_REGISTERED = registered
+
+    def test_tracking_registers_exactly_one_atexit_handler(self):
+        """REGRESSION: N tracked files add one atexit entry, not N.
+
+        The leak this replaces registered `_safe_unlink` per call, so a
+        long-running process grew the registry once per lazy read forever.
+        """
+        import atexit
+        from ...components._crud_kit import arrow_reader as ar
+
+        ar._TEMP_DRAIN_REGISTERED = False
+        before = atexit._ncallbacks()
+        for index in range(50):
+            ar._track_temp_file(f"/nonexistent/mo-temp-{index}.parquet")
+
+        assert atexit._ncallbacks() == before + 1
+        assert len(ar._PENDING_TEMP_FILES) >= 50
+
+    def test_unlink_stops_tracking_a_removed_file(self, tmp_path):
+        """ACCEPTANCE: the pending set shrinks as files are actually removed."""
+        from ...components._crud_kit import arrow_reader as ar
+
+        target = tmp_path / "gone.parquet"
+        target.write_bytes(b"x")
+        ar._track_temp_file(str(target))
+        assert str(target) in ar._PENDING_TEMP_FILES
+
+        ar._safe_unlink(str(target))
+
+        assert not target.exists()
+        assert str(target) not in ar._PENDING_TEMP_FILES
+
+    def test_unlink_forgets_an_already_missing_file(self, tmp_path):
+        """BOUNDARY: a path removed by someone else is dropped, not retried forever."""
+        from ...components._crud_kit import arrow_reader as ar
+
+        missing = str(tmp_path / "never-existed.parquet")
+        ar._track_temp_file(missing)
+
+        ar._safe_unlink(missing)
+
+        assert missing not in ar._PENDING_TEMP_FILES
+
+    def test_drain_is_idempotent_and_survives_missing_files(self, tmp_path):
+        """BOUNDARY: the atexit drain tolerates gone files and repeats safely."""
+        from ...components._crud_kit import arrow_reader as ar
+
+        present = tmp_path / "present.parquet"
+        present.write_bytes(b"x")
+        ar._track_temp_file(str(present))
+        ar._track_temp_file(str(tmp_path / "absent.parquet"))
+
+        ar._drain_temp_files()
+        ar._drain_temp_files()  # second pass must not raise
+
+        assert not present.exists()
+        assert str(present) not in ar._PENDING_TEMP_FILES
 
 
 def _register_app(temp_dir: Path, app_name: str):
