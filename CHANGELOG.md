@@ -7,6 +7,7 @@
 - ⬆️ Update pyarrow requirement from <25.0.0,>=17.0.0 to >=17.0.0,<26.0.0 ([#54](https://github.com/mindoffwork/django-mindoff/pull/54))
 
 ### Fixes
+- 🐛 Fix Update batch-size limit for missing-column back-fill ([#62](https://github.com/mindoffwork/django-mindoff/pull/62))
 - 🐛 Fix unbounded `atexit` growth in lazy read temp-file cleanup ([#61](https://github.com/mindoffwork/django-mindoff/pull/61))
 - 🐛 Fix DjangoAppCreator startapp subprocess to use sys.executable ([#59](https://github.com/mindoffwork/django-mindoff/pull/59))
 
