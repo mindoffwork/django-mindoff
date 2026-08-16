@@ -30,6 +30,11 @@ from typeguard import typechecked
 # The cache is bounded (LRU) because a caller may target an open-ended number of
 # dynamically-provisioned databases; unbounded, every tenant ever touched would
 # keep a connection pool alive for the life of the process.
+#
+# Size it above the number of databases the process talks to *concurrently*, not
+# the number it talks to overall. Past that point every miss evicts an engine
+# another request is about to want again, so the cache thrashes and connections
+# churn instead of pooling — the cost the cache exists to avoid.
 _ENGINE_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
 _ENGINE_LOCK = threading.Lock()
 DEFAULT_ENGINE_CACHE_SIZE = 32
@@ -142,8 +147,10 @@ class CRUDProcessor:
                 f"{driver}://{auth_part}{host}{port_part}/{name}",
                 connect_args=connect_args,
             )
-            _cache_engine(cache_key, sa_engine)
-            return sa_engine
+            evicted = _cache_engine(cache_key, sa_engine)
+        # Deliberately outside the lock: see ``_dispose_evicted``.
+        _dispose_evicted(evicted)
+        return sa_engine
 
     def _reflect_table(self, conn, table_db: str):
         """Return a reflected ``Table`` for ``table_db``, cached per engine.
@@ -481,17 +488,18 @@ class CRUDProcessor:
 # ----------------
 # Functions
 # ----------------
-def _cache_engine(cache_key: tuple, sa_engine) -> None:
-    """Cache ``sa_engine``, evicting the least recently used entry past the cap.
+def _cache_engine(cache_key: tuple, sa_engine) -> list:
+    """Cache ``sa_engine``, returning any engines evicted past the cap.
 
-    Callers must already hold ``_ENGINE_LOCK``.
+    Callers must already hold ``_ENGINE_LOCK`` — and must dispose the returned
+    engines only *after* releasing it (see :func:`_dispose_evicted`).
 
     A fixed set of configured databases never reaches the cap, so ordinary
     projects behave as before. The ceiling exists for callers that target many
     dynamically-provisioned databases: each engine owns a connection pool, and
     without eviction every database ever touched would hold one open for the life
-    of the process. Evicted engines are disposed so their pooled sockets close.
-    Set ``MO_CRUD_ENGINE_CACHE_SIZE`` to ``0`` to keep the cache unbounded.
+    of the process. Set ``MO_CRUD_ENGINE_CACHE_SIZE`` to ``0`` to keep the cache
+    unbounded.
     """
     _ENGINE_CACHE[cache_key] = sa_engine
     _ENGINE_CACHE.move_to_end(cache_key)
@@ -499,12 +507,29 @@ def _cache_engine(cache_key: tuple, sa_engine) -> None:
         settings, "MO_CRUD_ENGINE_CACHE_SIZE", DEFAULT_ENGINE_CACHE_SIZE
     )
     if not max_size or max_size <= 0:
-        return
+        return []
+    evicted = []
     while len(_ENGINE_CACHE) > max_size:
-        _, evicted = _ENGINE_CACHE.popitem(last=False)
-        dispose = getattr(evicted, "dispose", None)
-        if callable(dispose):
-            dispose()
+        _, engine = _ENGINE_CACHE.popitem(last=False)
+        evicted.append(engine)
+    return evicted
+
+
+def _dispose_evicted(engines) -> None:
+    """Close the pooled connections of engines dropped from the cache.
+
+    Must run with ``_ENGINE_LOCK`` released. ``dispose()`` closes sockets, and
+    ``_ENGINE_LOCK`` is the lock every engine lookup in the process contends on
+    — holding it across that turns one eviction into a stall for every other
+    thread resolving an engine.
+
+    Disposing an engine another thread is still using is safe: SQLAlchemy closes
+    only the idle pooled connections and swaps in a fresh pool, leaving
+    already-checked-out connections to finish their transaction and be discarded
+    on return.
+    """
+    for engine in engines:
+        engine.dispose()
 
 
 def _sqlite_emit_begin(conn) -> None:
