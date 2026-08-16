@@ -9,6 +9,9 @@
 ### Fixes
 - 🐛 Fix DjangoAppCreator startapp subprocess to use sys.executable ([#59](https://github.com/mindoffwork/django-mindoff/pull/59))
 
+### Features
+- 🌟 Add multi-database CRUD support ([#60](https://github.com/mindoffwork/django-mindoff/pull/60))
+
 ## v0.8.0
 
 ### Documentation
