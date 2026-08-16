@@ -6,6 +6,9 @@
 - ⬆️ Bump actions/setup-python from 6 to 7 ([#58](https://github.com/mindoffwork/django-mindoff/pull/58))
 - ⬆️ Update pyarrow requirement from <25.0.0,>=17.0.0 to >=17.0.0,<26.0.0 ([#54](https://github.com/mindoffwork/django-mindoff/pull/54))
 
+### Fixes
+- 🐛 Fix DjangoAppCreator startapp subprocess to use sys.executable ([#59](https://github.com/mindoffwork/django-mindoff/pull/59))
+
 ## v0.8.0
 
 ### Documentation
