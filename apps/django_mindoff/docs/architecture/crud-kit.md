@@ -50,6 +50,14 @@ At a high level, write operations pass through one shared validation pipeline be
 - Uses in-memory related frames when related models are present in the same operation.
 - Falls back to database existence checks when related frames are absent.
 - Rejects unresolved FK references as validation failures.
+- Checks existence in bounded chunks rather than one `IN (...)` per column. The
+  chunk size comes from the backend's own `max_query_params` where it reports
+  one (SQLite's `SQLITE_MAX_VARIABLE_NUMBER`, 32766 by default — a hard error
+  once exceeded), capped by a local ceiling that also covers the drivers
+  reporting no limit because they interpolate client-side (psycopg2, MySQL).
+  Distinct values are held as an Arrow-backed column and only one chunk at a
+  time becomes Python objects. Checking stops at the first chunk that comes up
+  short, since the reference is already known to be unresolvable.
 
 ### 4. Relationship-Aware Invalid Propagation
 

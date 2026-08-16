@@ -731,6 +731,134 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
         mo_crud_kit.create(df_dict, is_partial=False)
         return df_dict[self._author_model]
 
+    # ---- IN-clause chunking ----
+
+    def test_chunk_size_honors_the_backend_parameter_limit(self, monkeypatch):
+        """ACCEPTANCE: SQLite's real limit wins when below the local ceiling.
+
+        The limit is read from the connection rather than hardcoded: it is
+        `SQLITE_MAX_VARIABLE_NUMBER`, a compile-time option that is 32766 on
+        SQLite 3.32+ but 999 on older builds, so it varies by interpreter.
+        """
+        from ...components._crud_kit import foreign_key_validator as fkv
+
+        validator = ForeignKeyValidator({})
+        manager = self._author_model.objects
+        backend_limit = connections[manager.db].features.max_query_params
+        # Precondition: SQLite is the backend that reports a real limit at all.
+        assert backend_limit is not None
+
+        # With headroom above it, the backend's own limit must cap the chunk.
+        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", backend_limit + 1_000)
+        assert validator._fk_chunk_size(manager) == backend_limit
+
+        # And the local ceiling wins when it is the tighter of the two.
+        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 100)
+        assert validator._fk_chunk_size(manager) == 100
+
+    def test_chunk_size_falls_back_when_backend_reports_no_limit(self, monkeypatch):
+        """BOUNDARY: psycopg2/MySQL report None, so the ceiling must apply.
+
+        This is the branch the production PostgreSQL backend takes — without the
+        fallback it would build one unbounded `IN (...)`.
+        """
+        from ...components._crud_kit import foreign_key_validator as fkv
+
+        validator = ForeignKeyValidator({})
+        manager = self._author_model.objects
+
+        class _NoLimitFeatures:
+            max_query_params = None
+
+        class _NoLimitConn:
+            features = _NoLimitFeatures()
+
+        monkeypatch.setattr(
+            fkv, "connections", {manager.db: _NoLimitConn()}, raising=True
+        )
+        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 2_500)
+
+        assert validator._fk_chunk_size(manager) == 2_500
+
+    def test_fk_validation_chunks_the_in_clause(self, monkeypatch):
+        """ACCEPTANCE: more distinct FKs than the chunk size still validates.
+
+        The bug this replaces put every distinct value in one `IN (...)`, which
+        on SQLite raises "too many SQL variables" past 32766.
+        """
+        from ...components._crud_kit import foreign_key_validator as fkv
+
+        authors = self._seed_authors(count=12)
+        author_ids = authors["id"].to_list()
+        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 5)
+
+        books = _books_referencing(author_ids)
+        validated = ForeignKeyValidator({self._book_model: books}).validate()
+
+        # All 12 references resolve even though the chunk size is 5.
+        assert validated[self._book_model].height == 12
+
+        # And an unresolvable reference is still rejected under chunking.
+        bogus = _books_referencing(author_ids + [str(uuid.uuid4())])
+        with pytest.raises(Exception, match="couldn't resolve foreign key"):
+            ForeignKeyValidator({self._book_model: bogus}).validate()
+
+    def test_chunked_count_stops_at_the_first_short_chunk(self, monkeypatch):
+        """ACCEPTANCE: a known-invalid FK skips the remaining round-trips."""
+        from ...components._crud_kit import foreign_key_validator as fkv
+
+        authors = self._seed_authors(count=10)
+        author_ids = authors["id"].to_list()
+        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 2)
+
+        validator = ForeignKeyValidator({})
+        calls = []
+
+        class _FakeManager:
+            db = "default"
+
+            def filter(self, **kwargs):
+                values = next(iter(kwargs.values()))
+                calls.append(len(values))
+                return self
+
+            def count(self):
+                return 0  # nothing matches: the very first chunk is short
+
+        series = pl.Series("author_ref_id", author_ids)
+        total = validator._count_existing_fks(_FakeManager(), "id", series)
+
+        assert total == 0
+        assert len(calls) == 1  # stopped instead of walking all 5 chunks
+
+    def test_over_sqlite_variable_limit_does_not_crash(self):
+        """REGRESSION: a huge distinct FK set no longer blows SQLite's cap.
+
+        `SQLITE_MAX_VARIABLE_NUMBER` is a hard wall — the single-statement
+        version this replaces sent every distinct value at once, so a frame this
+        wide died with "too many SQL variables" instead of reporting the
+        unresolved reference. The correct outcome is a validation failure, not a
+        database error, which is what the `match` here pins down.
+
+        40k comfortably exceeds the cap on every build: 32766 on SQLite 3.32+,
+        999 on older ones.
+        """
+        many = [str(uuid.uuid4()) for _ in range(40_000)]
+        books = _books_referencing(many)
+
+        with pytest.raises(Exception, match="couldn't resolve foreign key"):
+            ForeignKeyValidator({self._book_model: books}).validate()
+
+    def test_distinct_fk_values_stay_a_series(self):
+        """REGRESSION: the distinct set is not listed into Python objects."""
+        validator = ForeignKeyValidator({})
+        frm = pl.DataFrame({"fk": ["a", "b", "a", None]})
+
+        values = validator._get_distinct_fk_values(frm, "fk")
+
+        assert isinstance(values, pl.Series)
+        assert set(values.to_list()) == {"a", "b"}  # distinct, nulls dropped
+
 
 class TestModelFrmsValidInvalidSplitter:
 
@@ -2553,6 +2681,18 @@ def _make_uuid() -> str:
     return uuid.uuid4().hex
 
 
+def _books_referencing(author_ids) -> pl.DataFrame:
+    """A book frame with one row per entry in ``author_ids``."""
+    author_ids = list(author_ids)
+    return pl.DataFrame(
+        {
+            "id": [str(uuid.uuid4()) for _ in author_ids],
+            "title": [f"Book {index}" for index in range(len(author_ids))],
+            "author_ref_id": author_ids,
+        }
+    )
+
+
 # ----------------------------------------------------------------------------
 # Explicit connection targets (dynamic / multi-tenant databases)
 # ----------------------------------------------------------------------------
@@ -3199,6 +3339,109 @@ class TestUpdateBackfillPostgres(MindoffTestCase):
             },
         )
         request.cls._author_model = author
+        request.cls._app_name = app_name
+        request.cls._temp_dir = temp_dir
+        request.cls._override = override
+        request.addfinalizer(lambda: _unregister_app(app_name, temp_dir, override))
+
+
+@pytest.mark.skipif(
+    not _HAS_POSTGRES,
+    reason="No PostgreSQL test database configured (set MO_TEST_PG_NAME/USER/HOST)",
+)
+@pytest.mark.django_db(transaction=True)
+class TestForeignKeyChunkingPostgres(MindoffTestCase):
+    """The half of the chunk-size calculation SQLite cannot reach.
+
+    SQLite always advertises a real `max_query_params` (32766), so the SQLite
+    tests only ever cover the branch where the backend limit binds. psycopg2
+    reports `None` because it interpolates client-side, so the fall-back to
+    `_FK_CHUNK_CEILING` is exercised *only* here — and it is the branch the
+    production backend takes.
+    """
+
+    def test_postgres_reports_no_limit_so_the_ceiling_applies(self, pg_tenant):
+        """BOUNDARY: the `None` branch still chunks instead of going unbounded."""
+        from ...components._crud_kit import foreign_key_validator as fkv
+
+        manager = self._author_model.objects.using(pg_tenant.alias)
+        # Precondition: this is what makes the branch reachable at all.
+        assert connections[pg_tenant.alias].features.max_query_params is None
+        assert (
+            ForeignKeyValidator({})._fk_chunk_size(manager) == fkv._FK_CHUNK_CEILING
+        )
+
+    def test_chunked_counting_is_exact_against_postgres(self, pg_tenant, monkeypatch):
+        """ACCEPTANCE: summed per-chunk counts match reality on a real server."""
+        from ...components._crud_kit import foreign_key_validator as fkv
+
+        authors = self.mo_mock_model_frms(models=[self._author_model], counts=[12])
+        assert mo_crud_kit.create(authors, using=pg_tenant.alias)[0] == "ok"
+        author_ids = authors[self._author_model]["id"].to_list()
+
+        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 4)  # 12 ids -> 3 chunks
+        target = resolve_db_target(pg_tenant.alias)
+
+        books = _books_referencing(author_ids)
+        validated = ForeignKeyValidator(
+            {self._book_model: books}, target=target
+        ).validate()
+        assert validated[self._book_model].height == 12
+
+    def test_missing_reference_still_rejected_when_chunked(self, pg_tenant, monkeypatch):
+        """REJECTION: a genuinely absent FK fails, judged by the database itself."""
+        from ...components._crud_kit import foreign_key_validator as fkv
+
+        authors = self.mo_mock_model_frms(models=[self._author_model], counts=[9])
+        assert mo_crud_kit.create(authors, using=pg_tenant.alias)[0] == "ok"
+        author_ids = authors[self._author_model]["id"].to_list()
+
+        monkeypatch.setattr(fkv, "_FK_CHUNK_CEILING", 4)
+        target = resolve_db_target(pg_tenant.alias)
+
+        # One reference that PostgreSQL's own foreign key would refuse.
+        bogus = _books_referencing(author_ids + [str(uuid.uuid4())])
+        with pytest.raises(Exception, match="couldn't resolve foreign key"):
+            ForeignKeyValidator({self._book_model: bogus}, target=target).validate()
+
+    @pytest.fixture()
+    def pg_tenant(self):
+        alias = f"pg_fkchunk_{uuid.uuid4().hex[:8]}"
+        wrapper = _build_postgres_wrapper(alias)
+        connections[alias] = wrapper
+        with wrapper.schema_editor() as editor:
+            editor.create_model(self._author_model)
+            editor.create_model(self._book_model)
+        try:
+            yield wrapper
+        finally:
+            with wrapper.schema_editor() as editor:
+                editor.delete_model(self._book_model)
+                editor.delete_model(self._author_model)
+            wrapper.close()
+            del connections[alias]
+
+    @pytest.fixture(autouse=True, scope="class")
+    def _class_app(self, request):
+        app_name = f"app_{uuid.uuid4().hex[:12]}"
+        temp_dir = Path(tempfile.mkdtemp()).resolve()
+        override = _register_app(temp_dir, app_name)
+        author = _create_model(
+            app_name,
+            "AuthorModel",
+            "author",
+            [],
+            {"name": models.CharField(max_length=50)},
+        )
+        book = _create_model(
+            app_name,
+            "BookModel",
+            "book",
+            [(app_name, "AuthorModel", "required")],
+            {"title": models.CharField(max_length=100)},
+        )
+        request.cls._author_model = author
+        request.cls._book_model = book
         request.cls._app_name = app_name
         request.cls._temp_dir = temp_dir
         request.cls._override = override
