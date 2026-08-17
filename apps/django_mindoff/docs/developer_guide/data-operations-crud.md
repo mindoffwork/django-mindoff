@@ -77,6 +77,16 @@ mo_crud_kit.create(
     validation_level="columns_only",
 )
 
+# DRY RUN (validate and classify, write nothing — same return shape as a real call)
+preview_status, preview_valid, preview_invalid = mo_crud_kit.create(
+    {OrderModel: order_df},
+    validation_level="full",
+    is_partial=True,
+    is_validate_only=True,
+)
+# Nothing was written. Show the user preview_invalid, then commit the same frames
+# by re-running without the flag. `update()` takes `is_validate_only` identically.
+
 # READ (queryset must use values())
 orders_frm, stats = mo_crud_kit.read(
     OrderModel.objects.filter(is_active=True).values(),
@@ -124,7 +134,25 @@ What this gives you:
 <p><code>mo_crud_kit</code> is built for validated tabular data. If you choose to skip the inbuilt validation + serialization, cover request-level validation in API code before sending it to CRUD Kit.</p>
 </div>
 
-### 2. Limitations
+### 2. Previewing a Write (`is_validate_only`)
+
+`create()` and `update()` accept `is_validate_only=True` to run the validation
+pipeline and hand back the valid/invalid split **without writing anything** —
+a confirm-before-commit step, or a dry run against production data.
+
+- The return shape is identical to a real call, so the flag is a drop-in swap.
+- No write happens at any `validation_level`, including `none` and
+  `columns_only`, which otherwise write directly.
+- Validation is the real thing: at `validation_level="full"` the foreign-key
+  checks still query the database.
+- `batch_size` is irrelevant here — nothing is batched because nothing is written.
+
+What a preview cannot tell you is anything only the write can raise: database
+integrity errors, connection failures, and the primary-key-only no-op warning all
+come from the write path. A clean preview means validation passed, not that the
+write will.
+
+### 3. Limitations
 
 - `ManyToManyField` is not supported in row validation.
 - `BinaryField` is not supported in row validation.
