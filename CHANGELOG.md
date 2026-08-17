@@ -17,6 +17,7 @@
 - 🌟 Add multi-database CRUD support ([#60](https://github.com/mindoffwork/django-mindoff/pull/60))
 
 ### Enhancements
+- ⚡ Optimize update behavior and memory management for CRUD writes ([#66](https://github.com/mindoffwork/django-mindoff/pull/66))
 - 🌟 Write only caller-supplied columns on update ([#65](https://github.com/mindoffwork/django-mindoff/pull/65))
 
 ## v0.8.0
