@@ -24,7 +24,6 @@ create/update validators expect.
 import datetime
 import math
 import pathlib
-import weakref
 from decimal import Decimal
 from urllib.parse import quote_plus
 
@@ -115,14 +114,13 @@ def scan_to_lazy(qs, *, batch_size: int,
     if lazy is None:  # empty result set: nothing was written
         return pl.LazyFrame()
 
-    # Linux: finalize fires at GC time; unlink succeeds on an open file.
+    # Linux: the finalizer fires at GC time; unlink succeeds on an open file.
     # Windows: unlink fails while Polars holds the handle, so the shared atexit
     # drain provides a second attempt once the process has fully torn down.
     #
-    # Safe to finalize on ``lazy`` here because it is what the caller receives:
+    # Safe to bind to ``lazy`` here because it is what the caller receives:
     # nothing derives a further frame from it while this one goes out of scope.
-    frame_stream.track_temp_file(tmp_path)
-    weakref.finalize(lazy, frame_stream.safe_unlink, tmp_path)
+    frame_stream.bind_temp_file(tmp_path, [lazy])
     return lazy
 
 

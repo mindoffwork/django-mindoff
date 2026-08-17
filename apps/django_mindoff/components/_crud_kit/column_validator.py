@@ -16,6 +16,10 @@ class ColumnValidator:
     requirements, optionally adds missing columns, optionally removes extra columns,
     and separates valid/invalid frames with explicit error context.
 
+    Columns named in `allow_absent` are exempt from the missing-column handling
+    entirely: they are neither filled with NULL nor reported as errors. That is how
+    `update()` writes only the columns the caller supplied.
+
     Typical flow:
     1. Verify PK and FK `db_column` configuration on each model.
     2. Map incoming db column names to model field names for validation.
@@ -28,10 +32,20 @@ class ColumnValidator:
         model_frms: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
         is_add_missing_columns: bool = True,
         is_remove_extra_columns: bool = True,
+        allow_absent: Dict[Type[models.Model], set] | None = None,
     ):
         self.model_frms = model_frms
         self.is_add_missing_columns = is_add_missing_columns
         self.is_remove_extra_columns = is_remove_extra_columns
+        # Columns (by *db* column name) a model's frame is permitted to omit
+        # entirely: neither filled with NULL nor reported as missing.
+        #
+        # This is how `update()` writes only the columns the caller supplied —
+        # an omitted column has to stay genuinely absent all the way to the
+        # staging table, because a NULL placeholder is indistinguishable from a
+        # deliberate NULL by the time the merge runs. Defaults to nothing, so
+        # `create()` (which must produce a complete row) is unaffected.
+        self.allow_absent = allow_absent or {}
 
     def _validate_pk_and_fk_db_columns(self, model_cls: Type[models.Model]):
         pk_field = model_cls._meta.pk
@@ -98,18 +112,27 @@ class ColumnValidator:
         df: Union[pl.DataFrame, pl.LazyFrame],
         auto_add_columns: set,
         reverse_map: Dict[str, str],
+        absent_columns: set = frozenset(),
     ):
         existing = set(self._get_columns(df))
         new_fields = []
         for col in auto_add_columns:
+            if col in absent_columns:
+                continue  # caller omitted it: leave it to the database
             field_name = reverse_map.get(col, col)
             if field_name not in existing:
                 new_fields.append(pl.lit(None).alias(field_name))
         return df.with_columns(new_fields) if new_fields else df
 
     def _handle_missing_columns(
-        self, df: Union[pl.DataFrame, pl.LazyFrame], missing: set
+        self,
+        df: Union[pl.DataFrame, pl.LazyFrame],
+        missing: set,
+        absent_fields: set = frozenset(),
     ) -> Tuple[Union[pl.DataFrame, pl.LazyFrame], str]:
+        # Permitted omissions are neither filled nor reported — they are absent
+        # on purpose and stay that way.
+        missing = missing - absent_fields
         if self.is_add_missing_columns:
             if missing:
                 is_zero_rows = (
@@ -172,9 +195,21 @@ class ColumnValidator:
                 field_map = self._get_model_field_mapping(model_cls)
                 reverse_map = {v: k for k, v in field_map.items() if v != k}
 
+                # Permitted omissions arrive as db column names; the checks below
+                # run in field-name space, so translate once here rather than
+                # making callers know both namings.
+                absent_columns = set(self.allow_absent.get(model_cls, ()))
+                absent_fields = {
+                    name
+                    for name, db_col in field_map.items()
+                    if db_col in absent_columns
+                }
+
                 df = self._rename_to_field_names(df, reverse_map)
                 auto_add_columns = self._get_auto_add_fields(model_cls)
-                df = self._add_auto_fields(df, auto_add_columns, reverse_map)
+                df = self._add_auto_fields(
+                    df, auto_add_columns, reverse_map, absent_columns
+                )
 
                 expected_fields = set(field_map.keys())
                 current_fields = set(self._get_columns(df))
@@ -182,7 +217,9 @@ class ColumnValidator:
                 missing = expected_fields - current_fields
                 extra = current_fields - expected_fields
 
-                df, missing_error = self._handle_missing_columns(df, missing)
+                df, missing_error = self._handle_missing_columns(
+                    df, missing, absent_fields
+                )
                 df, extra_error = self._handle_extra_columns(df, extra)
 
                 pk_field_name = model_cls._meta.pk.name

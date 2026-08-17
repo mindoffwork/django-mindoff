@@ -101,8 +101,8 @@ update_status, update_valid, update_invalid = mo_crud_kit.update(
     {OrderModel: order_df},
     validation_level="full",   # "full" | "columns_only" | "none"
     is_partial=True,
-    # skip_db_fill=True,  # skip the missing-column prefetch when the frame
-    #                     # already has every column (e.g. a full read() frame)
+    # Only the columns `order_df` carries are written. Anything it omits keeps
+    # the value already stored, so a partial frame is a partial update.
 )
 ```
 

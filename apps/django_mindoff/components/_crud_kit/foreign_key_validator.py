@@ -67,12 +67,14 @@ class ForeignKeyValidator:
                 continue
 
             db_col = field.db_column
-            mo_validation_kit.ensure_in(
-                db_col,
-                column_names,
-                msg=f"Missing foreign key column '{db_col}' in DataFrame for model '{model.__name__}'",
-                is_exception=True,
-            )
+            if db_col not in column_names:
+                # The frame does not carry this foreign key, so there is no
+                # reference to check. ``update()`` writes only the columns it was
+                # given, and an omitted one keeps whatever the row already holds
+                # — a value the database already validated. ``create()`` never
+                # reaches here with a gap: ``ColumnValidator`` fills or rejects
+                # incomplete frames before this pass runs.
+                continue
 
             related_model = field.related_model
             related_pk_field = related_model._meta.pk

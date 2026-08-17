@@ -11,10 +11,15 @@ from urllib.parse import quote_plus
 import polars as pl
 from django.conf import settings
 from django.db import models
-from sqlalchemy import MetaData, Table, cast, create_engine, event, literal, select
-from sqlalchemy.dialects.mysql import insert as mysql_insert
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy import (
+    MetaData,
+    Table,
+    cast,
+    create_engine,
+    event,
+    insert,
+    select,
+)
 from sqlalchemy.exc import NoSuchTableError
 from sqlalchemy.sql.schema import quoted_name
 from typeguard import typechecked
@@ -255,7 +260,7 @@ class CRUDProcessor:
                 # merge itself is set-based SQL.
                 self._stream_write(df, temp_table_name, conn, batch_size)
                 self._update__merge_staging(
-                    table, temp_table_name, temp_metadata, pk_field, pk_col, conn
+                    table, temp_table_name, temp_metadata, pk_col, conn
                 )
 
                 affected_tables.append(model_table)
@@ -398,91 +403,109 @@ class CRUDProcessor:
         """
         yield from frame_stream.iter_frames(df, batch_size)
 
-    def _update__merge_staging(
-        self, table, temp_table_name, metadata, pk_field, pk_col, conn
-    ):
+    def _update__merge_staging(self, table, temp_table_name, metadata, pk_col, conn):
+        """Merge the staged rows into ``table``, touching only staged columns.
+
+        Assigns the supplied columns to rows that already exist, then inserts the
+        primary keys that do not. A target column the frame never staged is named
+        in neither statement, so an existing row keeps its value and a new row
+        takes the column's database default.
+        """
         temp_table = Table(temp_table_name, metadata, autoload_with=conn)
-        temp_select = select(temp_table)
         mo_validation_kit.ensure_in(
             self.dialect,
             ["sqlite", "postgresql", "mysql"],
             msg="No Valid Dialect Found for Update Operation",
             is_exception=True,
         )
-        if self.dialect == "sqlite":
-            mo_validation_kit.ensure_in(
-                pk_col,
-                table.c,
-                msg=f"Primary key {pk_col!r} not found in {table.name}",
-                is_exception=True,
+        mo_validation_kit.ensure_in(
+            pk_col,
+            table.c,
+            msg=f"Primary key {pk_col!r} not found in {table.name}",
+            is_exception=True,
+        )
+        mo_validation_kit.ensure_in(
+            pk_col,
+            temp_table.c,
+            msg=f"Primary key {pk_col!r} missing from the staged rows for {table.name}",
+            is_exception=True,
+        )
+        col_names, set_cols = self._merge_column_names(table, temp_table, pk_col)
+        if not set_cols:
+            warnings.warn(
+                f"update() wrote nothing to {table.name!r}: the frame supplies only "
+                f"the primary key, so there is no column to insert or update. "
+                f"Include at least one non-key column.",
+                RuntimeWarning,
+                stacklevel=4,
             )
-            other_cols = [c.name for c in table.columns if c.name != pk_col]
-            if not other_cols:
-                return
-            col_names = [pk_col] + other_cols
-            ordered_temp = self._ordered_staging_select(
-                temp_select, table, col_names, cast_to_target=False
-            ).where(literal(True))
-            insert_stmt = sqlite_insert(table).from_select(col_names, ordered_temp)
-            update_cols = {c: insert_stmt.excluded[c] for c in other_cols}
-            stmt = insert_stmt.on_conflict_do_update(
-                index_elements=[table.c[pk_col]], set_=update_cols
-            )
-            conn.execute(stmt)
+            return
 
-        elif self.dialect == "mysql":
-            col_names = [c.name for c in table.columns]
-            ordered_temp = self._ordered_staging_select(
-                temp_select, table, col_names, cast_to_target=True
-            )
-            insert_stmt = mysql_insert(table).from_select(col_names, ordered_temp)
-            update_cols = {
-                c.name: insert_stmt.inserted[c.name]
-                for c in table.columns
-                if c.name != pk_field
-            }
-            stmt = insert_stmt.on_duplicate_key_update(update_cols)
-            conn.execute(stmt)
+        # Two set-based statements rather than one ``INSERT ... ON CONFLICT``.
+        # The upsert form has to name every column it inserts, and a NOT NULL
+        # column left out of that list fails the constraint *before* the conflict
+        # is ever arbitrated — so it breaks even for rows that already exist. An
+        # UPDATE touches only the columns it assigns, which is what makes a
+        # partial write possible at all; the INSERT then handles just the keys
+        # that are genuinely new. Both run inside the caller's transaction.
+        staged = self._staged_columns(temp_table, table, col_names)
+        # Match on the *cast* staging key. The staging table is text-typed, so
+        # PostgreSQL rejects the raw comparison outright — there is no
+        # ``uuid = text`` operator. Casting the staging side (never the target's)
+        # keeps the target's primary-key index usable.
+        matched = table.c[pk_col] == staged[pk_col]
 
-        elif self.dialect == "postgresql":
-            col_names = [c.name for c in table.columns]
-            ordered_temp = self._ordered_staging_select(
-                temp_select, table, col_names, cast_to_target=True
-            )
-            insert_stmt = pg_insert(table).from_select(col_names, ordered_temp)
-            update_cols = {
-                c.name: insert_stmt.excluded[c.name]
-                for c in table.columns
-                if c.name != pk_field
-            }
-            stmt = insert_stmt.on_conflict_do_update(
-                index_elements=[pk_col], set_=update_cols
-            )
-            conn.execute(stmt)
+        conn.execute(
+            table.update()
+            .where(matched)
+            .values({name: staged[name] for name in set_cols})
+        )
+        # Unmatched keys are found by anti-join rather than ``NOT EXISTS``:
+        # MySQL refuses a subquery that reads the table being inserted into
+        # (error 1093), but allows it in the SELECT's own FROM.
+        new_rows = (
+            select(*[staged[name].label(name) for name in col_names])
+            .select_from(temp_table.outerjoin(table, matched))
+            .where(table.c[pk_col].is_(None))
+        )
+        conn.execute(insert(table).from_select(col_names, new_rows))
 
     @staticmethod
-    def _ordered_staging_select(temp_select, table, col_names, *, cast_to_target):
-        """Project the staging select onto ``col_names``, in that exact order.
+    def _merge_column_names(table, temp_table, pk_col):
+        """Target columns narrowed to the ones the caller's frame supplied.
 
-        ``from_select`` pairs the target column list with the SELECT positionally,
-        so the staging table's own column order must never be assumed to match the
-        target table's. Without this projection a mismatch writes each value into
-        the wrong column — loudly when the types disagree, silently when they do
-        not.
+        ``update()`` writes only the columns it was given, so the staging table —
+        created from the frame — is the authority on what the merge may touch. A
+        target column missing from it is left out of both the INSERT list and the
+        assignment list, which is what preserves its current value on an existing
+        row (and lets the column default apply on a new one).
 
-        ``cast_to_target`` additionally casts each column to the target column's
-        type. The staging table is created from the frame's Polars schema, so a
-        UUID or timestamp lands there as text; strictly-typed backends refuse to
-        merge that into a typed column, while SQLite's dynamic typing accepts it
-        as-is and needs no cast.
+        Returns ``(col_names, set_cols)`` in the *target's* column order.
+        ``INSERT ... FROM SELECT`` pairs the column list with the SELECT
+        positionally, so the order has to come from one side only and stay the
+        same for both lists.
         """
-        columns = []
-        for name in col_names:
-            column = temp_select.c[name]
-            if cast_to_target:
-                column = cast(column, table.c[name].type)
-            columns.append(column.label(name))
-        return temp_select.with_only_columns(*columns)
+        staged = set(temp_table.c.keys())
+        col_names = [c.name for c in table.columns if c.name in staged]
+        set_cols = [name for name in col_names if name != pk_col]
+        return col_names, set_cols
+
+    def _staged_columns(self, temp_table, table, col_names) -> dict:
+        """Staging columns keyed by name, cast to the target's types where needed.
+
+        The staging table is created from the frame's Polars schema, so a UUID or
+        timestamp lands there as text; strictly-typed backends refuse to write
+        that into a typed column. SQLite's typing is dynamic and needs no cast.
+        """
+        cast_to_target = self.dialect != "sqlite"
+        return {
+            name: (
+                cast(temp_table.c[name], table.c[name].type)
+                if cast_to_target
+                else temp_table.c[name]
+            )
+            for name in col_names
+        }
 
 
 # ----------------

@@ -12,10 +12,7 @@ from typeguard import typechecked
 from django.conf import settings
 from django.core.paginator import EmptyPage, Paginator
 from django.db import models
-from django.db.models import F
-from django.db.models import CharField
-from django.db.models.functions import Cast
-from ._crud_kit import arrow_reader, frame_stream
+from ._crud_kit import arrow_reader
 from ._crud_kit.column_validator import ColumnValidator
 from ._crud_kit.crud_processor import CRUDProcessor
 from ._crud_kit.db_target import DbTargetLike, resolve_db_target
@@ -387,31 +384,25 @@ class MindoffCRUDHandler:
           If `True`, allows valid rows to proceed even when invalid rows exist
           (applies to `validation_level="full"` only).
         - `validation_level` (`"full"|"columns_only"|"none", default="full"`):
-          Selects how much validation runs before the upsert. Missing DB columns
-          are auto-fetched by primary key first (unless `skip_db_fill=True`),
-          regardless of level.
+          Selects how much validation runs before the upsert.
         - `batch_size` (`int, default=1000`):
-          Batch size used for missing-column fetch and update processing.
+          Batch size used to load the staging table.
         - `skip_db_fill` (`bool, default=False`):
-          When `True`, skips the missing-column prefetch (the per-PK `SELECT`
-          that back-fills columns the frame omits). Use it when the caller
-          already supplies every column to be written — e.g. a frame from
-          `read()` that was modified in place — to avoid the extra round-trip.
-          Primary-key canonicalization and the PK presence check still run, so
-          upsert matching is unaffected. This is a latency optimization, not a
-          memory one: the back-fill is itself memory-bounded. Caution: any column
-          the frame omits is NOT back-filled and will be written as `NULL`, so
-          only enable this when the frame is column-complete.
+          Deprecated and inert; scheduled for removal in 1.0. It used to skip a
+          prefetch `SELECT` that back-filled the columns a frame omitted. There
+          is no longer a back-fill to skip — omitted columns are simply not
+          written — so passing it changes nothing and emits a
+          `DeprecationWarning`.
 
         Varieties:
 
         - `validation_level="full"` (default): runs
           `ColumnValidator -> RowValidator -> ForeignKeyValidator` and honors
           `is_partial`.
-        - `validation_level="columns_only"`: runs only `ColumnValidator`
-          (after the missing-column fetch) and upserts directly, trusting the
-          caller's row values and foreign keys. Row-level passes are skipped, so
-          the caller must supply database-ready values.
+        - `validation_level="columns_only"`: runs only `ColumnValidator` and
+          upserts directly, trusting the caller's row values and foreign keys.
+          Row-level passes are skipped, so the caller must supply
+          database-ready values.
         - `validation_level="none"`: skips all validation; upserts as-is and
           emits an unsafe-write warning.
 
@@ -423,59 +414,58 @@ class MindoffCRUDHandler:
 
         Notes:
 
-        - Missing DB columns are auto-fetched using primary key before validation
-          unless `skip_db_fill=True`. That fetch is memory-bounded: primary keys
-          are read one `batch_size` chunk at a time and fetched rows are streamed
-          to disk rather than accumulated, so it does not scale with the size of
-          the frame.
-        - A `LazyFrame` returned in `valid_model_frms` may still scan the
-          back-fill's temporary file. It stays collectable for as long as you
-          hold the frame; the file is removed once every frame referencing it has
-          been garbage-collected, as with `read(is_lazy=True)`.
+        - **Only the columns your frame carries are written.** A column the frame
+          omits is left out of both the INSERT list and the `SET` clause, so an
+          existing row keeps whatever it already holds and a new row takes the
+          column's database default. Nothing is read back first, so two writers
+          updating different columns of the same row no longer overwrite each
+          other. The returned frames therefore carry exactly the columns that
+          were written.
+        - A frame carrying *only* the primary key has nothing to write; that is a
+          no-op and emits a `RuntimeWarning` rather than failing silently.
+        - Because `update()` is an upsert, a primary key that does not exist yet
+          is an INSERT. If the frame omits a `NOT NULL` column that has no
+          database default, that INSERT fails with the database's own integrity
+          error and the whole call rolls back — use `create()` for genuinely new
+          rows, or supply the column.
         - Invalid rows include model-aware error details in error column.
         - The staging merge loads the staging table with the same fast
           same-transaction bulk loader as `create()` (PostgreSQL `COPY`, MySQL
           `LOAD DATA LOCAL INFILE`, SQLite `executemany`) and then merges
           set-based in SQL, so no per-row Python materialization occurs.
         - Dynamic databases: a connection passed as `using` does not have to
-          appear in `settings.DATABASES`, but the missing-column back-fill and
-          foreign-key validation issue ORM queries, so the connection must also
-          be registered in `django.db.connections` under its alias. If it is not,
-          combine `validation_level="columns_only"` with `skip_db_fill=True`.
+          appear in `settings.DATABASES`. Foreign-key validation is the only
+          stage that issues an ORM query, so either register the connection in
+          `django.db.connections` under its alias or use
+          `validation_level="columns_only"`.
         """
-        target = resolve_db_target(using)
-        model_frms, spill_paths = _update__fill_missing_columns(
-            model_frms,
-            batch_size=batch_size,
-            skip_db_fill=skip_db_fill,
-            target=target,
-        )
-
-        try:
-            status, valid_model_frms, invalid_model_frms = _run_validation_pipeline(
-                validation_level,
-                model_frms,
-                is_partial=is_partial,
-                target=target,
-                none_warning=(
-                    "Updating without validation may store unsafe or inconsistent data, "
-                    "which can affect mindoff's read/update/delete functions. "
-                    "Proceed only if intentional."
-                ),
+        if skip_db_fill:
+            warnings.warn(
+                "skip_db_fill is deprecated and no longer has any effect: update() "
+                "writes only the columns the frame supplies, so there is no "
+                "back-fill left to skip. It will be removed in 1.0.",
+                DeprecationWarning,
+                stacklevel=2,
             )
-            if status != "fail":
-                # Perform CRUD operation
-                crud_processor = CRUDProcessor(valid_model_frms, using=target)
-                _ = crud_processor.update(batch_size=batch_size)
-        except BaseException:
-            # Nothing is handed back on this path, so the spill files are dead.
-            for path in spill_paths.values():
-                frame_stream.safe_unlink(path)
-            raise
+        target = resolve_db_target(using)
+        model_frms, unset_columns = _update__prepare_frames(model_frms)
 
-        # The returned frames may still scan their spill file, so the file's
-        # lifetime follows them rather than ending here.
-        _update__bind_spill_files(spill_paths, valid_model_frms, invalid_model_frms)
+        status, valid_model_frms, invalid_model_frms = _run_validation_pipeline(
+            validation_level,
+            model_frms,
+            is_partial=is_partial,
+            target=target,
+            allow_absent=unset_columns,
+            none_warning=(
+                "Updating without validation may store unsafe or inconsistent data, "
+                "which can affect mindoff's read/update/delete functions. "
+                "Proceed only if intentional."
+            ),
+        )
+        if status != "fail":
+            # Perform CRUD operation
+            crud_processor = CRUDProcessor(valid_model_frms, using=target)
+            _ = crud_processor.update(batch_size=batch_size)
         return status, valid_model_frms, invalid_model_frms
 
 
@@ -509,19 +499,33 @@ class _ModelFrmsValidInvalidSplitter:
         return normalized
 
     def _build_relations(self, models_list: List[Type[models.Model]]):
+        """Usable child->parent links for invalid-row propagation.
+
+        A relation is only usable when both ends are actually reachable:
+        propagation reads the FK column off the child frame and indexes
+        ``invalid_ids`` by the parent model. So a foreign key the frame omits
+        (``update()`` writes only the columns it was given) or one pointing at a
+        model outside this operation is skipped — either would fault mid-walk.
+        """
         relations = []
+        in_batch = set(models_list)
         for model in models_list:
+            columns = set(mo_polars_kit.resolve_schema(self.model_frms[model]).names())
             for f in model._meta.concrete_fields:
-                if isinstance(f, (models.ForeignKey, models.OneToOneField)):
-                    relations.append(
-                        (
-                            model,
-                            f.db_column or f.name,
-                            f.related_model,
-                            f.related_model._meta.pk.db_column
-                            or f.related_model._meta.pk.name,
-                        )
+                if not isinstance(f, (models.ForeignKey, models.OneToOneField)):
+                    continue
+                fk_col = f.db_column or f.name
+                if fk_col not in columns or f.related_model not in in_batch:
+                    continue
+                relations.append(
+                    (
+                        model,
+                        fk_col,
+                        f.related_model,
+                        f.related_model._meta.pk.db_column
+                        or f.related_model._meta.pk.name,
                     )
+                )
         return relations
 
     def _collect_initial_invalid_ids(self):
@@ -740,6 +744,7 @@ def _run_validation_pipeline(
     is_partial: bool,
     none_warning: str,
     target=None,
+    allow_absent: Dict | None = None,
 ):
     """Run the configured validation level and return ``(status, valid, invalid)``.
 
@@ -752,6 +757,11 @@ def _run_validation_pipeline(
     ``target`` is the database the operation writes to; it reaches only the FK
     pass, which is the one stage that queries the database, so FK existence is
     checked where the rows are actually going.
+
+    ``allow_absent`` names, per model, the db columns the frame may legitimately
+    omit — ``update()``'s partial-column write. They are left absent rather than
+    filled with NULL, which the row and FK passes already handle by skipping any
+    field their frame does not carry.
     """
     if level == "none":
         warnings.warn(none_warning, RuntimeWarning)
@@ -762,6 +772,7 @@ def _run_validation_pipeline(
         model_frms=model_frms,
         is_remove_extra_columns=True,
         is_add_missing_columns=True,
+        allow_absent=allow_absent,
     ).run()
     if not mo_polars_kit.is_model_frms_empty(invalid_model_frms):
         return "fail", valid_model_frms, invalid_model_frms
@@ -820,181 +831,49 @@ def _read__build_stats(
     }
 
 
-def _update__fill_missing_columns(
+def _update__prepare_frames(
     model_frms: Dict[Type[models.Model], Union[pl.DataFrame, pl.LazyFrame]],
-    *,
-    batch_size: int,
-    skip_db_fill: bool = False,
-    target=None,
 ):
-    """Back-fill columns the frame omits, returning ``(frames, spill_paths)``.
+    """Canonicalize primary keys and record what each frame leaves out.
 
-    ``spill_paths`` maps a model to the temp Parquet file its back-filled frame
-    still scans. The caller owns those files: they must outlive validation and
-    the write, and the returned frames may still reference them afterwards.
+    Returns ``(frames, unset_columns)``. ``unset_columns[model]`` is the set of
+    db column names the frame does not carry, primary key excluded. Those columns
+    stay absent for the rest of the pipeline and never reach the staging table,
+    so the merge omits them from both the INSERT list and the ``SET`` clause and
+    the database keeps whatever an existing row already holds.
+
+    Nothing is read back from the database here — there is no query to route, so
+    an explicit connection that was never registered for ORM use stays usable for
+    the write itself.
     """
     updated_model_frames = {}
-    spill_paths = {}
+    unset_columns = {}
     for model_cls, frm in model_frms.items():
-        # Resolve the schema once (lazy-safe); column membership is unchanged by
-        # the value-only canonicalization below, so this stays valid for the
-        # whole iteration.
-        frm_schema = mo_polars_kit.resolve_schema(frm)
-        df_cols = set(frm_schema.names())
-        model_fields = {f.column or f.name for f in model_cls._meta.concrete_fields}
-        missing_cols = list(model_fields - df_cols)
+        # Resolve the schema once (lazy-safe); the canonicalization below only
+        # touches values, so column membership stays valid for the iteration.
+        df_cols = set(mo_polars_kit.resolve_schema(frm).names())
         pk_name = model_cls._meta.pk.name
         pk_column = model_cls._meta.pk.column
         pk_field = next((c for c in (pk_column, pk_name) if c in df_cols), None)
         mo_validation_kit.ensure_truthy(
             pk_field,
-            msg=f"Primary key {pk_field} must exist in DataFrame to fetch missing columns.",
+            msg=f"Primary key {pk_field} must exist in DataFrame to match rows for update.",
             is_exception=True,
         )
-        pk_dtype = frm_schema[pk_field]
+        model_fields = {f.column or f.name for f in model_cls._meta.concrete_fields}
+        # The primary key is never "unset": it is how rows are matched, and it is
+        # present by the check above under whichever of its two names.
+        unset_columns[model_cls] = {
+            col for col in model_fields - df_cols if col != pk_field
+        }
         # Canonicalize UUID primary keys to the stored dashless/lowercase form so
-        # the join against DB-fetched keys matches regardless of the input form
-        # (e.g. hyphenated frames from `read()`) or backend (SQLite casts UUIDs
-        # to dashless hex, PostgreSQL to hyphenated). The expr casts to Utf8.
+        # upsert matching lands on the right row regardless of the input form
+        # (e.g. hyphenated frames from `read()`) or backend (SQLite stores UUIDs
+        # dashless, PostgreSQL hyphenated). The expr casts to Utf8.
         if isinstance(model_cls._meta.pk, models.UUIDField):
             frm = frm.with_columns(_canonical_uuid_expr(pk_field))
-            pk_dtype = pl.Utf8
-        missing_cols = [c for c in missing_cols if c != pk_field]
-        # ``skip_db_fill`` skips only the DB fetch (the expensive part) — the PK
-        # canonicalization and presence check above still run, so upsert matching
-        # stays correct. The caller takes responsibility for supplying every
-        # column to be written (missing ones are not back-filled from the DB).
-        if skip_db_fill or not missing_cols:
-            updated_model_frames[model_cls] = frm
-            continue
-        # Resolved here rather than up front: when there is nothing to back-fill
-        # there is no query to route, so an explicit connection that is not
-        # registered for ORM use stays perfectly usable.
-        orm_alias = (
-            target.orm_alias(operation="The missing-column back-fill in update()")
-            if target is not None
-            else None
-        )
-        schema = {pk_field: pk_dtype, **dict.fromkeys(missing_cols, None)}
-        base_missing_df = pl.DataFrame(schema=schema)
-        missing_df, spill_path = __update__fetch_missing_chunks(
-            model_cls,
-            frm,
-            pk_field,
-            missing_cols,
-            batch_size,
-            base_missing_df,
-            orm_alias=orm_alias,
-        )
-        if spill_path is not None:
-            spill_paths[model_cls] = spill_path
-        updated_model_frames[model_cls] = _update__merge_missing(
-            model_cls, frm, missing_df, missing_cols, pk_field, pk_dtype
-        )
-    return updated_model_frames, spill_paths
-
-
-def _update__bind_spill_files(spill_paths: Dict, *frame_maps) -> None:
-    """Hand each back-fill spill file to the frames that may still scan it."""
-    for model_cls, path in spill_paths.items():
-        holders = [
-            frames[model_cls]
-            for frames in frame_maps
-            if isinstance(frames, dict) and model_cls in frames
-        ]
-        frame_stream.bind_temp_file(path, holders)
-
-
-def _update__merge_missing(model_cls, frm, missing_df, missing_cols, pk_field, pk_dtype):
-    """Left-join DB-fetched missing columns back onto the input frame."""
-    if mo_polars_kit.is_frm_empty(missing_df):
-        return frm.with_columns([pl.lit(None).alias(col) for col in missing_cols])
-
-    # Both sides may be lazy now (the back-fill spills to Parquet), so schemas
-    # are resolved rather than read off `.columns`/`.schema`, which re-plan the
-    # whole query and emit a Polars PerformanceWarning on a LazyFrame.
-    missing_schema = mo_polars_kit.resolve_schema(missing_df)
-    frm_cols = set(mo_polars_kit.resolve_schema(frm).names())
-    overlap = frm_cols & set(missing_schema.names()) - {pk_field}
-    mo_validation_kit.ensure_falsey(
-        overlap,
-        msg=f"Duplicate columns found during merge for model {model_cls.__name__}: {', '.join(overlap)}",
-        is_exception=True,
-    )
-    left_dtype = pk_dtype
-    right_dtype = missing_schema.get(pk_field)
-    if right_dtype is not None and left_dtype != right_dtype:
-        missing_df = missing_df.with_columns(pl.col(pk_field).cast(left_dtype))
-    # Match the input frame's execution mode, so `update()` hands back what it
-    # was given rather than silently converting eager input to lazy.
-    if isinstance(frm, pl.LazyFrame) and isinstance(missing_df, pl.DataFrame):
-        missing_df = missing_df.lazy()
-    elif isinstance(frm, pl.DataFrame) and isinstance(missing_df, pl.LazyFrame):
-        missing_df = missing_df.collect()
-    return frm.join(missing_df, on=pk_field, how="left")
-
-
-def __update__fetch_missing_chunks(
-    model_cls,
-    frm,
-    pk_field: str,
-    missing_cols: list[str],
-    batch_size: int,
-    base_missing_df,
-    orm_alias: str | None = None,
-):
-    """Fetch the missing columns by primary key, in bounded-memory chunks.
-
-    Returns ``(frame, temp_path)``, where ``temp_path`` is the spill file the
-    frame scans (``None`` when there is nothing to clean up).
-
-    Neither the primary keys nor the fetched rows are ever fully materialized:
-    PKs are read one ``batch_size`` chunk at a time straight off the frame
-    (rather than listing the whole column into Python objects), and each fetched
-    chunk is streamed to a temp Parquet file (rather than accumulating in a list
-    that is concatenated at the end). ``batch_size`` therefore bounds memory
-    here, not just the number of PKs per round-trip.
-    """
-    temp_pk = "__pk_cast"
-    # Back-fill must read the same database the rows are written to. Without an
-    # explicit target the manager is left alone, so existing router behavior is
-    # unchanged.
-    manager = model_cls.objects
-    if orm_alias is not None:
-        manager = manager.using(orm_alias)
-    is_uuid_pk = isinstance(model_cls._meta.pk, models.UUIDField)
-
-    def _fetched_chunks():
-        for pk_frm in frame_stream.iter_frames(frm.select(pk_field), batch_size):
-            # Only this chunk's keys become Python objects.
-            pk_chunk = pk_frm.get_column(pk_field).to_list()
-            if not pk_chunk:
-                continue
-            qs = (
-                manager.filter(**{f"{pk_field}__in": pk_chunk})
-                .annotate(**{temp_pk: Cast(F(pk_field), output_field=CharField())})
-                .values(temp_pk, *missing_cols)
-            )
-            # Read eagerly: chunks are pk-bounded, so this avoids the disk-sink
-            # path that `read(is_lazy=True)` would otherwise trigger.
-            chunk_df = arrow_reader.read_frame(qs)
-            if mo_polars_kit.is_frm_empty(chunk_df):
-                continue
-            chunk_df = chunk_df.rename({temp_pk: pk_field})
-            if is_uuid_pk:
-                chunk_df = chunk_df.with_columns(_canonical_uuid_expr(pk_field))
-            yield chunk_df
-
-    lazy, temp_path = frame_stream.sink_frames_to_lazy(_fetched_chunks())
-    if lazy is None:  # nothing matched: no spill file was kept
-        return base_missing_df, None
-    if isinstance(frm, pl.LazyFrame):
-        return lazy, temp_path
-    # Eager input: the caller already holds the whole frame in memory, so match
-    # that mode and drop the spill file instead of keeping a scan alive.
-    collected = lazy.collect()
-    frame_stream.safe_unlink(temp_path)
-    return collected, None
+        updated_model_frames[model_cls] = frm
+    return updated_model_frames, unset_columns
 
 
 # ----------------
