@@ -16,6 +16,9 @@
 ### Features
 - 🌟 Add multi-database CRUD support ([#60](https://github.com/mindoffwork/django-mindoff/pull/60))
 
+### Enhancements
+- 🌟 Write only caller-supplied columns on update ([#65](https://github.com/mindoffwork/django-mindoff/pull/65))
+
 ## v0.8.0
 
 ### Documentation
