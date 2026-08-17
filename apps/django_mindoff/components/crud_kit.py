@@ -56,6 +56,7 @@ class MindoffCRUDHandler:
         is_partial: bool = False,
         validation_level: Literal["full", "columns_only", "none"] = "full",
         batch_size: int = 1000,
+        is_validate_only: bool = False,
     ) -> Tuple[str, Dict, Dict]:
         """Create rows from model-to-frame mappings with optional validation pipeline.
 
@@ -91,7 +92,11 @@ class MindoffCRUDHandler:
         - `validation_level` (`"full"|"columns_only"|"none", default="full"`):
           Selects how much validation runs before the insert.
         - `batch_size` (`int, default=1000`):
-          Maximum number of rows written per INSERT batch.
+          Maximum number of rows written per INSERT batch. Has no meaning when
+          `is_validate_only=True`: nothing is batched because nothing is written.
+        - `is_validate_only` (`bool, default=False`):
+          If `True`, runs the validation pipeline and returns its verdict without
+          writing anything — a preview of what a real `create()` would classify.
 
         Varieties:
 
@@ -111,6 +116,11 @@ class MindoffCRUDHandler:
         - Partial-save mode (full only):
           `is_partial=False` fails if any invalid rows exist;
           `is_partial=True` saves valid rows and returns invalid rows separately.
+        - `is_validate_only=True`: a dry run at any `validation_level`. The
+          selected validation runs exactly as it would for a real create —
+          including the foreign-key existence queries at `"full"`, which are
+          reads — and then the write is skipped entirely. Nothing is written even
+          at `"none"` or `"columns_only"`, which otherwise write directly.
 
         Possible responses:
 
@@ -121,6 +131,16 @@ class MindoffCRUDHandler:
         Notes:
 
         - Invalid rows contain an error column (`POLARS_VALIDATOR_ERROR_COL` or `__error__info`).
+        - `is_validate_only=True` returns the same
+          `(status, valid_model_frms, invalid_model_frms)` shape as a real create,
+          so it is a drop-in preview of one. What it cannot report is anything the
+          write itself would raise: the database is never contacted for the write,
+          so integrity errors, unsupported-backend errors, and connection failures
+          surface only on the real call.
+        - `validation_level="none"` still emits its unsafe-write warning under
+          `is_validate_only=True`. Nothing is written, so the warning is not about
+          this call — it is the only signal that the preview checked nothing at
+          all, and therefore says nothing about the write it stands in for.
         - `validation_level="none"` skips safety checks and may persist unsafe data.
         - Rows are written with each backend's fastest same-transaction bulk
           loader — PostgreSQL `COPY`, MySQL `LOAD DATA LOCAL INFILE` (auto-falling
@@ -149,6 +169,12 @@ class MindoffCRUDHandler:
         )
         if status == "fail":
             return "fail", valid_model_frms, invalid_model_frms
+        if is_validate_only:
+            # Dry run: the caller wants the classification, not the rows. Return
+            # before ``CRUDProcessor`` is even constructed — building one opens a
+            # connection and mutates the process-wide engine cache, neither of
+            # which a preview has any business doing.
+            return status, valid_model_frms, invalid_model_frms
 
         # Perform CRUD operation
         crud_processor = CRUDProcessor(valid_model_frms, using=target)
@@ -351,6 +377,7 @@ class MindoffCRUDHandler:
         is_partial: bool = False,
         validation_level: Literal["full", "columns_only", "none"] = "full",
         batch_size: int = 1000,
+        is_validate_only: bool = False,
         skip_db_fill: bool = False,
     ):
         """Upsert rows from model-to-frame mappings via a staged merge.
@@ -386,7 +413,12 @@ class MindoffCRUDHandler:
         - `validation_level` (`"full"|"columns_only"|"none", default="full"`):
           Selects how much validation runs before the upsert.
         - `batch_size` (`int, default=1000`):
-          Batch size used to load the staging table.
+          Batch size used to load the staging table. Has no meaning when
+          `is_validate_only=True`: there is no staging table to load because
+          nothing is written.
+        - `is_validate_only` (`bool, default=False`):
+          If `True`, runs the validation pipeline and returns its verdict without
+          writing anything — a preview of what a real `update()` would classify.
         - `skip_db_fill` (`bool, default=False`):
           Deprecated and inert; scheduled for removal in 1.0. It used to skip a
           prefetch `SELECT` that back-filled the columns a frame omitted. There
@@ -405,6 +437,11 @@ class MindoffCRUDHandler:
           database-ready values.
         - `validation_level="none"`: skips all validation; upserts as-is and
           emits an unsafe-write warning.
+        - `is_validate_only=True`: a dry run at any `validation_level`. The
+          selected validation runs exactly as it would for a real update —
+          including the foreign-key existence queries at `"full"`, which are
+          reads — and then the upsert is skipped entirely. Nothing is written even
+          at `"none"` or `"columns_only"`, which otherwise write directly.
 
         Possible responses:
 
@@ -429,6 +466,17 @@ class MindoffCRUDHandler:
           error and the whole call rolls back — use `create()` for genuinely new
           rows, or supply the column.
         - Invalid rows include model-aware error details in error column.
+        - `is_validate_only=True` returns the same
+          `(status, valid_model_frms, invalid_model_frms)` shape as a real update,
+          so it is a drop-in preview of one. What it cannot report is anything the
+          merge itself would surface: the database is never contacted for the
+          write, so the PK-only no-op warning above, integrity errors from an
+          upsert-insert, unsupported-backend errors, and connection failures
+          appear only on the real call.
+        - `validation_level="none"` still emits its unsafe-write warning under
+          `is_validate_only=True`. Nothing is written, so the warning is not about
+          this call — it is the only signal that the preview checked nothing at
+          all, and therefore says nothing about the write it stands in for.
         - The staging merge loads the staging table with the same fast
           same-transaction bulk loader as `create()` (PostgreSQL `COPY`, MySQL
           `LOAD DATA LOCAL INFILE`, SQLite `executemany`) and then merges
@@ -462,7 +510,11 @@ class MindoffCRUDHandler:
                 "Proceed only if intentional."
             ),
         )
-        if status != "fail":
+        # A dry run stops here: the caller wants the classification, not the
+        # merge. ``CRUDProcessor`` is never constructed — building one opens a
+        # connection and mutates the process-wide engine cache, neither of which
+        # a preview has any business doing.
+        if status != "fail" and not is_validate_only:
             # Perform CRUD operation
             crud_processor = CRUDProcessor(valid_model_frms, using=target)
             _ = crud_processor.update(batch_size=batch_size)

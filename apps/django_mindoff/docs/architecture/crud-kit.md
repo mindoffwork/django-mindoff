@@ -82,6 +82,35 @@ After validation:
 
 When `validation_level="none"`, CRUD writes proceed directly and emit runtime warnings about unsafe persistence.
 
+### 6. Validate-Only (dry run)
+
+`create(...)` and `update(...)` accept `is_validate_only` (default `False`). When
+`True`, the pipeline above runs exactly as it would for a real write and returns
+the same `(status, valid_model_frms, invalid_model_frms)` triple — but the write
+is skipped, so the call is a drop-in preview of the one that would commit.
+
+- The skip is total and level-independent. `none` and `columns_only` normally
+  write directly; under `is_validate_only=True` neither does.
+- Validation is not stubbed. At `validation_level="full"` the foreign-key stage
+  still issues its real existence queries — they are reads, and a preview that
+  skipped them would report a verdict the write would not agree with.
+- `batch_size` has no meaning in this mode: nothing is batched because nothing
+  is written.
+- `CRUDProcessor` is never constructed, not merely never called. Building one
+  opens a connection and mutates the process-wide engine cache, so a preview
+  stops short of it.
+
+The consequence worth planning around: a dry run cannot surface what only the
+write can raise. Integrity errors, the PK-only no-op warning, unsupported-backend
+errors, and connection failures all originate in the write path, so a clean
+preview is a statement about validation only.
+
+The unsafe-write warning at `validation_level="none"` is deliberately still
+emitted under `is_validate_only=True`. Nothing is written, so it is not a warning
+about that call — but at that level nothing is validated either, so the preview's
+`ok` carries no information about the write it stands in for, and the warning is
+the only signal of that.
+
 ## Read Path Architecture
 
 `read(...)` is intentionally strict on input and flexible on output.
@@ -233,6 +262,10 @@ Both `create(...)` and `update(...)` accept `validation_level`
 | `full` (default) | `ColumnValidator → RowValidator → ForeignKeyValidator` + valid/invalid split; honors `is_partial`. | Untrusted/raw input. |
 | `columns_only` | `ColumnValidator` only — normalizes shape (rename to `db_column`, add missing/auto columns, drop extras), then writes. | Caller already validated rows/FKs upstream and supplies database-ready values. Lower overhead. |
 | `none` | No validation (not even column normalization); writes as-is and warns. | Trusted, already-shaped frames only. |
+
+Each level answers "how much is checked". `is_validate_only` answers the separate
+question "is anything written", and overrides every row in the table above — see
+[Validate-Only (dry run)](#6-validate-only-dry-run).
 
 `columns_only` deliberately skips the row pass, so field defaults,
 `auto_now`/`auto_now_add` timestamps, UUID generation, and type coercion are

@@ -2365,6 +2365,310 @@ class TestUpdatePartialColumns(MindoffTestCase):
 
 
 @pytest.mark.django_db(transaction=True)
+class TestValidateOnly(MindoffTestCase):
+    """`is_validate_only=True` classifies rows without writing any of them."""
+
+    def test_create_validate_only_splits_rows_without_writing(self):
+        """ACCEPTANCE: the dry run returns a real split and the table stays empty.
+
+        The split is compared against a real create of the same frames, so the
+        preview is proven to be the same verdict rather than merely a plausible
+        one.
+        """
+        df_dict = self.mo_mock_model_frms(
+            models=[self._author_model],
+            counts=[4],
+            modify=[{0: {"name": None}}],  # one row fails the required-name rule
+        )
+        frm = df_dict[self._author_model]
+
+        status, valid, invalid = mo_crud_kit.create(
+            {self._author_model: frm}, is_partial=True, is_validate_only=True
+        )
+
+        assert status == "partial_ok"
+        assert valid[self._author_model].height == 3
+        assert invalid[self._author_model].height == 1
+        # Re-query rather than trusting the return value: nothing was written.
+        assert self._author_model.objects.count() == 0
+
+        # The same frames through the real path agree on every count.
+        real_status, real_valid, real_invalid = mo_crud_kit.create(
+            {self._author_model: frm}, is_partial=True
+        )
+        assert real_status == status
+        assert real_valid[self._author_model].height == valid[self._author_model].height
+        assert (
+            real_invalid[self._author_model].height == invalid[self._author_model].height
+        )
+        assert self._author_model.objects.count() == 3
+
+    def test_update_validate_only_leaves_stored_rows_untouched(self):
+        """ACCEPTANCE: existing values survive and the upsert-insert never happens."""
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[3])
+        mo_crud_kit.create(df_dict)
+        before = dict(self._author_model.objects.values_list("id", "name"))
+        new_pk = _make_uuid()
+
+        frm = pl.concat(
+            [
+                df_dict[self._author_model]
+                .select("id", "name")
+                .with_columns(pl.lit("Previewed").alias("name")),
+                # A primary key that does not exist yet: a real update would
+                # insert it, so its absence afterwards is the proof.
+                pl.DataFrame({"id": [new_pk], "name": ["Would Be Inserted"]}),
+            ]
+        )
+
+        status, valid, invalid = mo_crud_kit.update(
+            {self._author_model: frm}, is_validate_only=True
+        )
+
+        assert status == "ok"
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+        assert valid[self._author_model].height == 4
+        assert dict(self._author_model.objects.values_list("id", "name")) == before
+        assert self._author_model.objects.count() == 3
+        assert not self._author_model.objects.filter(pk=new_pk).exists()
+
+    def test_validate_only_full_runs_the_real_foreign_key_query(self):
+        """CONTRACT: the FK pass is the real one, not stubbed out for a dry run.
+
+        `ForeignKeyValidator` rejects an unresolvable reference by raising rather
+        than by flagging the row, so the proof that the database was genuinely
+        queried is that the dry run fails exactly where a real create would — and
+        still writes nothing.
+        """
+        self._seed(1, 0)
+        dangling = pl.DataFrame(
+            {
+                "id": [_make_uuid()],
+                "title": ["Orphan"],
+                "pages": [10],
+                "author_ref_id": [_make_uuid()],  # no author with this id exists
+            }
+        )
+
+        with pytest.raises(Exception, match="couldn't resolve foreign key"):
+            mo_crud_kit.create(
+                {self._book_model: dangling},
+                validation_level="full",
+                is_validate_only=True,
+            )
+
+        assert self._book_model.objects.count() == 0
+
+    def test_validate_only_full_resolves_a_reference_that_does_exist(self):
+        """ACCEPTANCE: the same FK query passes a reference the database holds.
+
+        The pairing with the test above is the point: the FK stage returns both
+        verdicts on real data, so neither is an artifact of it being skipped.
+        """
+        seeded = self._seed(1, 0)
+        author_pk = seeded[self._author_model]["id"][0]
+        resolvable = pl.DataFrame(
+            {
+                "id": [_make_uuid()],
+                "title": ["Attributed"],
+                "pages": [10],
+                "author_ref_id": [author_pk],
+            }
+        )
+
+        status, valid, invalid = mo_crud_kit.create(
+            {self._book_model: resolvable},
+            validation_level="full",
+            is_validate_only=True,
+        )
+
+        assert status == "ok"
+        assert valid[self._book_model].height == 1
+        assert mo_polars_kit.is_model_frms_empty(invalid)
+        assert self._book_model.objects.count() == 0
+
+    @pytest.mark.parametrize("validation_level", ["full", "columns_only", "none"])
+    def test_validate_only_writes_nothing_at_every_validation_level(
+        self, validation_level
+    ):
+        """CONTRACT: no write at any level, including the two that write directly."""
+        import warnings as _warnings
+
+        seeded = self.mo_mock_model_frms(models=[self._author_model], counts=[3])
+        mo_crud_kit.create(seeded)
+        before = dict(self._author_model.objects.values_list("id", "name"))
+
+        fresh = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+        update_frm = seeded[self._author_model].with_columns(
+            pl.lit("Previewed").alias("name")
+        )
+
+        with _warnings.catch_warnings():
+            # The "none" level's unsafe-write warning is asserted separately.
+            _warnings.simplefilter("ignore", RuntimeWarning)
+            create_status, _, _ = mo_crud_kit.create(
+                {self._author_model: fresh[self._author_model]},
+                validation_level=validation_level,
+                is_validate_only=True,
+            )
+            update_status, _, _ = mo_crud_kit.update(
+                {self._author_model: update_frm},
+                validation_level=validation_level,
+                is_validate_only=True,
+            )
+
+        assert create_status == "ok"
+        assert update_status == "ok"
+        # No insert from create(), and no in-place edit from update().
+        assert self._author_model.objects.count() == 3
+        assert dict(self._author_model.objects.values_list("id", "name")) == before
+
+    def test_none_level_still_warns_under_validate_only(self):
+        """CONTRACT: the unsafe-write warning survives a dry run, deliberately.
+
+        Nothing is written, so the warning is not about this call. But at
+        `validation_level="none"` no validation runs either, so the preview's
+        "ok" says nothing about the write it stands in for — and this warning is
+        the only signal of that.
+        """
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+
+        with pytest.warns(RuntimeWarning, match="without validation"):
+            status, _, _ = mo_crud_kit.create(
+                {self._author_model: df_dict[self._author_model]},
+                validation_level="none",
+                is_validate_only=True,
+            )
+
+        assert status == "ok"
+        assert self._author_model.objects.count() == 0
+
+    def test_validate_only_never_builds_a_write_processor(self):
+        """CONTRACT: the processor is not constructed, not merely not called.
+
+        Constructing one opens a connection and mutates the process-wide engine
+        cache, so a preview must not reach `__init__` at all.
+        """
+        from ...components._crud_kit import crud_processor as cp
+
+        built = []
+        original_init = cp.CRUDProcessor.__init__
+
+        def _spy(processor, *args, **kwargs):
+            built.append(processor)
+            return original_init(processor, *args, **kwargs)
+
+        df_dict = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+        mo_crud_kit.create(df_dict)
+        update_frm = df_dict[self._author_model].select("id", "name")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(cp.CRUDProcessor, "__init__", _spy)
+            mo_crud_kit.create(
+                {self._author_model: self.mo_mock_model_frms(
+                    models=[self._author_model], counts=[2]
+                )[self._author_model]},
+                is_validate_only=True,
+            )
+            mo_crud_kit.update(
+                {self._author_model: update_frm}, is_validate_only=True
+            )
+            assert built == []
+
+            # Same spy, real call: proves the spy would have caught a build.
+            mo_crud_kit.update({self._author_model: update_frm})
+            assert len(built) == 1
+
+    def test_default_path_is_inert_and_silent(self):
+        """REGRESSION: `is_validate_only=False` writes exactly as before, silently.
+
+        Covers the omitted parameter and the explicit default. Drives Python's
+        `warnings` machinery directly, so it holds under pytest's
+        `-p no:warnings`.
+        """
+        import warnings as _warnings
+
+        omitted = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+        explicit = self.mo_mock_model_frms(models=[self._author_model], counts=[2])
+        update_frm = (
+            omitted[self._author_model]
+            .select("id", "name")
+            .with_columns(pl.lit("Written").alias("name"))
+        )
+
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            omitted_status, _, _ = mo_crud_kit.create(
+                {self._author_model: omitted[self._author_model]}
+            )
+            explicit_status, _, _ = mo_crud_kit.create(
+                {self._author_model: explicit[self._author_model]},
+                is_validate_only=False,
+            )
+            update_status, _, _ = mo_crud_kit.update(
+                {self._author_model: update_frm}, is_validate_only=False
+            )
+
+        assert (omitted_status, explicit_status, update_status) == ("ok", "ok", "ok")
+        assert self._author_model.objects.count() == 4
+        assert self._author_model.objects.filter(name="Written").count() == 2
+        assert [str(w.message) for w in caught] == []
+
+    def _seed(self, parent_count=3, child_count=2):
+        df_dict = self.mo_mock_model_frms(
+            models=[self._author_model, self._book_model],
+            counts=[parent_count, child_count],
+        )
+        status, valid, _ = mo_crud_kit.create(df_dict)
+        assert status == "ok"
+        return valid
+
+    @pytest.fixture(autouse=True, scope="class")
+    def _class_app(self, request):
+        app_name = f"app_{uuid.uuid4().hex[:12]}"
+        temp_dir = Path(tempfile.mkdtemp()).resolve()
+        override = _register_app(temp_dir, app_name)
+        author = _create_model(
+            app_name,
+            "AuthorModel",
+            "author",
+            [],
+            {
+                "name": models.CharField(max_length=50),
+                "nickname": models.CharField(max_length=50, blank=True, null=True),
+            },
+        )
+        book = _create_model(
+            app_name,
+            "BookModel",
+            "book",
+            [(app_name, "AuthorModel", "required")],
+            {
+                "title": models.CharField(max_length=100),
+                "pages": models.IntegerField(),
+            },
+        )
+        request.cls._author_model = author
+        request.cls._book_model = book
+        request.cls._app_name = app_name
+        request.cls._temp_dir = temp_dir
+        request.cls._override = override
+        request.addfinalizer(lambda: _unregister_app(app_name, temp_dir, override))
+
+    @pytest.fixture(autouse=True)
+    def _models(self):
+        with connection.schema_editor() as editor:
+            editor.create_model(self._author_model)
+            editor.create_model(self._book_model)
+        _validate_model(self._author_model)
+        _validate_model(self._book_model)
+        yield
+        with connection.schema_editor() as editor:
+            editor.delete_model(self._book_model)
+            editor.delete_model(self._author_model)
+
+
+@pytest.mark.django_db(transaction=True)
 class TestReadFastPathDtypes(MindoffTestCase):
     """Read fast path parity across temporal, decimal, boolean and JSON types."""
 
