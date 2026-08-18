@@ -1,6 +1,6 @@
 <h1>Release Notes</h1>
 
-## Recent Changes
+## v0.9.0
 
 ### Internal
 - ⬆️ Bump actions/setup-python from 6 to 7 ([#58](https://github.com/mindoffwork/django-mindoff/pull/58))
