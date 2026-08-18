@@ -587,16 +587,21 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
         result = validator.validate()
         assert self._book_model in result
 
-    def test_fk_resolved_against_in_dict_invalid_raises(self):
-        """REJECTION: Fk resolved against in dict invalid raises."""
+    def test_fk_unresolved_against_in_dict_flags_the_row(self):
+        """REJECTION: an unresolvable in-frame reference marks its row, not the batch.
+
+        The rest of the frame keeps its classification, which is the whole point
+        of flagging over raising — it is what lets `is_partial=True` write the
+        good rows while returning the bad one.
+        """
         author_id = _make_uuid()
-        bad_fk = _make_uuid()
         author_df = pl.DataFrame({"id": [author_id], "name": ["Alice"]})
+        good, bad = _make_uuid(), _make_uuid()
         book_df = pl.DataFrame(
             {
-                "id": [_make_uuid()],
-                "title": ["Book A"],
-                "author_ref_id": [bad_fk],  # bad FK
+                "id": [good, bad],
+                "title": ["Book A", "Book B"],
+                "author_ref_id": [author_id, _make_uuid()],  # second resolves to nothing
             }
         )
         validator = ForeignKeyValidator(
@@ -605,8 +610,13 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
                 self._book_model: book_df,
             }
         )
-        with pytest.raises(ValueError, match="couldn't resolve foreign key"):
-            validator.validate()
+
+        validated = validator.validate()[self._book_model]
+
+        assert mo_polars_kit.get_frm_height(validated) == 2  # nothing was dropped
+        errors = _fk_errors_by_id(validated)
+        assert errors[good] is None
+        assert _FK_ERROR_MSG in errors[bad]
 
     def test_fk_resolved_against_db_valid(self):
         """ACCEPTANCE: Fk resolved against db valid."""
@@ -624,19 +634,96 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
         result = validator.validate()
         assert self._book_model in result
 
-    def test_fk_resolved_against_db_missing_raises(self):
-        """REJECTION: Fk resolved against db missing raises."""
-        fake_id = _make_uuid()
+    def test_fk_unresolved_against_db_flags_the_row(self):
+        """REJECTION: same verdict when the database is the one judging."""
+        seeded = self._seed_authors(1)
+        good, bad = _make_uuid(), _make_uuid()
         book_df = pl.DataFrame(
             {
-                "id": [_make_uuid()],
-                "title": ["Ghost Book"],
-                "author_ref_id": [fake_id],
+                "id": [good, bad],
+                "title": ["Real Book", "Ghost Book"],
+                "author_ref_id": [seeded["id"][0], _make_uuid()],
             }
         )
         validator = ForeignKeyValidator({self._book_model: book_df})
-        with pytest.raises(ValueError, match="couldn't resolve foreign key"):
-            validator.validate()
+
+        validated = validator.validate()[self._book_model]
+
+        errors = _fk_errors_by_id(validated)
+        assert errors[good] is None
+        assert _FK_ERROR_MSG in errors[bad]
+
+    def test_fk_error_appends_to_an_error_the_row_already_carries(self):
+        """CONTRACT: the FK message joins existing text instead of replacing it.
+
+        Same append-don't-overwrite convention `RowValidator` uses, so the error
+        column reads as the full list of what is wrong with the row.
+        """
+        author_df = pl.DataFrame({"id": [_make_uuid()], "name": ["Alice"]})
+        book_id = _make_uuid()
+        book_df = pl.DataFrame(
+            {
+                "id": [book_id],
+                "title": ["Book"],
+                "author_ref_id": [_make_uuid()],
+                ERROR_COL: ["[BookModel.title] Invalid value ; "],
+            }
+        )
+
+        validated = ForeignKeyValidator(
+            {self._author_model: author_df, self._book_model: book_df}
+        ).validate()[self._book_model]
+
+        error = _fk_errors_by_id(validated)[book_id]
+        assert error.startswith("[BookModel.title] Invalid value ; ")  # kept verbatim
+        assert _FK_ERROR_MSG in error
+
+    def test_flagging_leaves_no_temporary_columns_behind(self):
+        """REGRESSION: join scaffolding never reaches the writer or the caller."""
+        author_df = pl.DataFrame({"id": [_make_uuid()], "name": ["Alice"]})
+        book_df = pl.DataFrame(
+            {"id": [_make_uuid()], "title": ["B"], "author_ref_id": [_make_uuid()]}
+        )
+
+        validated = ForeignKeyValidator(
+            {self._author_model: author_df, self._book_model: book_df}
+        ).validate()[self._book_model]
+
+        names = mo_polars_kit.resolve_schema(validated).names()
+        assert not [name for name in names if name.startswith("__fk_")]
+
+    def test_lazy_frame_is_not_collected_per_foreign_key(self, monkeypatch):
+        """REGRESSION: flagging adds plan nodes; it does not run the plan.
+
+        The anti-join this replaces ended in `get_frm_height`, which collects a
+        `LazyFrame` once per foreign-key column purely to ask "was anything
+        bad?" — pruned to one column for an in-memory frame, but a fresh read
+        each time for a scan-backed one. `is_frm_empty` still collects once per
+        frame for the emptiness check, so the budget is one collect per frame,
+        never one per FK column.
+        """
+        author_id = _make_uuid()
+        frms = {
+            self._author_model: pl.DataFrame(
+                {"id": [author_id], "name": ["Alice"]}
+            ).lazy(),
+            self._book_model: pl.DataFrame(
+                {"id": [_make_uuid()], "title": ["B"], "author_ref_id": [_make_uuid()]}
+            ).lazy(),
+        }
+        collects = []
+        original = pl.LazyFrame.collect
+
+        def _spy(self, *args, **kwargs):
+            collects.append(1)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(pl.LazyFrame, "collect", _spy)
+
+        validated = ForeignKeyValidator(frms).validate()
+
+        assert isinstance(validated[self._book_model], pl.LazyFrame)
+        assert len(collects) == 2  # one emptiness check per frame, nothing more
 
     def test_fk_all_nulls_skipped(self):
         """ACCEPTANCE: Fk all nulls skipped."""
@@ -676,6 +763,58 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
         result = validator.validate()
         assert self._book_model in result
 
+    @pytest.mark.parametrize("is_child_lazy", [True, False])
+    def test_flagging_works_across_the_eager_lazy_boundary(self, is_child_lazy):
+        """BOUNDARY: one frame lazy and the other eager still joins.
+
+        Polars refuses to join a `DataFrame` to a `LazyFrame`, and nothing stops
+        a caller from mixing the two in one `df_dict`, so both directions are
+        aligned before the join rather than left to raise.
+        """
+        author_id = _make_uuid()
+        good, bad = _make_uuid(), _make_uuid()
+        author_df = pl.DataFrame({"id": [author_id], "name": ["Alice"]})
+        book_df = pl.DataFrame(
+            {
+                "id": [good, bad],
+                "title": ["Book A", "Book B"],
+                "author_ref_id": [author_id, _make_uuid()],
+            }
+        )
+        if is_child_lazy:
+            book_df = book_df.lazy()  # lazy child, eager parent
+        else:
+            author_df = author_df.lazy()  # eager child, lazy parent
+
+        validated = ForeignKeyValidator(
+            {self._author_model: author_df, self._book_model: book_df}
+        ).validate()[self._book_model]
+
+        errors = _fk_errors_by_id(validated)
+        assert errors[good] is None
+        assert _FK_ERROR_MSG in errors[bad]
+
+    def test_lazy_frame_flagged_against_the_database(self):
+        """ACCEPTANCE: the database branch reads a lazy frame without eager input."""
+        seeded = self._seed_authors(1)
+        good, bad = _make_uuid(), _make_uuid()
+        book_df = pl.DataFrame(
+            {
+                "id": [good, bad],
+                "title": ["Real", "Ghost"],
+                "author_ref_id": [seeded["id"][0], _make_uuid()],
+            }
+        ).lazy()
+
+        validated = ForeignKeyValidator({self._book_model: book_df}).validate()[
+            self._book_model
+        ]
+
+        assert isinstance(validated, pl.LazyFrame)  # still lazy on the way out
+        errors = _fk_errors_by_id(validated)
+        assert errors[good] is None
+        assert _FK_ERROR_MSG in errors[bad]
+
     def test_empty_dataframe_skipped(self):
         """BOUNDARY: Empty dataframe skipped."""
         empty_df = pl.DataFrame(
@@ -705,9 +844,19 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
             [(app_name, "AuthorModel", "required")],
             {"title": models.CharField(max_length=100)},
         )
+        # A second model pointing at the same parent, so one call can exercise
+        # two lookups against one table.
+        review = _create_model(
+            app_name,
+            "ReviewModel",
+            "review",
+            [(app_name, "AuthorModel", "required")],
+            {"body": models.CharField(max_length=100)},
+        )
 
         request.cls._author_model = author
         request.cls._book_model = book
+        request.cls._review_model = review
         request.cls._app_name = app_name
         request.cls._temp_dir = temp_dir
         request.cls._override = override
@@ -718,10 +867,13 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
         with connection.schema_editor() as editor:
             editor.create_model(self._author_model)
             editor.create_model(self._book_model)
+            editor.create_model(self._review_model)
         _validate_model(self._author_model)
         _validate_model(self._book_model)
+        _validate_model(self._review_model)
         yield
         with connection.schema_editor() as editor:
+            editor.delete_model(self._review_model)
             editor.delete_model(self._book_model)
             editor.delete_model(self._author_model)
 
@@ -825,36 +977,77 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
             # All 12 references resolve even though the chunk size is 5.
             assert validated[self._book_model].height == 12
 
-            # And an unresolvable reference is still rejected under chunking.
-            bogus = _books_referencing(author_ids + [str(uuid.uuid4())])
-            with pytest.raises(Exception, match="couldn't resolve foreign key"):
-                ForeignKeyValidator({self._book_model: bogus}).validate()
+            # And an unresolvable reference is still flagged under chunking.
+            bogus_id = str(uuid.uuid4())
+            bogus = _books_referencing(author_ids + [bogus_id])
+            validated = ForeignKeyValidator({self._book_model: bogus}).validate()[
+                self._book_model
+            ]
 
-    def test_chunked_count_stops_at_the_first_short_chunk(self):
-        """ACCEPTANCE: a known-invalid FK skips the remaining round-trips."""
+            flagged = validated.filter(pl.col(ERROR_COL).is_not_null())
+            assert flagged.height == 1
+            assert flagged["author_ref_id"].to_list() == [bogus_id]
+
+    def test_chunked_lookup_scans_every_chunk(self):
+        """ACCEPTANCE: a reference missing from a *later* chunk is still found.
+
+        Counting could stop at the first short chunk, because one proven-missing
+        value was the whole verdict. Marking cannot: the rows behind every later
+        chunk still need judging, so the walk runs to the end and the boundary
+        between chunks must not hide anything.
+        """
+        authors = self._seed_authors(count=10)
+        author_ids = authors["id"].to_list()
+
+        # The only bad reference sits in the last chunk of six.
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=2):
+            bogus_id = str(uuid.uuid4())
+            books = _books_referencing(author_ids + [bogus_id])
+            validated = ForeignKeyValidator({self._book_model: books}).validate()[
+                self._book_model
+            ]
+
+        flagged = validated.filter(pl.col(ERROR_COL).is_not_null())
+        assert flagged.height == 1
+        assert flagged["author_ref_id"].to_list() == [bogus_id]
+        assert validated.height == 11  # the ten good rows came through clean
+
+    def test_chunked_lookup_holds_one_chunk_at_a_time(self):
+        """REGRESSION: the existing-key set never grows past a single chunk.
+
+        Collecting every existing value first and subtracting afterwards would
+        be the obvious way to learn which are missing, and would hold the whole
+        existing set in memory at once. This asserts the chunk-local shape that
+        replaces it.
+        """
         authors = self._seed_authors(count=10)
         author_ids = authors["id"].to_list()
 
         validator = ForeignKeyValidator({})
-        calls = []
+        batch_sizes = []
 
         class _FakeManager:
             db = "default"
 
             def filter(self, **kwargs):
-                values = next(iter(kwargs.values()))
-                calls.append(len(values))
+                batch_sizes.append(len(next(iter(kwargs.values()))))
                 return self
 
-            def count(self):
-                return 0  # nothing matches: the very first chunk is short
+            def values_list(self, *args, **kwargs):
+                return self
+
+            def iterator(self):
+                return iter(())  # nothing exists: every value comes back missing
 
         series = pl.Series("author_ref_id", author_ids)
         with override_settings(MO_CRUD_FK_CHUNK_SIZE=2):
-            total = validator._count_existing_fks(_FakeManager(), "id", series)
+            missing = validator._get_missing_fk_values(
+                _FakeManager(), "id", series, self._author_model
+            )
 
-        assert total == 0
-        assert len(calls) == 1  # stopped instead of walking all 5 chunks
+        assert sorted(missing.to_list()) == sorted(author_ids)
+        assert len(batch_sizes) == 5  # every chunk queried, none skipped
+        assert max(batch_sizes) == 2  # and never more than one chunk per query
 
     def test_over_sqlite_variable_limit_does_not_crash(self):
         """REGRESSION: a huge distinct FK set no longer blows SQLite's cap.
@@ -862,8 +1055,8 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
         `SQLITE_MAX_VARIABLE_NUMBER` is a hard wall — the single-statement
         version this replaces sent every distinct value at once, so a frame this
         wide died with "too many SQL variables" instead of reporting the
-        unresolved reference. The correct outcome is a validation failure, not a
-        database error, which is what the `match` here pins down.
+        unresolved references. The correct outcome is every row flagged, not a
+        database error.
 
         40k comfortably exceeds the cap on every build: 32766 on SQLite 3.32+,
         999 on older ones.
@@ -871,8 +1064,91 @@ class TestForeignKeyValidatorUnit(MindoffTestCase):
         many = [str(uuid.uuid4()) for _ in range(40_000)]
         books = _books_referencing(many)
 
-        with pytest.raises(Exception, match="couldn't resolve foreign key"):
-            ForeignKeyValidator({self._book_model: books}).validate()
+        validated = ForeignKeyValidator({self._book_model: books}).validate()[
+            self._book_model
+        ]
+
+        # None of the 40k references exist, so all 40k rows carry the error.
+        assert validated.filter(pl.col(ERROR_COL).is_not_null()).height == 40_000
+
+    def test_verified_keys_are_not_re_queried_within_one_call(self):
+        """ACCEPTANCE: a second FK into the same table reuses what the first proved.
+
+        Two models referencing `AuthorModel` used to ask the database about the
+        same author ids twice. The keys the first lookup resolved drop out of the
+        second `IN (...)`, so the round trip disappears entirely when the second
+        frame references no new authors.
+        """
+        authors = self._seed_authors(count=6)
+        author_ids = authors["id"].to_list()
+        books = _books_referencing(author_ids)
+        reviews = pl.DataFrame(
+            {
+                "id": [_make_uuid() for _ in author_ids],
+                "body": ["b"] * len(author_ids),
+                "author_ref_id": author_ids,  # the very same parents
+            }
+        )
+
+        with CaptureQueriesContext(connection) as ctx:
+            validated = ForeignKeyValidator(
+                {self._book_model: books, self._review_model: reviews}
+            ).validate()
+
+        # One lookup for the books; the reviews are answered from the memo.
+        assert len(ctx.captured_queries) == 1
+        for model in (self._book_model, self._review_model):
+            assert validated[model].filter(pl.col(ERROR_COL).is_not_null()).height == 0
+
+    def test_memo_still_catches_a_reference_the_first_lookup_never_saw(self):
+        """REJECTION: reuse must not turn into "assume valid" for unseen keys."""
+        authors = self._seed_authors(count=4)
+        author_ids = authors["id"].to_list()
+        books = _books_referencing(author_ids)
+        bogus_id = str(uuid.uuid4())
+        reviews = pl.DataFrame(
+            {
+                "id": [_make_uuid(), _make_uuid()],
+                "body": ["ok", "orphan"],
+                "author_ref_id": [author_ids[0], bogus_id],
+            }
+        )
+
+        validated = ForeignKeyValidator(
+            {self._book_model: books, self._review_model: reviews}
+        ).validate()
+
+        flagged = validated[self._review_model].filter(pl.col(ERROR_COL).is_not_null())
+        assert flagged["author_ref_id"].to_list() == [bogus_id]
+        assert (
+            validated[self._book_model]
+            .filter(pl.col(ERROR_COL).is_not_null())
+            .height
+            == 0
+        )
+
+    def test_memo_is_capped_so_it_cannot_rebuild_the_full_existing_set(self):
+        """REGRESSION: remembering everything would reintroduce the memory spike.
+
+        The point of chunked lookup is that the full set of existing keys is
+        never resident. An unbounded memo would rebuild exactly that set, so it
+        stops at one chunk and simply re-queries the rest.
+        """
+        authors = self._seed_authors(count=8)
+        author_ids = authors["id"].to_list()
+
+        validator = ForeignKeyValidator({})
+        with override_settings(MO_CRUD_FK_CHUNK_SIZE=3):
+            missing = validator._get_missing_fk_values(
+                self._author_model.objects,
+                "id",
+                pl.Series("author_ref_id", author_ids),
+                self._author_model,
+            )
+
+        assert missing.is_empty()  # every author exists
+        memo = validator._existing_memo[(self._author_model, "default")]
+        assert len(memo) == 3  # capped at one chunk, not all 8
 
     def test_distinct_fk_values_stay_a_series(self):
         """REGRESSION: the distinct set is not listed into Python objects."""
@@ -967,6 +1243,70 @@ class TestCrudKitIntegrationEdgeCases(MindoffTestCase):
         assert status == "ok"
         assert valid[self._author_model].shape[0] == 5
         assert valid[self._book_model].shape[0] == df_dict[self._book_model].shape[0]
+
+    def test_partial_create_writes_around_a_dangling_foreign_key(self):
+        """ACCEPTANCE: `is_partial=True` tolerates a bad FK like any other bad row.
+
+        Previously impossible: the FK pass raised before partial-mode logic ever
+        ran, so one dangling reference cost the whole batch. It is now an
+        ordinary invalid row — the good books are written and the bad one comes
+        back in `invalid_model_frms`.
+        """
+        df_dict = self.mo_mock_model_frms(
+            models=[self._author_model, self._book_model],
+            counts=[2, 3],
+        )
+        books = df_dict[self._book_model]
+        total_books = books.height
+        orphan_id = books["id"][0]
+        # Repoint one book at an author that does not exist anywhere.
+        df_dict[self._book_model] = books.with_columns(
+            pl.when(pl.col("id") == orphan_id)
+            .then(pl.lit(_make_uuid()))
+            .otherwise(pl.col("author_ref_id"))
+            .alias("author_ref_id")
+        )
+
+        status, valid, invalid = mo_crud_kit.create(df_dict, is_partial=True)
+
+        assert status == "partial_ok"
+        assert valid[self._book_model].height == total_books - 1
+        assert invalid[self._book_model].height == 1
+        assert _FK_ERROR_MSG in invalid[self._book_model][ERROR_COL].to_list()[0]
+        # The good rows really landed; the orphan really did not.
+        assert self._book_model.objects.count() == total_books - 1
+        assert not self._book_model.objects.filter(pk=orphan_id).exists()
+        # The splitter walks FK edges to keep the batch relationally consistent,
+        # and a dangling value has no parent row to invalidate — so both authors
+        # survive rather than one being dragged down with the orphan.
+        assert self._author_model.objects.count() == 2
+        assert valid[self._author_model].height == 2
+
+    def test_non_partial_create_writes_nothing_when_a_foreign_key_dangles(self):
+        """REJECTION: `is_partial=False` still refuses the batch, without raising.
+
+        Same net effect as the exception it replaces — nothing is written — but
+        reached through the ordinary invalid-row check, so the caller gets the
+        classification instead of a traceback.
+        """
+        df_dict = self.mo_mock_model_frms(
+            models=[self._author_model, self._book_model],
+            counts=[2, 3],
+        )
+        books = df_dict[self._book_model]
+        df_dict[self._book_model] = books.with_columns(
+            pl.when(pl.col("id") == books["id"][0])
+            .then(pl.lit(_make_uuid()))
+            .otherwise(pl.col("author_ref_id"))
+            .alias("author_ref_id")
+        )
+
+        status, _, invalid = mo_crud_kit.create(df_dict, is_partial=False)
+
+        assert status == "fail"
+        assert invalid[self._book_model].height == 1
+        assert self._book_model.objects.count() == 0
+        assert self._author_model.objects.count() == 0
 
     def test_read_batch_size_zero_defaults_streaming(self):
         """BOUNDARY: Read batch size zero defaults streaming."""
@@ -2435,10 +2775,9 @@ class TestValidateOnly(MindoffTestCase):
     def test_validate_only_full_runs_the_real_foreign_key_query(self):
         """CONTRACT: the FK pass is the real one, not stubbed out for a dry run.
 
-        `ForeignKeyValidator` rejects an unresolvable reference by raising rather
-        than by flagging the row, so the proof that the database was genuinely
-        queried is that the dry run fails exactly where a real create would — and
-        still writes nothing.
+        `ForeignKeyValidator` flags an unresolvable reference on the row, so the
+        proof that the database was genuinely queried is that the dry run returns
+        exactly the verdict a real create would — and still writes nothing.
         """
         self._seed(1, 0)
         dangling = pl.DataFrame(
@@ -2450,13 +2789,14 @@ class TestValidateOnly(MindoffTestCase):
             }
         )
 
-        with pytest.raises(Exception, match="couldn't resolve foreign key"):
-            mo_crud_kit.create(
-                {self._book_model: dangling},
-                validation_level="full",
-                is_validate_only=True,
-            )
+        status, _, invalid = mo_crud_kit.create(
+            {self._book_model: dangling},
+            validation_level="full",
+            is_validate_only=True,
+        )
 
+        assert status == "fail"
+        assert invalid[self._book_model].height == 1
         assert self._book_model.objects.count() == 0
 
     def test_validate_only_full_resolves_a_reference_that_does_exist(self):
@@ -3162,6 +3502,15 @@ def _convert_to_lazy_dict(df_dict: dict) -> dict:
 
 def _make_uuid() -> str:
     return uuid.uuid4().hex
+
+
+_FK_ERROR_MSG = "Couldn't resolve foreign key"
+
+
+def _fk_errors_by_id(frm) -> dict:
+    """Map each row's ``id`` to its error text, collecting a lazy frame first."""
+    frm = frm.collect() if isinstance(frm, pl.LazyFrame) else frm
+    return dict(zip(frm["id"].to_list(), frm[ERROR_COL].to_list()))
 
 
 def _books_referencing(author_ids) -> pl.DataFrame:
@@ -3886,20 +4235,23 @@ class TestForeignKeyChunkingPostgres(MindoffTestCase):
 
         assert validated[self._book_model].height == 12
 
-    def test_missing_reference_still_rejected_when_chunked(self, pg_tenant):
-        """REJECTION: a genuinely absent FK fails, judged by the database itself."""
+    def test_missing_reference_still_flagged_when_chunked(self, pg_tenant):
+        """REJECTION: a genuinely absent FK is flagged, judged by the database itself."""
         authors = self.mo_mock_model_frms(models=[self._author_model], counts=[9])
         assert mo_crud_kit.create(authors, using=pg_tenant.alias)[0] == "ok"
         author_ids = authors[self._author_model]["id"].to_list()
         target = resolve_db_target(pg_tenant.alias)
 
         # One reference that PostgreSQL's own foreign key would refuse.
-        bogus = _books_referencing(author_ids + [str(uuid.uuid4())])
+        bogus_id = str(uuid.uuid4())
+        bogus = _books_referencing(author_ids + [bogus_id])
         with override_settings(MO_CRUD_FK_CHUNK_SIZE=4):
-            with pytest.raises(Exception, match="couldn't resolve foreign key"):
-                ForeignKeyValidator(
-                    {self._book_model: bogus}, target=target
-                ).validate()
+            validated = ForeignKeyValidator(
+                {self._book_model: bogus}, target=target
+            ).validate()[self._book_model]
+
+        flagged = validated.filter(pl.col(ERROR_COL).is_not_null())
+        assert flagged["author_ref_id"].to_list() == [bogus_id]
 
     @pytest.fixture()
     def pg_tenant(self):

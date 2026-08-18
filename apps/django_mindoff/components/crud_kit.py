@@ -131,6 +131,10 @@ class MindoffCRUDHandler:
         Notes:
 
         - Invalid rows contain an error column (`POLARS_VALIDATOR_ERROR_COL` or `__error__info`).
+        - An unresolvable foreign key is an invalid row like any other: the row is
+          marked in the error column and returned in `invalid_model_frms`, so
+          `is_partial=True` writes the rest of the batch and `is_partial=False`
+          fails the call without writing. It does not raise.
         - `is_validate_only=True` returns the same
           `(status, valid_model_frms, invalid_model_frms)` shape as a real create,
           so it is a drop-in preview of one. What it cannot report is anything the
@@ -466,6 +470,10 @@ class MindoffCRUDHandler:
           error and the whole call rolls back — use `create()` for genuinely new
           rows, or supply the column.
         - Invalid rows include model-aware error details in error column.
+        - An unresolvable foreign key is an invalid row like any other: the row is
+          marked in the error column and returned in `invalid_model_frms`, so
+          `is_partial=True` merges the rest of the batch and `is_partial=False`
+          fails the call without writing. It does not raise.
         - `is_validate_only=True` returns the same
           `(status, valid_model_frms, invalid_model_frms)` shape as a real update,
           so it is a drop-in preview of one. What it cannot report is anything the

@@ -49,7 +49,20 @@ At a high level, write operations pass through one shared validation pipeline be
 
 - Uses in-memory related frames when related models are present in the same operation.
 - Falls back to database existence checks when related frames are absent.
-- Rejects unresolved FK references as validation failures.
+- Marks each row whose reference cannot be resolved in the error column, exactly
+  as `ColumnValidator` and `RowValidator` mark theirs, and appends to any error
+  the row already carries rather than replacing it. The pass never aborts the
+  batch: a dangling reference is one invalid row, so the rest of the frame keeps
+  its classification and `is_partial` decides the outcome — `True` writes the
+  good rows and returns the bad ones in `invalid_model_frms`, `False` fails the
+  operation without writing.
+- Flags rows against an in-memory related frame with a join, so keys stay inside
+  the engine and a `LazyFrame` takes the marking as plan nodes rather than being
+  collected once per FK column — which matters most for a scan-backed frame,
+  where each collect is a fresh read. Marking every row is more work than the
+  bare "is anything bad?" count it replaces (about +80 MB and +0.14 s per
+  million rows across four FK columns); that is the cost of knowing *which* rows
+  are bad.
 - Checks existence in bounded chunks rather than one `IN (...)` per column. The
   chunk size comes from the backend's own `max_query_params` where it reports
   one (SQLite's `SQLITE_MAX_VARIABLE_NUMBER`, 32766 by default — a hard error
@@ -59,9 +72,19 @@ At a high level, write operations pass through one shared validation pipeline be
   (default 10000). Unlike `MO_CRUD_ENGINE_CACHE_SIZE`, `0` is not an opt-out —
   an unbounded `IN (...)` is a hard failure rather than a memory trade-off, so a
   non-positive value falls back to the default.
+  Within a single call, keys already proven to exist are not asked about again,
+  so a second foreign key into the same table drops them from its `IN (...)` —
+  fewer round trips and fewer bytes on the wire. The memo is capped at one chunk
+  per related model: remembering every existing key would rebuild the very set
+  the chunking exists to avoid holding, so past the cap the remainder is simply
+  re-queried. It lives on the validator instance, which the pipeline builds
+  fresh per call, so a cached "exists" never outlives the read behind it.
   Distinct values are held as an Arrow-backed column and only one chunk at a
-  time becomes Python objects. Checking stops at the first chunk that comes up
-  short, since the reference is already known to be unresolvable.
+  time becomes Python objects. Every chunk is queried: marking a row needs the
+  values that are missing, not a count of them, so stopping at the first short
+  chunk would leave the later chunks' bad rows unflagged. Only the missing
+  values accumulate — the existing keys are consumed per chunk and dropped, so
+  the full existing set is never resident.
 
 ### 4. Relationship-Aware Invalid Propagation
 
@@ -93,7 +116,9 @@ is skipped, so the call is a drop-in preview of the one that would commit.
   write directly; under `is_validate_only=True` neither does.
 - Validation is not stubbed. At `validation_level="full"` the foreign-key stage
   still issues its real existence queries — they are reads, and a preview that
-  skipped them would report a verdict the write would not agree with.
+  skipped them would report a verdict the write would not agree with. An
+  unresolved reference comes back as an invalid row in the preview, the same way
+  it would from the real call.
 - `batch_size` has no meaning in this mode: nothing is batched because nothing
   is written.
 - `CRUDProcessor` is never constructed, not merely never called. Building one
