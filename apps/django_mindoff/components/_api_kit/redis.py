@@ -1,6 +1,8 @@
+import hashlib
 import logging
 import redis
 import json
+import secrets
 from django.conf import settings
 from django.utils import timezone
 
@@ -11,6 +13,7 @@ TTL_COMPLETED = 60 * 60 * 1  # 1h
 TTL_FAILED = 60 * 60 * 6  # 6h
 TTL_CANCELLED = 60 * 60 * 6  # 6h
 SSE_TTL = 60 * 60 * 1  # 1h
+STREAM_TICKET_TTL = 30  # seconds
 
 redis_client = redis.Redis.from_url(settings.REDIS_URL)
 
@@ -315,6 +318,72 @@ def release_sse_slot(user_id):
         redis_client.decr(key)
     except redis.RedisError as exc:
         logger.debug("Failed to release SSE slot for user %s: %s", user_id, exc)
+
+
+# ─────────────────────────────────────────────
+# SSE stream tickets
+# ─────────────────────────────────────────────
+
+
+def get_stream_ticket_ttl() -> int:
+    """Return the configured lifetime, in seconds, of an SSE stream ticket."""
+    raw = getattr(settings, "MINDOFF_QUEUE_STREAM_TICKET_TTL", STREAM_TICKET_TTL)
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return STREAM_TICKET_TTL
+
+
+def stream_ticket_key(ticket: str) -> str:
+    """Return the Redis key for a stream ticket.
+
+    Only the hash is stored, so a dump of Redis never yields a usable ticket.
+    """
+    digest = hashlib.sha256(str(ticket).encode("utf-8")).hexdigest()
+    return f"moq:sse-ticket:{digest}"
+
+
+def issue_stream_ticket(*, queue_task_uuid, user_ref_id) -> str:
+    """Issue a short-lived, single-use ticket bound to one queue task and user.
+
+    A browser ``EventSource`` cannot send an ``Authorization`` header, so the owner
+    exchanges its normal credentials for one of these and passes it in the query
+    string instead. Long-lived credentials never enter a URL this way.
+    """
+    ticket = secrets.token_urlsafe(32)
+    key = stream_ticket_key(ticket)
+    redis_client.hset(
+        key,
+        mapping={
+            "queue_task_uuid": str(queue_task_uuid),
+            "user_ref_id": "" if user_ref_id in (None, "") else str(user_ref_id),
+        },
+    )
+    redis_client.expire(key, get_stream_ticket_ttl())
+    return ticket
+
+
+def consume_stream_ticket(ticket: str, *, queue_task_uuid) -> tuple[bool, str | None]:
+    """Redeem a stream ticket, returning ``(is_valid, bound_user_ref_id)``.
+
+    The ticket is deleted on every lookup — including a task mismatch — so it can
+    never be replayed. ``(True, None)`` means a valid ticket for an ownerless task.
+    """
+    if not ticket:
+        return False, None
+    key = stream_ticket_key(ticket)
+    try:
+        data = redis_client.hgetall(key)
+        redis_client.delete(key)
+    except redis.RedisError as exc:
+        logger.debug("Failed to consume SSE stream ticket: %s", exc)
+        return False, None
+    if not data:
+        return False, None
+    decoded = {k.decode(): v.decode() for k, v in data.items()}
+    if decoded.get("queue_task_uuid") != str(queue_task_uuid):
+        return False, None
+    return True, decoded.get("user_ref_id") or None
 
 
 # ─────────────────────────────────────────────

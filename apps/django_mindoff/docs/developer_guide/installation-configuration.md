@@ -79,6 +79,19 @@ Then load it in `config/settings.py` (if not already configured):
 REDIS_URL = config("REDIS_URL", default=None)
 ```
 
+The queue endpoints are secured out of the box and need no configuration. Two optional
+settings tune them (see [Queue Mode API](queued-api-processing.md#3-authentication-and-ownership)):
+
+```python
+# Authenticators for queue/list/. Defaults to DRF's DEFAULT_AUTHENTICATION_CLASSES.
+MINDOFF_QUEUE_LIST_AUTHENTICATION_CLASSES = [
+    "rest_framework.authentication.TokenAuthentication",
+]
+
+# Lifetime, in seconds, of a single-use SSE stream ticket. Default: 30.
+MINDOFF_QUEUE_STREAM_TICKET_TTL = 30
+```
+
 ### 4. Run Virtual Environment
 
 Before running migrations or starting the server, activate the project's virtual environment.

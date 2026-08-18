@@ -3,15 +3,19 @@ import time
 import gzip
 import base64
 
+from django.contrib.auth import get_user_model
 from django.http import StreamingHttpResponse
 from django.urls import reverse
 from django.conf import settings
 from django.core.paginator import EmptyPage, Paginator
 from django.db import models
+from django.utils.module_loading import import_string
 from typing import Literal
 
+from rest_framework.authentication import BaseAuthentication
 from rest_framework.response import Response
 from rest_framework.renderers import BaseRenderer
+from rest_framework.settings import api_settings
 
 from .models import MOQueue
 from .components._api_kit.redis import (
@@ -19,6 +23,9 @@ from .components._api_kit.redis import (
     sse_event,
     acquire_sse_slot,
     release_sse_slot,
+    consume_stream_ticket,
+    get_stream_ticket_ttl,
+    issue_stream_ticket,
 )
 from .components._api_kit.queue_process import (
     rehydrate_queue_state,
@@ -34,6 +41,7 @@ from .components.response_kit import mo_response_kit
 access_denied_message = "User not allowed to access this queue task"
 rate_limit_exceeded_message = "Rate limit exceeded. Please try again later."
 api_request_limit_120 = "120/m"
+stream_ticket_param = "ticket"
 
 
 class SSEEventStreamRenderer(BaseRenderer):
@@ -46,7 +54,65 @@ class SSEEventStreamRenderer(BaseRenderer):
         return data
 
 
-class MindoffQueueDetailView(MindoffAPIMixin):
+class _QueueStreamTicketAuthentication(BaseAuthentication):
+    """Authenticate an SSE stream request with a single-use ticket query parameter.
+
+    A browser ``EventSource`` cannot send an ``Authorization`` header, so the task
+    owner exchanges its normal credentials for a short-lived ticket at
+    ``mo_queue_stream_ticket`` and passes it as ``?ticket=``. Returning ``None``
+    falls through to the regular authenticators, so cookie-based consumers and
+    ownerless tasks are unaffected.
+    """
+
+    def authenticate(self, request):
+        ticket = request.query_params.get(stream_ticket_param)
+        if not ticket:
+            return None
+        kwargs = (request.parser_context or {}).get("kwargs") or {}
+        queue_task_uuid = kwargs.get("queue_task_uuid")
+        if not queue_task_uuid:
+            return None
+        is_valid, user_ref_id = consume_stream_ticket(
+            ticket, queue_task_uuid=queue_task_uuid
+        )
+        if not is_valid or not user_ref_id:
+            return None
+        user = get_user_model().objects.filter(pk=user_ref_id).first()
+        if user is None:
+            return None
+        return (user, None)
+
+
+class _MindoffQueueTaskView(MindoffAPIMixin):
+    """Base view for queue endpoints addressed by ``queue_task_uuid``.
+
+    These are generic endpoints serving tasks created by any app's queue-mode API,
+    and the framework cannot know which authentication scheme a consumer uses. So
+    each request borrows the scheme of the API that created the task, resolved the
+    same way ``_apply_rate_limit`` resolves that API's rate limits.
+    """
+
+    def get_authenticators(self):
+        # DRF sets ``self.kwargs`` before ``initialize_request()`` calls this, and
+        # this runs before ``initial()`` performs authentication — so the URL kwarg
+        # is available here, which no later hook can offer.
+        return [cls() for cls in self._resolve_authentication_classes()]
+
+    def _resolve_authentication_classes(self) -> list:
+        queue_task_uuid = (getattr(self, "kwargs", None) or {}).get("queue_task_uuid")
+        api_url_name = _origin_api_url_name(queue_task_uuid)
+        if api_url_name is None:
+            # No such task — ``run()`` returns QUEUE_TASK_NOT_FOUND either way.
+            return list(self.authentication_classes)
+        classes = _origin_authentication_classes(api_url_name)
+        if classes is None:
+            # Originating API was renamed or removed: fail closed on the project
+            # default rather than granting anonymous access to an owned task.
+            return list(api_settings.DEFAULT_AUTHENTICATION_CLASSES)
+        return classes
+
+
+class MindoffQueueDetailView(_MindoffQueueTaskView):
     api_url_name: str = "mo_queue_detail"
     api_name: str = "Mindoff Queue Detail"
     api_description: str = "Retrieve the result (or current status) of a queue task"
@@ -72,8 +138,8 @@ class MindoffQueueDetailView(MindoffAPIMixin):
         return self._response_for_status(obj, queue_task_uuid)
 
     def _apply_rate_limit(self, request, obj, queue_task_uuid):
-        api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
-        if not _is_queue_mode_api(api):
+        api = _origin_queue_api(obj)
+        if api is None:
             return
         limit = getattr(api, "queue_detail_api_limit", None)
         if not limit:
@@ -188,6 +254,11 @@ class MindoffQueueListView(MindoffAPIMixin):
     """
     GET queue/list/
 
+    Results are scoped to the caller: staff see every task, an authenticated user
+    sees their own, and an anonymous caller sees only the ownerless tasks queued by
+    their own session. The query params below filter within that scope and can
+    never widen it.
+
     Query params (all optional, combinable):
       ?id=<uuid>
       ?job_status=<status>
@@ -207,6 +278,11 @@ class MindoffQueueListView(MindoffAPIMixin):
     process_mode: Literal["direct", "queue"] = "direct"
     api_request_limit: str | None = None
 
+    def get_authenticators(self):
+        # This endpoint carries no ``queue_task_uuid``, so there is no originating
+        # API to borrow a scheme from — it is configured at project level instead.
+        return [cls() for cls in _queue_list_authentication_classes()]
+
     def _initial_validate_api_rate_limit(self, request):
         self.api_request_limit = getattr(
             settings, "MINDOFF_QUEUE_LIST_API_REQUEST_LIMIT", api_request_limit_120
@@ -214,7 +290,9 @@ class MindoffQueueListView(MindoffAPIMixin):
         super()._initial_validate_api_rate_limit(request)
 
     def run(self, request):
-        qs = MOQueue.objects.all().order_by("-created_at")
+        qs = _scope_queue_queryset(MOQueue.objects.all(), request).order_by(
+            "-created_at"
+        )
 
         # ── Filters ──────────────────────────────────────────────────────────
         task_id = request.GET.get("id")
@@ -275,7 +353,7 @@ class MindoffQueueListView(MindoffAPIMixin):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class MindoffQueueStatusStreamView(MindoffAPIMixin):
+class MindoffQueueStatusStreamView(_MindoffQueueTaskView):
     api_url_name: str = "mo_queue_status_stream"
     api_name: str = "Mindoff Queue Status Stream"
     api_description: str = "Real-time queue task status via Server-Sent Events"
@@ -285,6 +363,9 @@ class MindoffQueueStatusStreamView(MindoffAPIMixin):
     process_mode: Literal["direct", "queue"] = "direct"
     api_request_limit: str | None = "60/m"
     renderer_classes = [SSEEventStreamRenderer]
+
+    def get_authenticators(self):
+        return [_QueueStreamTicketAuthentication()] + super().get_authenticators()
 
     def run(self, request, queue_task_uuid):
         try:
@@ -308,8 +389,8 @@ class MindoffQueueStatusStreamView(MindoffAPIMixin):
         return response
 
     def _acquire_sse_limit(self, obj):
-        api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
-        if not _is_queue_mode_api(api):
+        api = _origin_queue_api(obj)
+        if api is None:
             return
         max_streams = getattr(api, "queue_status_stream_api_limit", None)
         if max_streams is None:
@@ -372,7 +453,7 @@ class MindoffQueueStatusStreamView(MindoffAPIMixin):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class MindoffQueueCancelView(MindoffAPIMixin):
+class MindoffQueueCancelView(_MindoffQueueTaskView):
     api_url_name: str = "mo_queue_cancel"
     api_name: str = "Mindoff Queue Cancel"
     api_description: str = "Cancel a running or queued task"
@@ -416,8 +497,8 @@ class MindoffQueueCancelView(MindoffAPIMixin):
         )
 
     def _apply_cancel_rate_limit(self, request, obj, queue_task_uuid):
-        api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
-        if not _is_queue_mode_api(api):
+        api = _origin_queue_api(obj)
+        if api is None:
             return
         limit = getattr(api, "queue_cancel_api_limit", None)
         if not limit:
@@ -441,7 +522,7 @@ class MindoffQueueCancelView(MindoffAPIMixin):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class MindoffQueueRetryView(MindoffAPIMixin):
+class MindoffQueueRetryView(_MindoffQueueTaskView):
     api_url_name: str = "mo_queue_retry"
     api_name: str = "Mindoff Queue Retry"
     api_description: str = "Retry a previously failed queue task"
@@ -472,6 +553,9 @@ class MindoffQueueRetryView(MindoffAPIMixin):
             status_stream_url = request.build_absolute_uri(
                 reverse("mo_queue_status_stream", args=[queue_task_uuid])
             )
+            stream_ticket_url = request.build_absolute_uri(
+                reverse("mo_queue_stream_ticket", args=[queue_task_uuid])
+            )
             cancel_url = request.build_absolute_uri(
                 reverse("mo_queue_cancel", args=[queue_task_uuid])
             )
@@ -485,6 +569,7 @@ class MindoffQueueRetryView(MindoffAPIMixin):
                     "queue_id": str(queue_task_uuid),
                     "response_url": response_url,
                     "status_stream_url": status_stream_url,
+                    "stream_ticket_url": stream_ticket_url,
                     "cancel_url": cancel_url,
                     "retry_url": retry_url,
                 },
@@ -500,8 +585,8 @@ class MindoffQueueRetryView(MindoffAPIMixin):
         )
 
     def _apply_retry_rate_limit(self, request, obj, queue_task_uuid):
-        api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
-        if not _is_queue_mode_api(api):
+        api = _origin_queue_api(obj)
+        if api is None:
             return
         limit = getattr(api, "queue_retry_api_limit", None)
         if not limit:
@@ -517,6 +602,62 @@ class MindoffQueueRetryView(MindoffAPIMixin):
             limited,
             msg=rate_limit_exceeded_message,
             code="API_RATE_LIMITED",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Queue stream ticket  POST queue/<job_uuid>/stream-ticket/
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class MindoffQueueStreamTicketView(_MindoffQueueTaskView):
+    """Exchange normal credentials for a short-lived SSE stream ticket.
+
+    Browsers cannot attach an ``Authorization`` header to an ``EventSource``
+    request. Rather than accept a long-lived token in the query string — which
+    RFC 6750 discourages and which leaks into access logs, ``Referer`` headers and
+    browser history — the owner calls this endpoint with its usual credentials and
+    receives a ticket that is single-use, expires in seconds, and is bound to this
+    one task and user.
+    """
+
+    api_url_name: str = "mo_queue_stream_ticket"
+    api_name: str = "Mindoff Queue Stream Ticket"
+    api_description: str = "Issue a short-lived ticket to authenticate an SSE stream"
+    authentication_classes: list = []
+    permission_classes: list = []
+    method: Literal["get", "post", "put", "delete"] = "post"
+    process_mode: Literal["direct", "queue"] = "direct"
+    api_request_limit: str | None = "60/m"
+
+    def run(self, request, queue_task_uuid):
+        try:
+            obj = MOQueue.objects.get(id=queue_task_uuid)
+        except MOQueue.DoesNotExist:
+            return mo_response_kit.json_response(
+                code="QUEUE_TASK_NOT_FOUND",
+                category="warning",
+                data={"queue_task_uuid": str(queue_task_uuid)},
+            )
+
+        _check_ownership(request, obj)
+
+        ticket = issue_stream_ticket(
+            queue_task_uuid=str(queue_task_uuid),
+            user_ref_id=obj.user_ref_id,
+        )
+        stream_url = request.build_absolute_uri(
+            reverse("mo_queue_status_stream", args=[queue_task_uuid])
+        )
+        return mo_response_kit.json_response(
+            code="SUCCESS",
+            category="success",
+            data={
+                "queue_id": str(queue_task_uuid),
+                "ticket": ticket,
+                "expires_in": get_stream_ticket_ttl(),
+                "status_stream_url": f"{stream_url}?{stream_ticket_param}={ticket}",
+            },
         )
 
 
@@ -538,6 +679,87 @@ def _get_live_progress(queue_task_uuid: str) -> dict:
         "current_step": str(raw.get("current_step", "")),
         "current_message": str(raw.get("current_message", "")),
     }
+
+
+def _origin_queue_api(obj: MOQueue):
+    """Return the queue-mode API instance that created a task, or ``None``.
+
+    ``None`` covers a direct-mode API and — just as importantly — an
+    ``api_url_name`` that no longer resolves. A task can outlive the API that
+    created it, and that must not turn every read of it into a 500; the endpoint's
+    own ``api_request_limit`` still applies in that case.
+    """
+    try:
+        api = get_api_class_from_url_name(api_url_name=obj.api_url_name)()
+    except Exception:
+        return None
+    return api if _is_queue_mode_api(api) else None
+
+
+def _origin_api_url_name(queue_task_uuid) -> str | None:
+    """Return the ``api_url_name`` of the API that created a queue task, or ``None``.
+
+    Deliberately a separate lightweight query rather than a row cached for ``run()``:
+    caching would hide a worker status transition happening between the two reads.
+    """
+    if not queue_task_uuid:
+        return None
+    try:
+        return (
+            MOQueue.objects.filter(id=queue_task_uuid)
+            .values_list("api_url_name", flat=True)
+            .first()
+        )
+    except Exception:
+        return None
+
+
+def _origin_authentication_classes(api_url_name: str) -> list | None:
+    """Return the originating API's authentication classes, or ``None`` if unresolvable.
+
+    An API that declares none returns ``[]`` — a public API whose queue endpoints
+    stay public — which is not the same as an API that cannot be resolved at all.
+    Never raises: this runs inside ``initialize_request()``, outside DRF's own
+    exception handling.
+    """
+    try:
+        api_cls = get_api_class_from_url_name(api_url_name=api_url_name)
+        classes = getattr(api_cls, "authentication_classes", None)
+    except Exception:
+        return None
+    if not isinstance(classes, (list, tuple)):
+        return None
+    return [cls for cls in classes if callable(cls)]
+
+
+def _queue_list_authentication_classes() -> list:
+    """Resolve authenticators for the queue list endpoint from project settings."""
+    configured = getattr(settings, "MINDOFF_QUEUE_LIST_AUTHENTICATION_CLASSES", None)
+    if configured is None:
+        return list(api_settings.DEFAULT_AUTHENTICATION_CLASSES)
+    resolved = []
+    for entry in configured:
+        if isinstance(entry, str):
+            try:
+                entry = import_string(entry)
+            except ImportError:
+                continue
+        if callable(entry):
+            resolved.append(entry)
+    return resolved
+
+
+def _scope_queue_queryset(qs, request):
+    """Restrict a queue queryset to the tasks the caller is entitled to see."""
+    user = getattr(request, "user", None)
+    if getattr(user, "is_authenticated", False):
+        if getattr(user, "is_staff", False) or getattr(user, "is_superuser", False):
+            return qs
+        return qs.filter(user_ref_id=user.id)
+    session_key = getattr(getattr(request, "session", None), "session_key", None)
+    if not session_key:
+        return qs.none()
+    return qs.filter(owner_id=str(session_key), user_ref__isnull=True)
 
 
 def _check_ownership(request, obj: MOQueue) -> None:

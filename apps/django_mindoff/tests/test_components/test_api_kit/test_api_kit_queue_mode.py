@@ -75,6 +75,12 @@ class _InMemoryRedis:
         data = self.hashes.get(key, {})
         return {str(k).encode("utf-8"): str(v).encode("utf-8") for k, v in data.items()}
 
+    def delete(self, key):
+        self.hashes.pop(key, None)
+        self.counters.pop(key, None)
+        self.ttls.pop(key, None)
+        return True
+
     def expire(self, key, ttl):
         self.ttls[key] = ttl
         return True
@@ -1603,6 +1609,11 @@ class TestQueueDetailView(MindoffTestCase):
 
 @pytest.mark.django_db(transaction=True)
 class TestQueueListView(MindoffTestCase):
+    """Filtering, pagination and serialization of the queue list endpoint.
+
+    Calls are made as staff, the only role that sees an unscoped list; the
+    per-caller scoping itself is covered by ``TestQueueListScoping``.
+    """
 
     @pytest.fixture(autouse=True)
     def shared_app(self, _api_templates):
@@ -1610,6 +1621,10 @@ class TestQueueListView(MindoffTestCase):
         self._app = app_name
         self._dir = temp_dir_path
         self._tmpl = _api_templates
+        password = uuid.uuid4().hex
+        username = f"list_staff_{uuid.uuid4().hex[:6]}"
+        User.objects.create_user(username=username, password=password, is_staff=True)
+        self.client.login(username=username, password=password)
 
     def test_returns_all_tasks_unfiltered(self):
         """ACCEPTANCE: Validates returns all tasks unfiltered."""

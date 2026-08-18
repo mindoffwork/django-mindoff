@@ -112,6 +112,7 @@ When an API runs in queue mode, the initial response is a queued acknowledgment:
 		"queue_id": "<uuid>",
 		"response_url": "<absolute-url>",
 		"status_stream_url": "<absolute-url>",
+		"stream_ticket_url": "<absolute-url>",
 		"cancel_url": "<absolute-url>",
 		"retry_url": "<absolute-url>",
 		"progress_steps": {}
@@ -120,6 +121,8 @@ When an API runs in queue mode, the initial response is a queued acknowledgment:
 ```
 
 Use `response_url` to fetch the final result, or `status_stream_url` for live progress updates.
+`stream_ticket_url` authenticates that stream from a browser (see
+[Authentication and Ownership](#3-authentication-and-ownership)).
 `progress_steps` is echoed back so clients can display expected checkpoints.
 
 ### 2. Built-in APIs to Manage Queue
@@ -131,6 +134,7 @@ Once a task is queued, use these endpoints to retrieve results, monitor status, 
 | `queue/<uuid:queue_task_uuid>/`        | `GET`  | Retrieve the result (or current status) of a queue task. | Returns final response when completed.       |
 | `queue/list/`                          | `GET`  | List queue tasks with optional filtering.                | Query params below.                          |
 | `queue/<uuid:queue_task_uuid>/stream/` | `GET`  | Real-time queue task status via SSE.                     | `text/event-stream`.                         |
+| `queue/<uuid:queue_task_uuid>/stream-ticket/` | `POST` | Issue a ticket that authenticates an SSE stream. | Single-use, expires in seconds.       |
 | `queue/<uuid:queue_task_uuid>/cancel/` | `POST` | Cancel a running or queued task.                         | Returns cancel requested or not cancellable. |
 | `queue/<uuid:queue_task_uuid>/retry/`  | `POST` | Retry a previously failed queue task.                    | Returns new queued response.                 |
 
@@ -144,7 +148,64 @@ Queue list query params (all optional, combinable):
 - `page`
 - `page_size`
 
-### 3. MOQueue Model and Task Persistence
+Results are scoped to the caller, and these params filter within that scope — they
+can never widen it. See [Authentication and Ownership](#3-authentication-and-ownership).
+
+### 3. Authentication and Ownership
+
+These endpoints are generic: they serve tasks created by any queue-mode API, each of
+which may use a different authentication scheme. So a request to a task endpoint is
+authenticated with the `authentication_classes` of the API that created that task,
+resolved from the task's `api_url_name`. Nothing extra to configure — an API behind
+`JWTAuthentication` gets queue endpoints behind `JWTAuthentication`.
+
+A task is then readable only by the user who queued it:
+
+- **Task has an owner** — only that user may read, stream, cancel, or retry it.
+  Everyone else receives `PERMISSION_DENIED`.
+- **Task has no owner** — queued anonymously, because the originating API allows
+  anonymous access. It stays anonymously reachable by `queue_task_uuid`.
+- **Originating API no longer exists** — renamed or removed since the task was
+  queued. Authentication falls back to DRF's `DEFAULT_AUTHENTICATION_CLASSES`, so an
+  authenticated owner still gets through and an anonymous caller does not.
+
+`queue/list/` carries no task id and so has no originating API to borrow from. It
+uses `MINDOFF_QUEUE_LIST_AUTHENTICATION_CLASSES` when set and DRF's
+`DEFAULT_AUTHENTICATION_CLASSES` otherwise, and scopes its results: staff see every
+task, an authenticated user sees their own, and an anonymous caller sees only the
+ownerless tasks queued by their own session.
+
+#### Streaming from a Browser
+
+A browser `EventSource` cannot set an `Authorization` header. If your APIs
+authenticate by cookie (`SessionAuthentication`), the stream needs nothing special —
+the cookie is sent automatically.
+
+For token-based clients, exchange the token for a stream ticket instead of putting it
+in the URL. The ticket is single-use, expires in seconds, and is bound to one task
+and one user, so it does not matter that URLs end up in access logs and browser
+history — which is exactly why a long-lived token must never be placed there
+(RFC 6750 §2.3).
+
+```js
+const res = await fetch(`/mindoff/queue/${queueId}/stream-ticket/`, {
+	method: "POST",
+	headers: { Authorization: `Bearer ${accessToken}` },
+});
+const { data } = await res.json();
+
+// data.status_stream_url already carries the ticket
+const events = new EventSource(data.status_stream_url);
+events.onmessage = (e) => console.log(JSON.parse(e.data));
+```
+
+The ticket lifetime defaults to 30 seconds and is set with
+`MINDOFF_QUEUE_STREAM_TICKET_TTL`. Request a ticket immediately before opening the
+stream, and request a fresh one to reconnect. If the originating API uses
+`SessionAuthentication`, this `POST` needs a CSRF token like any other session
+authenticated `POST`.
+
+### 4. MOQueue Model and Task Persistence
 
 Queue tasks are persisted in the `MOQueue` model. This provides durable storage for:
 
