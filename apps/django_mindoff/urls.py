@@ -3,6 +3,7 @@ from .views import (
     MindoffQueueDetailView,
     MindoffQueueListView,
     MindoffQueueStatusStreamView,
+    MindoffQueueStreamTicketView,
     MindoffQueueCancelView,
     MindoffQueueRetryView,
 )
@@ -26,6 +27,13 @@ urlpatterns = [
         "queue/<uuid:queue_task_uuid>/stream/",
         MindoffQueueStatusStreamView.as_view(),
         name="mo_queue_status_stream",
+    ),
+    # ── SSE stream ticket ───────────────────────────────────────────────────
+    # Browsers cannot set an Authorization header on an EventSource request.
+    path(
+        "queue/<uuid:queue_task_uuid>/stream-ticket/",
+        MindoffQueueStreamTicketView.as_view(),
+        name="mo_queue_stream_ticket",
     ),
     # ── Cancel ──────────────────────────────────────────────────────────────
     path(

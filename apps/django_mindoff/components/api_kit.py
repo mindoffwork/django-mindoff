@@ -539,6 +539,9 @@ class MindoffAPIMixin(APIView):
             status_stream_url = request.build_absolute_uri(
                 reverse("mo_queue_status_stream", args=[queue_id])
             )
+            stream_ticket_url = request.build_absolute_uri(
+                reverse("mo_queue_stream_ticket", args=[queue_id])
+            )
             cancel_url = request.build_absolute_uri(
                 reverse("mo_queue_cancel", args=[queue_id])
             )
@@ -552,6 +555,7 @@ class MindoffAPIMixin(APIView):
                     "queue_id": queue_id,
                     "response_url": response_url,
                     "status_stream_url": status_stream_url,
+                    "stream_ticket_url": stream_ticket_url,
                     "cancel_url": cancel_url,
                     "retry_url": retry_url,
                     "progress_steps": (self._get_progress_steps_config()) or {},
