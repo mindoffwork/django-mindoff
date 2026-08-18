@@ -129,6 +129,12 @@ What this gives you:
 - Constraint checks (required/nullability, choices, min/max, length, FK consistency).
 - Structured invalid-row capture in the configured error column (`POLARS_VALIDATOR_ERROR_COL`, default `__error__info`).
 
+An unresolvable foreign key is captured the same way as any other bad value —
+the row is marked in the error column and returned in `invalid_model_frms`
+rather than raising. One dangling reference therefore no longer costs the whole
+batch: with `is_partial=True` the remaining rows are written, and with
+`is_partial=False` the call fails without writing anything.
+
 <div class="admonition warning">
 <p class="admonition-title">Validate before write</p>
 <p><code>mo_crud_kit</code> is built for validated tabular data. If you choose to skip the inbuilt validation + serialization, cover request-level validation in API code before sending it to CRUD Kit.</p>
