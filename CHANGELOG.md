@@ -7,6 +7,7 @@
 - ⬆️ Update pyarrow requirement from <25.0.0,>=17.0.0 to >=17.0.0,<26.0.0 ([#54](https://github.com/mindoffwork/django-mindoff/pull/54))
 
 ### Fixes
+- 🐛 Classify unresolved foreign keys per row instead of raising ([#68](https://github.com/mindoffwork/django-mindoff/pull/68))
 - 🐛 Dispose evicted CRUD engines outside the cache lock ([#64](https://github.com/mindoffwork/django-mindoff/pull/64))
 - 🐛 Chunk foreign-key existence checks under the backend parameter ([#63](https://github.com/mindoffwork/django-mindoff/pull/63))
 - 🐛 Fix Update batch-size limit for missing-column back-fill ([#62](https://github.com/mindoffwork/django-mindoff/pull/62))
