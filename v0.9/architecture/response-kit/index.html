@@ -1,0 +1,2160 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Fast, structured, and scalable API development with django-mindoff">
+      
+      
+      
+        <link rel="canonical" href="https://django-mindoff.mindoff.work/v0.9/architecture/response-kit/">
+      
+      
+        <link rel="prev" href="../api-kit/">
+      
+      
+        <link rel="next" href="../validation-kit/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../_assets/django_mindoff_logo_filled_bg.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Response Kit - Django Mindoff</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Ubuntu:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Ubuntu";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../_assets/stylesheets/style.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#response-kit" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Django Mindoff" class="md-header__button md-logo" aria-label="Django Mindoff" data-md-component="logo">
+      
+  <img src="../../_assets/django_mindoff_logo_filled_bg.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Django Mindoff
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Response Kit
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="amber"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/mindoffwork/django-mindoff" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    mindoffwork/django-mindoff
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../.." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../developer_guide/" class="md-tabs__link">
+          
+  
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../community/" class="md-tabs__link">
+          
+  
+  
+  Community
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Django Mindoff" class="md-nav__button md-logo" aria-label="Django Mindoff" data-md-component="logo">
+      
+  <img src="../../_assets/django_mindoff_logo_filled_bg.png" alt="logo">
+
+    </a>
+    Django Mindoff
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/mindoffwork/django-mindoff" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    mindoffwork/django-mindoff
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../release_notes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/installation-configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation & Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/app-and-model-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App and Model Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/api-development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/queued-api-processing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue Mode API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/responses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Responses
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/validations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/data-operations-crud/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Operations (CRUD)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/test-driven-development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Test-Driven Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/polars-utilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Polars Utilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/helper-utilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helper Utilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../management-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Response Kit
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Response Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-intent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture &amp; Intent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-runtime-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Runtime Components
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#startup-bootstrap-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Startup Bootstrap Path
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#response-dictionary-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Dictionary Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Response Dictionary Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#source-resolution-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Resolution Order
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#required-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required Contract
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache Semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#json-response-assembly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JSON Response Assembly
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="JSON Response Assembly">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#assembly-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Assembly Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exception-aware-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exception-Aware Behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#input-contract-enforcement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input Contract Enforcement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-json-response-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-JSON Response Paths
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#contract-guarantees" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Contract Guarantees
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#integration-with-other-runtime-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration With Other Runtime Layers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exception-logging-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exception Logging Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Exception Logging Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#internal-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Internal Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recommended-logging-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended Logging Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#production-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Production Safety
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operational-caveats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operational Caveats
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-the-kit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting the Kit
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../validation-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../crud-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CRUD Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tdd-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TDD Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polars-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Polars Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../helper-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helper Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Community
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Community
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/contribution-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribution Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/stability-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stability & SemVer Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/deployment-versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment & Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/security-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-intent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture &amp; Intent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-runtime-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Runtime Components
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#startup-bootstrap-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Startup Bootstrap Path
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#response-dictionary-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Response Dictionary Lifecycle
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Response Dictionary Lifecycle">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#source-resolution-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Source Resolution Order
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#required-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required Contract
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cache-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cache Semantics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#json-response-assembly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        JSON Response Assembly
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="JSON Response Assembly">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#assembly-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Assembly Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exception-aware-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exception-Aware Behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#input-contract-enforcement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input Contract Enforcement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-json-response-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-JSON Response Paths
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#contract-guarantees" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Contract Guarantees
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#integration-with-other-runtime-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration With Other Runtime Layers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exception-logging-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exception Logging Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Exception Logging Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#internal-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Internal Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recommended-logging-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended Logging Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#production-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Production Safety
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operational-caveats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operational Caveats
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-the-kit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting the Kit
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="response-kit">Response Kit<a class="headerlink" href="#response-kit" title="Permanent link">&para;</a></h1>
+<p>The Response Kit is the contract layer for outbound API responses in <code>django-mindoff</code>. It converts response codes into stable envelopes, HTTP status values, and consistent client-facing message metadata.</p>
+<p>It centralizes response behavior so API implementations focus on business logic, not per-endpoint response formatting.</p>
+<p>For usage-level response authoring, refer to <a href="../../developer_guide/responses/">Developer Guide - Responses</a>.</p>
+<p>Response behavior is a cross-cutting runtime contract:</p>
+<ul>
+<li>API Kit depends on it to normalize direct and queue responses.</li>
+<li>Queue persistence depends on code-to-status mapping for stored <code>response_code</code>.</li>
+<li>Client integrations depend on stable envelope shape and message code semantics.</li>
+<li>Operational debugging depends on consistent exception logging behavior.</li>
+</ul>
+<h2 id="architecture-intent">Architecture &amp; Intent<a class="headerlink" href="#architecture-intent" title="Permanent link">&para;</a></h2>
+<p>The core design is code-driven response resolution:</p>
+<ol>
+<li>API code returns through <code>mo_response_kit</code> helper methods.</li>
+<li>Response metadata is resolved from an in-memory code map.</li>
+<li>HTTP status and envelope <code>status</code> are derived deterministically.</li>
+<li>A normalized response object is returned (<code>Response</code>, <code>FileResponse</code>, or <code>HttpResponse</code>).</li>
+</ol>
+<h2 id="core-runtime-components">Core Runtime Components<a class="headerlink" href="#core-runtime-components" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Responsibility</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>MindoffResponseHandler</code></strong></td>
+<td>Public response surface for JSON/file/text/html responses.</td>
+<td><code>json_response</code>, <code>file_response</code></td>
+</tr>
+<tr>
+<td><strong><code>MINDOFF_RESPONSES</code> cache</strong></td>
+<td>In-memory response dictionary keyed by code.</td>
+<td><code>SUCCESS</code>, <code>UNEXPECTED_ERR</code></td>
+</tr>
+<tr>
+<td><strong>CSV loaders</strong></td>
+<td>Load and validate response dictionary from project or package fallback.</td>
+<td><code>load_responses_csv</code>, <code>_load_response_defaults</code></td>
+</tr>
+<tr>
+<td><strong>Status normalizer</strong></td>
+<td>Converts HTTP status classes into envelope status labels.</td>
+<td><code>_derive_status_from_http</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="startup-bootstrap-path">Startup Bootstrap Path<a class="headerlink" href="#startup-bootstrap-path" title="Permanent link">&para;</a></h2>
+<p>Response metadata is loaded during Django app startup:</p>
+<ol>
+<li><code>DjangoMindoffConfig.ready()</code> calls <code>load_responses_csv()</code>.</li>
+<li><code>MINDOFF_RESPONSES</code> cache is populated before runtime API handling.</li>
+<li>API and queue components consume this cache for response assembly and status mapping.</li>
+</ol>
+<p>This startup load is the control point that keeps runtime response behavior deterministic.</p>
+<h2 id="response-dictionary-lifecycle">Response Dictionary Lifecycle<a class="headerlink" href="#response-dictionary-lifecycle" title="Permanent link">&para;</a></h2>
+<p><code>load_responses_csv(...)</code> drives response dictionary hydration and validation.</p>
+<h3 id="source-resolution-order">Source Resolution Order<a class="headerlink" href="#source-resolution-order" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Project file: <code>config/responses.csv</code></li>
+<li>Package fallback: manager resources CSV (copied into project config when project file is missing)</li>
+</ol>
+<h3 id="required-contract">Required Contract<a class="headerlink" href="#required-contract" title="Permanent link">&para;</a></h3>
+<p>Required CSV headers:</p>
+<ul>
+<li><code>code</code></li>
+<li><code>title</code></li>
+<li><code>description</code></li>
+<li><code>http_status</code></li>
+</ul>
+<p>Validation rules include:</p>
+<ul>
+<li>Required headers must exist.</li>
+<li><code>code</code> must be non-empty and unique.</li>
+<li><code>http_status</code> must be an integer in <code>100..599</code>.</li>
+<li>Required fields cannot be empty.</li>
+<li><code>code</code> is normalized to uppercase during load.</li>
+</ul>
+<p>When loading completes, defaults from package CSV are merged into runtime cache, and the fallback <code>UNEXPECTED_ERR</code> entry is enforced.</p>
+<h3 id="cache-semantics">Cache Semantics<a class="headerlink" href="#cache-semantics" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>MINDOFF_RESPONSES</code> is a process-local in-memory map.</li>
+<li>Reloading clears and repopulates the map (<code>clear()</code> + <code>update()</code>), so consumers read the latest resolved dictionary in-process.</li>
+<li>Runtime behavior therefore depends on startup/load correctness for each worker process.</li>
+</ul>
+<h2 id="json-response-assembly">JSON Response Assembly<a class="headerlink" href="#json-response-assembly" title="Permanent link">&para;</a></h2>
+<p><code>json_response(...)</code> is the primary API envelope builder.</p>
+<h3 id="assembly-flow">Assembly Flow<a class="headerlink" href="#assembly-flow" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Resolve input <code>code</code> from <code>MINDOFF_RESPONSES</code>.</li>
+<li>If code is unknown/empty, recursively fallback to <code>UNEXPECTED_ERR</code>.</li>
+<li>Derive envelope <code>status</code> from HTTP class (<code>2xx -&gt; ok</code>, <code>4xx -&gt; fail</code>, <code>5xx -&gt; exception</code>).</li>
+<li>Build standardized payload:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span><span class="nt">&quot;status&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ok|fail|exception&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">&quot;message&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">        </span><span class="nt">&quot;code&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;SUCCESS&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">        </span><span class="nt">&quot;title&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Success&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">        </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Operation completed successfully.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">        </span><span class="nt">&quot;category&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;success&quot;</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="p">},</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">    </span><span class="nt">&quot;data&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">}</span>
+</code></pre></div>
+<ol>
+<li>Return DRF <code>Response</code> with mapped HTTP status.</li>
+</ol>
+<h3 id="exception-aware-behavior">Exception-Aware Behavior<a class="headerlink" href="#exception-aware-behavior" title="Permanent link">&para;</a></h3>
+<p>If <code>exception</code> is provided:</p>
+<ul>
+<li>In <code>DEBUG=True</code>, traceback is printed with exception name appended to description.</li>
+<li>In <code>DEBUG=False</code>, traceback is logged via module logger.</li>
+</ul>
+<p>This keeps client contract stable while preserving diagnostics for operators.</p>
+<h3 id="input-contract-enforcement">Input Contract Enforcement<a class="headerlink" href="#input-contract-enforcement" title="Permanent link">&para;</a></h3>
+<p><code>json_response(...)</code> is type-enforced (<code>typeguard</code>) for key parameters:</p>
+<ul>
+<li><code>code</code> must be <code>str</code>.</li>
+<li><code>category</code> must be one of: <code>danger</code>, <code>warning</code>, <code>info</code>, <code>success</code>.</li>
+<li><code>data</code> must be <code>dict</code> or <code>list[dict]</code>.</li>
+</ul>
+<p>Invalid category/value types raise type-check errors before response assembly.</p>
+<h2 id="non-json-response-paths">Non-JSON Response Paths<a class="headerlink" href="#non-json-response-paths" title="Permanent link">&para;</a></h2>
+<p><code>MindoffResponseHandler</code> also supports transport-specific responses:</p>
+<ul>
+<li><strong><code>file_response(...)</code></strong>: returns <code>FileResponse</code> from file path or <code>BytesIO</code>; infers content type and sets download filename. On failure, returns JSON fallback via <code>UNEXPECTED_ERR</code>.</li>
+<li><strong><code>text_response(...)</code></strong>: returns plain text <code>HttpResponse</code>.</li>
+<li><strong><code>html_response(...)</code></strong>: returns HTML <code>HttpResponse</code>.</li>
+</ul>
+<p>These methods allow non-JSON payload delivery without bypassing the toolkit.</p>
+<h2 id="contract-guarantees">Contract Guarantees<a class="headerlink" href="#contract-guarantees" title="Permanent link">&para;</a></h2>
+<p>Response Kit is designed to guarantee:</p>
+<ul>
+<li>Stable envelope shape for JSON responses.</li>
+<li>Centralized mapping from response code to HTTP status/title/description.</li>
+<li>Predictable fallback path when invalid codes are used.</li>
+<li>Shared behavior across all APIs that return through <code>mo_response_kit</code>.</li>
+</ul>
+<h2 id="integration-with-other-runtime-layers">Integration With Other Runtime Layers<a class="headerlink" href="#integration-with-other-runtime-layers" title="Permanent link">&para;</a></h2>
+<p>Response Kit is directly coupled to API runtime and queue runtime:</p>
+<ul>
+<li><strong>API Kit (<code>MindoffAPIMixin</code>)</strong> uses <code>mo_response_kit.json_response(...)</code> as the normalized response surface for direct and queue entry flows.</li>
+<li><strong>Queue process internals</strong> read <code>MINDOFF_RESPONSES</code> to convert response codes into persisted numeric <code>response_code</code> values.</li>
+<li><strong>Exception normalization paths</strong> rely on consistent response code metadata to preserve client-visible contract across failures.</li>
+</ul>
+<p>This coupling is intentional: one response dictionary governs both immediate API responses and queued task result metadata.</p>
+<h2 id="exception-logging-architecture">Exception Logging Architecture<a class="headerlink" href="#exception-logging-architecture" title="Permanent link">&para;</a></h2>
+<p>Exception handling is designed to keep client contracts stable while preserving internal debugging depth.</p>
+<h3 id="internal-flow">Internal Flow<a class="headerlink" href="#internal-flow" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Exception is raised in validation, API execution, or queue worker path.</li>
+<li>Runtime captures traceback and execution context.</li>
+<li>Exception details are logged internally (or printed in debug mode).</li>
+<li>Client receives normalized response envelope through <code>mo_response_kit</code>.</li>
+<li>Queue mode persists failure detail with task status/response metadata for later inspection.</li>
+</ol>
+<h3 id="recommended-logging-fields">Recommended Logging Fields<a class="headerlink" href="#recommended-logging-fields" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>api_url_name</code></li>
+<li>request method and route</li>
+<li>queue/task UUID (for queue mode)</li>
+<li>authenticated user reference (if present)</li>
+<li>response code and HTTP status</li>
+<li>exception class and traceback</li>
+<li>correlation/request ID (if configured)</li>
+</ul>
+<h3 id="production-safety">Production Safety<a class="headerlink" href="#production-safety" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Redact secrets and source internals before writing logs.</li>
+<li>Keep verbose traces in internal logs, not in client responses.</li>
+<li>Prefer structured logs to support search, dashboards, and alerting.</li>
+</ul>
+<h2 id="operational-caveats">Operational Caveats<a class="headerlink" href="#operational-caveats" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>json_response</code> accepts only <code>2xx</code>, <code>4xx</code>, and <code>5xx</code> mapped statuses for envelope normalization. Codes mapping to other status classes (for example <code>3xx</code>) will raise validation errors during status derivation.</li>
+<li><code>file_response</code> catches runtime errors and downgrades to JSON <code>UNEXPECTED_ERR</code>, which changes response type by design during failures.</li>
+<li>Response quality depends on <code>responses.csv</code> integrity; malformed dictionaries fail at load time.</li>
+<li><code>json_response</code> fallback for unknown codes always resolves through <code>UNEXPECTED_ERR</code>, so missing custom codes silently collapse to a generic server-error envelope.</li>
+<li>In debug mode, traceback is printed to stdout; in non-debug mode, traceback is logged. Operational tooling should monitor the logger path in production.</li>
+</ul>
+<h2 id="troubleshooting-the-kit">Troubleshooting the Kit<a class="headerlink" href="#troubleshooting-the-kit" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Unknown response code fallback appears:</strong> verify code exists in <code>config/responses.csv</code>.</li>
+<li><strong>Startup/load errors for responses:</strong> verify required headers and non-empty required fields.</li>
+<li><strong>Unexpected envelope <code>status</code>:</strong> verify <code>http_status</code> mapping for that code.</li>
+<li><strong>File downloads returning JSON errors:</strong> inspect file path/stream handling and logged exception output.</li>
+<li><strong>Inconsistent messages across endpoints:</strong> remove hardcoded strings and rely on centralized response codes.</li>
+<li><strong>Queue rows show unexpected <code>response_code</code>:</strong> verify response code mapping in <code>responses.csv</code> and ensure startup load happened in worker process.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      ©️ 2026 Mindoff.work
+    </div>
+  
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.instant", "navigation.tracking", "content.code.copy", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest-release", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

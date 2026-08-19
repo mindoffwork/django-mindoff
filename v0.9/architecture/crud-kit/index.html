@@ -1,0 +1,2571 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Fast, structured, and scalable API development with django-mindoff">
+      
+      
+      
+        <link rel="canonical" href="https://django-mindoff.mindoff.work/v0.9/architecture/crud-kit/">
+      
+      
+        <link rel="prev" href="../validation-kit/">
+      
+      
+        <link rel="next" href="../tdd-kit/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../_assets/django_mindoff_logo_filled_bg.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>CRUD Kit - Django Mindoff</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Ubuntu:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Ubuntu";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../_assets/stylesheets/style.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#crud-kit" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Django Mindoff" class="md-header__button md-logo" aria-label="Django Mindoff" data-md-component="logo">
+      
+  <img src="../../_assets/django_mindoff_logo_filled_bg.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Django Mindoff
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CRUD Kit
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="amber"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/mindoffwork/django-mindoff" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    mindoffwork/django-mindoff
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../.." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../developer_guide/" class="md-tabs__link">
+          
+  
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../community/" class="md-tabs__link">
+          
+  
+  
+  Community
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Django Mindoff" class="md-nav__button md-logo" aria-label="Django Mindoff" data-md-component="logo">
+      
+  <img src="../../_assets/django_mindoff_logo_filled_bg.png" alt="logo">
+
+    </a>
+    Django Mindoff
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/mindoffwork/django-mindoff" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    mindoffwork/django-mindoff
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../release_notes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/installation-configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation & Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/app-and-model-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App and Model Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/api-development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/queued-api-processing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue Mode API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/responses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Responses
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/validations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/data-operations-crud/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Operations (CRUD)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/test-driven-development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Test-Driven Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/polars-utilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Polars Utilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer_guide/helper-utilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helper Utilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../management-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../response-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Response Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../validation-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CRUD Kit
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CRUD Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-data-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture &amp; Data Flow
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture &amp; Data Flow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#core-runtime-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Runtime Components
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Pipeline
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validation Pipeline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-column-contract-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Column Contract Validation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-row-sanitization-field-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Row Sanitization &amp; Field Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-foreign-key-integrity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Foreign-Key Integrity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-relationship-aware-invalid-propagation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Relationship-Aware Invalid Propagation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-partial-vs-fail-fast-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Partial vs Fail-Fast Behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-validate-only-dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Validate-Only (dry run)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#read-path-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read Path Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Read Path Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#input-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input Contract
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Execution Modes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#memory-query-efficiency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Memory &amp; Query Efficiency
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#read-mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read Mechanism
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#read-response-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read Response Metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#write-engine-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write Engine Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Write Engine Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#engine-dialect-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Engine &amp; Dialect Resolution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#choosing-the-target-database-using" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing the target database (using)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-process-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-process caching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#create-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create Strategy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Create Strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#validation-levels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation levels
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#update-strategy-upsert" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update Strategy (Upsert)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#larger-than-ram-writes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Larger-than-RAM Writes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#keeping-the-lazy-path-honest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keeping the Lazy Path Honest
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operational-assumptions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operational Assumptions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-the-kit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting the Kit
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tdd-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TDD Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polars-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Polars Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../helper-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helper Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Community
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Community
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/contribution-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribution Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/stability-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stability & SemVer Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/deployment-versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment & Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/security-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-data-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture &amp; Data Flow
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture &amp; Data Flow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#core-runtime-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Runtime Components
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Pipeline
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validation Pipeline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-column-contract-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Column Contract Validation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-row-sanitization-field-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Row Sanitization &amp; Field Rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-foreign-key-integrity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Foreign-Key Integrity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-relationship-aware-invalid-propagation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Relationship-Aware Invalid Propagation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-partial-vs-fail-fast-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Partial vs Fail-Fast Behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-validate-only-dry-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Validate-Only (dry run)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#read-path-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read Path Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Read Path Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#input-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Input Contract
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Execution Modes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#memory-query-efficiency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Memory &amp; Query Efficiency
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#read-mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read Mechanism
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#read-response-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read Response Metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#write-engine-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write Engine Architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Write Engine Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#engine-dialect-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Engine &amp; Dialect Resolution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#choosing-the-target-database-using" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing the target database (using)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-process-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-process caching
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#create-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Create Strategy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Create Strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#validation-levels" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation levels
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#update-strategy-upsert" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Update Strategy (Upsert)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#larger-than-ram-writes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Larger-than-RAM Writes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#keeping-the-lazy-path-honest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keeping the Lazy Path Honest
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operational-assumptions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operational Assumptions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-the-kit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting the Kit
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="crud-kit">CRUD Kit<a class="headerlink" href="#crud-kit" title="Permanent link">&para;</a></h1>
+<p>The CRUD Kit is the data-engineering layer of <code>django-mindoff</code>. It runs model-aware bulk <code>create</code>, <code>read</code>, and <code>update</code> operations over Polars frames while enforcing Django model constraints.</p>
+<p>It is designed for high-throughput tabular workflows where API-level validation and storage-level consistency both matter. It complements Django and DRF — it does not replace them. For individual records or small result sets, native Django serializers remain the simpler and more appropriate choice; use the CRUD Kit when dataset volume is the bottleneck.</p>
+<p>For usage-level CRUD implementation patterns, see <a href="../../developer_guide/data-operations-crud/">Developer Guide - Data Operations (CRUD)</a>.</p>
+<h2 id="architecture-data-flow">Architecture &amp; Data Flow<a class="headerlink" href="#architecture-data-flow" title="Permanent link">&para;</a></h2>
+<p>At a high level, write operations pass through one shared validation pipeline before they reach database execution.</p>
+<h3 id="core-runtime-components">Core Runtime Components<a class="headerlink" href="#core-runtime-components" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Responsibility</th>
+<th>Examples</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>MindoffCRUDHandler</code></strong></td>
+<td>Public API surface and lifecycle orchestration (<code>create</code>, <code>read</code>, <code>update</code>).</td>
+<td><code>mo_crud_kit.create(...)</code>, <code>mo_crud_kit.read(...)</code></td>
+</tr>
+<tr>
+<td><strong>Validators</strong></td>
+<td>Normalize and validate structure, field values, and FK integrity.</td>
+<td><code>ColumnValidator</code>, <code>RowValidator</code>, <code>ForeignKeyValidator</code></td>
+</tr>
+<tr>
+<td><strong><code>_ModelFrmsValidInvalidSplitter</code></strong></td>
+<td>Splits valid/invalid rows and propagates invalid dependency chains across related models.</td>
+<td>Parent-child FK invalidation propagation</td>
+</tr>
+<tr>
+<td><strong><code>CRUDProcessor</code></strong></td>
+<td>Executes DB writes through SQLAlchemy/Polars with dialect-specific upsert behavior.</td>
+<td>Append inserts, staging merge upserts</td>
+</tr>
+</tbody>
+</table>
+<h2 id="validation-pipeline">Validation Pipeline<a class="headerlink" href="#validation-pipeline" title="Permanent link">&para;</a></h2>
+<p><code>create(...)</code> and <code>update(...)</code> share the same ordered write pipeline at <code>validation_level="full"</code> (the default).</p>
+<h3 id="1-column-contract-validation">1. Column Contract Validation<a class="headerlink" href="#1-column-contract-validation" title="Permanent link">&para;</a></h3>
+<p><code>ColumnValidator</code> enforces model-frame alignment before any row-level work:</p>
+<ul>
+<li>Requires UUID primary keys.</li>
+<li>Requires explicit <code>db_column</code> on primary key and foreign keys.</li>
+<li>Normalizes field names to model <code>db_column</code> names.</li>
+<li>Handles missing/extra columns using configured behavior (CRUD defaults: add missing, remove extra).</li>
+<li>Fails fast on schema-contract errors.</li>
+</ul>
+<h3 id="2-row-sanitization-field-rules">2. Row Sanitization &amp; Field Rules<a class="headerlink" href="#2-row-sanitization-field-rules" title="Permanent link">&para;</a></h3>
+<p><code>RowValidator</code> sanitizes and checks row values against Django field metadata:</p>
+<ul>
+<li>Text/slug/email/url normalization and type coercion.</li>
+<li>Numeric/date/time/duration/UUID/IP/JSON transformation.</li>
+<li>Default value application.</li>
+<li>Constraint checks (<code>required</code>, <code>max_length</code>, <code>max_digits</code>, min/max validators, dtype matching).</li>
+<li>Unsupported fields are explicitly rejected (for example <code>ManyToManyField</code>, <code>BinaryField</code>).</li>
+</ul>
+<h3 id="3-foreign-key-integrity">3. Foreign-Key Integrity<a class="headerlink" href="#3-foreign-key-integrity" title="Permanent link">&para;</a></h3>
+<p><code>ForeignKeyValidator</code> verifies FK references:</p>
+<ul>
+<li>Uses in-memory related frames when related models are present in the same operation.</li>
+<li>Falls back to database existence checks when related frames are absent.</li>
+<li>Marks each row whose reference cannot be resolved in the error column, exactly
+  as <code>ColumnValidator</code> and <code>RowValidator</code> mark theirs, and appends to any error
+  the row already carries rather than replacing it. The pass never aborts the
+  batch: a dangling reference is one invalid row, so the rest of the frame keeps
+  its classification and <code>is_partial</code> decides the outcome — <code>True</code> writes the
+  good rows and returns the bad ones in <code>invalid_model_frms</code>, <code>False</code> fails the
+  operation without writing.</li>
+<li>Flags rows against an in-memory related frame with a join, so keys stay inside
+  the engine and a <code>LazyFrame</code> takes the marking as plan nodes rather than being
+  collected once per FK column — which matters most for a scan-backed frame,
+  where each collect is a fresh read. Marking every row is more work than the
+  bare "is anything bad?" count it replaces (about +80 MB and +0.14 s per
+  million rows across four FK columns); that is the cost of knowing <em>which</em> rows
+  are bad.</li>
+<li>Checks existence in bounded chunks rather than one <code>IN (...)</code> per column. The
+  chunk size comes from the backend's own <code>max_query_params</code> where it reports
+  one (SQLite's <code>SQLITE_MAX_VARIABLE_NUMBER</code>, 32766 by default — a hard error
+  once exceeded), capped by a local ceiling that also covers the drivers
+  reporting no limit because they interpolate client-side (psycopg2, MySQL); the
+  smaller of the two wins. Set <code>MO_CRUD_FK_CHUNK_SIZE</code> to change that ceiling
+  (default 10000). Unlike <code>MO_CRUD_ENGINE_CACHE_SIZE</code>, <code>0</code> is not an opt-out —
+  an unbounded <code>IN (...)</code> is a hard failure rather than a memory trade-off, so a
+  non-positive value falls back to the default.
+  Within a single call, keys already proven to exist are not asked about again,
+  so a second foreign key into the same table drops them from its <code>IN (...)</code> —
+  fewer round trips and fewer bytes on the wire. The memo is capped at one chunk
+  per related model: remembering every existing key would rebuild the very set
+  the chunking exists to avoid holding, so past the cap the remainder is simply
+  re-queried. It lives on the validator instance, which the pipeline builds
+  fresh per call, so a cached "exists" never outlives the read behind it.
+  Distinct values are held as an Arrow-backed column and only one chunk at a
+  time becomes Python objects. Every chunk is queried: marking a row needs the
+  values that are missing, not a count of them, so stopping at the first short
+  chunk would leave the later chunks' bad rows unflagged. Only the missing
+  values accumulate — the existing keys are consumed per chunk and dropped, so
+  the full existing set is never resident.</li>
+</ul>
+<h3 id="4-relationship-aware-invalid-propagation">4. Relationship-Aware Invalid Propagation<a class="headerlink" href="#4-relationship-aware-invalid-propagation" title="Permanent link">&para;</a></h3>
+<p><code>_ModelFrmsValidInvalidSplitter</code> does more than row splitting:</p>
+<ul>
+<li>Collects invalid IDs per model.</li>
+<li>Propagates invalidity upward and downward across FK edges.</li>
+<li>Produces <code>valid_model_frms</code> and <code>invalid_model_frms</code> that remain relationally consistent.</li>
+</ul>
+<h3 id="5-partial-vs-fail-fast-behavior">5. Partial vs Fail-Fast Behavior<a class="headerlink" href="#5-partial-vs-fail-fast-behavior" title="Permanent link">&para;</a></h3>
+<p>After validation:</p>
+<ul>
+<li>Returns <code>fail</code> when no valid rows remain.</li>
+<li>Returns <code>fail</code> when invalid rows exist and <code>is_partial=False</code>.</li>
+<li>Returns <code>partial_ok</code> when invalid rows exist and <code>is_partial=True</code>.</li>
+<li>Returns <code>ok</code> when all rows are valid.</li>
+</ul>
+<p>When <code>validation_level="none"</code>, CRUD writes proceed directly and emit runtime warnings about unsafe persistence.</p>
+<h3 id="6-validate-only-dry-run">6. Validate-Only (dry run)<a class="headerlink" href="#6-validate-only-dry-run" title="Permanent link">&para;</a></h3>
+<p><code>create(...)</code> and <code>update(...)</code> accept <code>is_validate_only</code> (default <code>False</code>). When
+<code>True</code>, the pipeline above runs exactly as it would for a real write and returns
+the same <code>(status, valid_model_frms, invalid_model_frms)</code> triple — but the write
+is skipped, so the call is a drop-in preview of the one that would commit.</p>
+<ul>
+<li>The skip is total and level-independent. <code>none</code> and <code>columns_only</code> normally
+  write directly; under <code>is_validate_only=True</code> neither does.</li>
+<li>Validation is not stubbed. At <code>validation_level="full"</code> the foreign-key stage
+  still issues its real existence queries — they are reads, and a preview that
+  skipped them would report a verdict the write would not agree with. An
+  unresolved reference comes back as an invalid row in the preview, the same way
+  it would from the real call.</li>
+<li><code>batch_size</code> has no meaning in this mode: nothing is batched because nothing
+  is written.</li>
+<li><code>CRUDProcessor</code> is never constructed, not merely never called. Building one
+  opens a connection and mutates the process-wide engine cache, so a preview
+  stops short of it.</li>
+</ul>
+<p>The consequence worth planning around: a dry run cannot surface what only the
+write can raise. Integrity errors, the PK-only no-op warning, unsupported-backend
+errors, and connection failures all originate in the write path, so a clean
+preview is a statement about validation only.</p>
+<p>The unsafe-write warning at <code>validation_level="none"</code> is deliberately still
+emitted under <code>is_validate_only=True</code>. Nothing is written, so it is not a warning
+about that call — but at that level nothing is validated either, so the preview's
+<code>ok</code> carries no information about the write it stands in for, and the warning is
+the only signal of that.</p>
+<h2 id="read-path-architecture">Read Path Architecture<a class="headerlink" href="#read-path-architecture" title="Permanent link">&para;</a></h2>
+<p><code>read(...)</code> is intentionally strict on input and flexible on output.</p>
+<h3 id="input-contract">Input Contract<a class="headerlink" href="#input-contract" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Queryset must be <code>.values()</code>-based.</li>
+<li><code>batch_size</code> must be <code>&gt;= 0</code>.</li>
+<li>When <code>batch_size=0</code>, defaults are auto-selected to <code>1000</code> for streaming mode and <code>100</code> for pagination mode.</li>
+</ul>
+<h3 id="execution-modes">Execution Modes<a class="headerlink" href="#execution-modes" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Streaming mode</strong> (<code>page_number=None</code>): reads the full result set.</li>
+<li><strong>Pagination mode</strong> (<code>page_number=&lt;n&gt;</code>): returns only one page plus paginator metadata.</li>
+</ol>
+<p>Each mode supports eager (<code>pl.DataFrame</code>) and lazy (<code>pl.LazyFrame</code>) output.</p>
+<h3 id="memory-query-efficiency">Memory &amp; Query Efficiency<a class="headerlink" href="#memory-query-efficiency" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>with_stats=False</code></td>
+<td>Skips the <code>exists()</code> + <code>count()</code> queries. <code>total_count</code>/<code>total_pages</code> become <code>None</code>; pagination derives <code>has_next</code> by fetching one extra row. The fastest path when totals aren't needed.</td>
+</tr>
+<tr>
+<td><code>is_lazy=True</code> (streaming)</td>
+<td>A genuine larger-than-RAM scan: rows are streamed to a temporary Parquet file and the returned <code>LazyFrame</code> scans it on <code>collect()</code>. The temp file is removed when the frame is garbage-collected.</td>
+</tr>
+<tr>
+<td><code>mo_crud_kit.read_batches(qs, ...)</code></td>
+<td>Returns an iterator of Polars frames pulled <code>batch_size</code> rows at a time — never concatenated — so the whole result set is never held in memory.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="read-mechanism">Read Mechanism<a class="headerlink" href="#read-mechanism" title="Permanent link">&para;</a></h3>
+<p>Reads take no <code>using</code> argument: the database comes from the queryset, so
+<code>Model.objects.using("&lt;alias&gt;").values()</code> is what points a read at a non-default
+database — including one provisioned at runtime and registered only in
+<code>django.db.connections</code>. That works for both paths below; the ConnectorX URI is
+resolved through the same target lookup the writers use, so a live-only alias
+keeps the zero-copy path instead of quietly falling back to the cursor.</p>
+<p>There is no engine to choose — a read always takes the fastest path that can still return correct data:</p>
+<ul>
+<li><strong>ConnectorX</strong> (<code>pl.read_database_uri</code>) for a zero-copy DB → Arrow transfer, used <strong>only when the read is safe</strong>. ConnectorX opens its own connection and cannot see uncommitted rows, so it is used only <strong>outside an open transaction</strong>.</li>
+<li><strong>Django's own cursor</strong> otherwise — inside an open transaction (Django <code>TestCase</code>, <code>ATOMIC_REQUESTS</code>, <code>transaction.atomic()</code>), with in-memory SQLite, or when ConnectorX is unreachable. It reuses Django's connection (so parameters and transaction visibility behave normally) and builds the frame column-wise from row tuples — never list-of-dicts. Streaming reads (<code>is_lazy=True</code>, <code>read_batches</code>) always use this cursor path, since ConnectorX has no streaming cursor.</li>
+</ul>
+<p>The fallback is transparent: callers never select or are warned about the path. Frames are normalized to the canonical model dtypes defined in <code>_crud_kit/dtypes.py</code> (<code>DJANGO_TO_POLARS_TYPE_MAP</code>) — the same mapping the create/update validators enforce — so a read frame can be fed straight back into <code>update()</code>. <code>JSONField</code> columns follow <code>json_column_mode</code> (<code>auto</code>/<code>object</code>/<code>text</code>); <code>auto</code> returns raw JSON text.</p>
+<h3 id="read-response-metadata">Read Response Metadata<a class="headerlink" href="#read-response-metadata" title="Permanent link">&para;</a></h3>
+<p><code>read(...)</code> returns <code>(frame, stats)</code> where <code>stats</code> includes:</p>
+<ul>
+<li><code>mode</code></li>
+<li><code>batch_size</code></li>
+<li><code>total_count</code></li>
+<li><code>total_pages</code></li>
+<li><code>current_page</code></li>
+<li><code>has_next</code></li>
+<li><code>has_previous</code></li>
+</ul>
+<h2 id="write-engine-architecture">Write Engine Architecture<a class="headerlink" href="#write-engine-architecture" title="Permanent link">&para;</a></h2>
+<p><code>CRUDProcessor</code> handles database writes and update strategies.</p>
+<h3 id="engine-dialect-resolution">Engine &amp; Dialect Resolution<a class="headerlink" href="#engine-dialect-resolution" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Builds a SQLAlchemy engine from the target database's Django settings —
+  resolved from <code>DATABASES</code>, or from a live connection when the caller names one
+  (see <a href="#choosing-the-target-database-using">Choosing the target database</a>).</li>
+<li>Supports <code>sqlite</code>, <code>postgresql</code>, and <code>mysql</code>.</li>
+<li>Table existence is verified lazily by reflection (a missing table raises a
+  clear error) rather than scanning all table names on every operation.</li>
+</ul>
+<h3 id="choosing-the-target-database-using">Choosing the target database (<code>using</code>)<a class="headerlink" href="#choosing-the-target-database-using" title="Permanent link">&para;</a></h3>
+<p><code>create(...)</code> and <code>update(...)</code> accept <code>using</code> to say <em>which</em> database the write
+goes to. Reads take their database from the queryset instead — call
+<code>Model.objects.using(...)</code> before handing it to <code>read(...)</code> or <code>read_batches(...)</code>.</p>
+<table>
+<thead>
+<tr>
+<th><code>using</code></th>
+<th>Resolves to</th>
+<th>Use when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>omitted (<code>None</code>)</td>
+<td>The default database, with routing left untouched</td>
+<td>Ordinary single-database projects. This is the pre-existing behavior, unchanged.</td>
+</tr>
+<tr>
+<td><code>"alias"</code></td>
+<td><code>settings.DATABASES["alias"]</code>, or a live connection registered under that alias</td>
+<td>The database is configured, or provisioned at runtime and registered in <code>django.db.connections</code>.</td>
+</tr>
+<tr>
+<td>a Django connection object</td>
+<td>The connection's own <code>settings_dict</code></td>
+<td>Credentials are resolved at runtime and never written into settings at all.</td>
+</tr>
+</tbody>
+</table>
+<p>The alias and connection forms exist for <strong>dynamic and multi-tenant databases</strong>:
+a tenant database provisioned on demand has no entry in <code>settings.DATABASES</code>, so
+the settings lookup alone cannot reach it. Resolution therefore falls back to
+<code>django.db.connections</code>, which is where such a connection lives.</p>
+<p>One step of a write issues ORM queries rather than SQLAlchemy ones: foreign-key
+validation at <code>validation_level="full"</code>. It is routed to the same target, so a
+reference is checked where the rows are actually going, and it needs the
+connection to be reachable by alias through <code>django.db.connections</code>. A connection
+that is not registered there raises a clear error naming the alternative —
+<code>validation_level="columns_only"</code>, which skips that query and writes through the
+explicit connection alone.</p>
+<h3 id="per-process-caching">Per-process caching<a class="headerlink" href="#per-process-caching" title="Permanent link">&para;</a></h3>
+<p>To keep per-call latency low, two things are cached process-wide:</p>
+<ul>
+<li><strong>Engines</strong> are cached per database alias + resolved connection params, so
+  <code>create_engine</code> runs once per backend rather than on every CRUD call.
+  PostgreSQL/MySQL engines (with their connection pools) are reused. The SQLite
+  engine is the deliberate exception — it is bound to Django's live connection
+  via a <code>creator</code>, so it is rebuilt each call to avoid holding a stale handle.
+  The cache is bounded (least-recently-used, default 32, set
+  <code>MO_CRUD_ENGINE_CACHE_SIZE</code> to change it or <code>0</code> to disable the ceiling).
+  A fixed set of databases never reaches the limit; the bound matters when
+  targeting many dynamic databases, where every engine would otherwise hold a
+  connection pool open for the life of the process. Evicted engines are disposed
+  (outside the cache lock, since closing sockets would otherwise stall every
+  other engine lookup). Disposing an engine another thread is mid-transaction on
+  is safe — SQLAlchemy closes only the idle pooled connections and swaps in a
+  fresh pool, leaving checked-out connections to finish.</li>
+</ul>
+<p>Size the cache above the number of databases the process uses <em>concurrently</em>,
+  not the number it uses in total. Past that point each miss evicts an engine
+  that is about to be wanted again, so the cache thrashes and connections churn
+  instead of pooling — the very cost it exists to avoid.
+- <strong>Reflected <code>Table</code> metadata</strong> is cached per engine. A cached (PG/MySQL)
+  engine keeps its reflection warm across calls; the uncached SQLite engine gets
+  fresh metadata each call (collected with the engine), so reflection always
+  matches the current schema. Staging tables (unique per call) are never cached.</p>
+<h3 id="create-strategy">Create Strategy<a class="headerlink" href="#create-strategy" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Appends rows with each backend's fastest <strong>same-connection</strong> bulk loader, so
+  the write stays inside the create's single transaction (all-or-nothing) and
+  Polars' columnar data reaches the database without a per-row Python detour:</li>
+<li><strong>PostgreSQL</strong> — <code>COPY ... FROM STDIN</code> streamed from an in-memory CSV
+    buffer via psycopg2's <code>copy_expert</code>.</li>
+<li><strong>MySQL</strong> — <code>LOAD DATA LOCAL INFILE</code> from a temp CSV (needs <code>local_infile</code>,
+    which the engine enables on the client; falls back to row binding when the
+    server forbids it and emits a <code>RuntimeWarning</code> — enable <code>local_infile</code> on the
+    server to restore bulk-load performance).</li>
+<li><strong>SQLite</strong> — SQLAlchemy Core <code>insert()</code> executed as a DBAPI <code>executemany</code>;
+    there is no bulk-load protocol, and this path is bound to Django's live
+    connection so it works against an in-memory database.</li>
+<li>On SQLite the engine is bound to Django's autocommit-mode connection, so the
+  create wraps every chunk in one explicit transaction (<code>BEGIN</code>) — without it
+  each statement would auto-commit (one fsync per row).</li>
+<li>Honors <code>batch_size</code>: rows are written in bounded chunks (<code>LazyFrame</code> inputs
+  are streamed through Parquet, eager frames are sliced), so create is both
+  memory-bounded and competitive with — typically faster than — <code>bulk_create</code>.</li>
+<li>Supports <code>DataFrame</code> and <code>LazyFrame</code> inputs.</li>
+</ul>
+<h4 id="validation-levels">Validation levels<a class="headerlink" href="#validation-levels" title="Permanent link">&para;</a></h4>
+<p>Both <code>create(...)</code> and <code>update(...)</code> accept <code>validation_level</code>
+(<code>"full" | "columns_only" | "none"</code>, default <code>"full"</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Pipeline</th>
+<th>When to use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>full</code> (default)</td>
+<td><code>ColumnValidator → RowValidator → ForeignKeyValidator</code> + valid/invalid split; honors <code>is_partial</code>.</td>
+<td>Untrusted/raw input.</td>
+</tr>
+<tr>
+<td><code>columns_only</code></td>
+<td><code>ColumnValidator</code> only — normalizes shape (rename to <code>db_column</code>, add missing/auto columns, drop extras), then writes.</td>
+<td>Caller already validated rows/FKs upstream and supplies database-ready values. Lower overhead.</td>
+</tr>
+<tr>
+<td><code>none</code></td>
+<td>No validation (not even column normalization); writes as-is and warns.</td>
+<td>Trusted, already-shaped frames only.</td>
+</tr>
+</tbody>
+</table>
+<p>Each level answers "how much is checked". <code>is_validate_only</code> answers the separate
+question "is anything written", and overrides every row in the table above — see
+<a href="#6-validate-only-dry-run">Validate-Only (dry run)</a>.</p>
+<p><code>columns_only</code> deliberately skips the row pass, so field defaults,
+<code>auto_now</code>/<code>auto_now_add</code> timestamps, UUID generation, and type coercion are
+<strong>not</strong> applied — the caller must provide database-ready values for every
+required column. Constraints the database itself enforces (NOT NULL, foreign
+keys, types on type-strict backends) still apply at write time.</p>
+<h3 id="update-strategy-upsert">Update Strategy (Upsert)<a class="headerlink" href="#update-strategy-upsert" title="Permanent link">&para;</a></h3>
+<p><code>update(...)</code> uses a staged-merge path: each frame is bulk-loaded into a per-call
+staging table (using the same fast loader as <code>create()</code>), then merged into the
+target with set-based SQL. No per-row Python materialization occurs, and the
+whole update runs in one transaction.</p>
+<p><strong>Only the columns the frame carries are written.</strong> The staging table is built
+from the frame, so it is the authority on what the merge may touch; a target
+column absent from it appears in neither the assignment list nor the INSERT
+column list. An existing row therefore keeps whatever it already holds, and a new
+row takes the column's database default.</p>
+<p>That property is why the merge is two statements rather than one
+<code>INSERT ... ON CONFLICT</code>:</p>
+<ol>
+<li><code>UPDATE target SET &lt;supplied&gt; FROM staging WHERE target.pk = staging.pk</code> —
+   assigns only the supplied columns. (MySQL has no <code>UPDATE ... FROM</code>, so
+   SQLAlchemy renders the equivalent multi-table <code>UPDATE</code>.)</li>
+<li><code>INSERT INTO target (&lt;supplied&gt;) SELECT ... FROM staging LEFT JOIN target ...
+   WHERE target.pk IS NULL</code> — adds only the primary keys that are genuinely new.
+   The unmatched keys are found by anti-join rather than <code>NOT EXISTS</code> because
+   MySQL refuses a subquery that reads the table being inserted into.</li>
+</ol>
+<p>The upsert form cannot express this: it has to name every column it inserts, and
+a <code>NOT NULL</code> column left out of that list fails the constraint <em>before</em> the
+conflict is arbitrated — so it breaks even for rows that already exist. Splitting
+the two cases is what makes a partial write possible at all. Both statements run
+inside the same transaction.</p>
+<p>Because nothing is read back before writing, two writers updating different
+columns of the same row no longer overwrite each other. The previous behaviour
+fetched every omitted column and put it back in the <code>SET</code> clause, so anything
+committed between the fetch and the write was silently lost.</p>
+<p>The projection is explicit rather than relying on the staging and target tables
+happening to share a column order, since <code>INSERT ... FROM SELECT</code> pairs them
+positionally. On PostgreSQL and MySQL each column is also cast to the target
+column's type: the staging table is created from the frame's Polars schema, so a
+UUID or timestamp arrives as text, which a strictly-typed backend will not write
+into a typed column. SQLite needs no cast — its typing is dynamic.</p>
+<p>Two consequences worth knowing:</p>
+<ul>
+<li>A frame carrying <em>only</em> the primary key has nothing to write. That is a no-op,
+  and it emits a <code>RuntimeWarning</code> rather than passing silently.</li>
+<li><code>update()</code> is an upsert, so a primary key that does not exist yet is an INSERT.
+  If the frame omits a <code>NOT NULL</code> column with no database default, that INSERT
+  fails with the database's own integrity error and the call rolls back. Use
+  <code>create()</code> for genuinely new rows, or supply the column.</li>
+</ul>
+<p><code>skip_db_fill</code> is deprecated and inert. It used to skip the prefetch <code>SELECT</code>
+that back-filled omitted columns; there is no back-fill left to skip, so passing
+it changes nothing and warns. It is removed in 1.0.</p>
+<h3 id="larger-than-ram-writes">Larger-than-RAM Writes<a class="headerlink" href="#larger-than-ram-writes" title="Permanent link">&para;</a></h3>
+<p>Writes never materialize the full frame. Both <code>create()</code> and <code>update()</code> write in
+bounded-memory chunks:</p>
+<ul>
+<li><strong><code>LazyFrame</code> inputs</strong> are streamed to a temporary Parquet file via the Polars
+  streaming engine (the validation pipeline stays lazy until this point) and
+  re-read in Arrow batches. Peak memory is one <code>batch_size</code> chunk, independent of
+  dataset size. The sink is told the row-group size explicitly to make that true:
+  pyarrow decodes a whole Parquet <em>row group</em> per batch, so leaving Polars to
+  choose (row groups on the order of 10<sup>5</sup> rows) would bound peak memory
+  by the row group rather than by the batch — still bounded, but much looser. For
+  400k rows across 8 string columns at <code>batch_size=1000</code>, that is 33.6 MB of peak
+  working set against 8.3 MB with batch-sized row groups. Row groups are floored
+  at 1000 rows, so a very small <code>batch_size</code> cannot degenerate into one row group
+  per row.</li>
+<li><strong><code>DataFrame</code> inputs</strong> are sliced into <code>batch_size</code> chunks. The slices are
+  zero-copy views, so the incremental cost is bounded — but the caller already
+  holds the whole frame in memory, so only a <code>LazyFrame</code> gives a genuinely
+  larger-than-RAM write.</li>
+</ul>
+<p>For staging-merge updates only the temp-table <em>load</em> is chunked — and it uses the
+same per-backend bulk loader as <code>create()</code> (PostgreSQL <code>COPY</code>, MySQL <code>LOAD DATA
+LOCAL INFILE</code>, SQLite <code>executemany</code>); the merge itself is set-based SQL, so it is
+already larger-than-RAM friendly. All chunks for a model run inside one
+transaction, so writes stay atomic.</p>
+<h3 id="keeping-the-lazy-path-honest">Keeping the Lazy Path Honest<a class="headerlink" href="#keeping-the-lazy-path-honest" title="Permanent link">&para;</a></h3>
+<p>When a <code>LazyFrame</code> flows through the pipeline, the validators never force an
+early plan execution to inspect structure:</p>
+<ul>
+<li>Schema is resolved once per frame via <code>mo_polars_kit.resolve_schema(...)</code>
+  (<code>collect_schema()</code> under the hood) and threaded through the per-field work,
+  instead of touching <code>LazyFrame.schema</code>/<code>.columns</code> repeatedly. A schema is
+  column-names-plus-dtypes only, so it stays valid across the row-level edits
+  the validators apply; it is re-resolved only where a transform actually
+  changes a column.</li>
+<li><code>LazyFrame.schema</code> and <code>LazyFrame.columns</code> emit a Polars <code>PerformanceWarning</code>
+  (each call re-resolves the whole accumulated plan). The test suite promotes
+  that warning to an error while exercising the lazy create/read/update paths,
+  so any accidental eager schema resolution fails CI rather than silently
+  degrading the "lazy" guarantee.</li>
+</ul>
+<h2 id="operational-assumptions">Operational Assumptions<a class="headerlink" href="#operational-assumptions" title="Permanent link">&para;</a></h2>
+<p>The kit is opinionated. These are part of normal operation, not optional conventions:</p>
+<ul>
+<li>Models should use UUID primary keys.</li>
+<li>PK and FK columns should define explicit <code>db_column</code>.</li>
+<li><code>read()</code> expects <code>.values()</code> querysets.</li>
+<li><code>delete()</code> is not currently exposed in <code>mo_crud_kit</code>.</li>
+</ul>
+<h2 id="troubleshooting-the-kit">Troubleshooting the Kit<a class="headerlink" href="#troubleshooting-the-kit" title="Permanent link">&para;</a></h2>
+<p>Most issues fall into validation contract mismatches:</p>
+<ol>
+<li><strong>Column errors at create/update start:</strong> check UUID PK and explicit <code>db_column</code> requirements.</li>
+<li><strong>Rows unexpectedly invalid:</strong> inspect validator error column (<code>POLARS_VALIDATOR_ERROR_COL</code> or <code>__error__info</code>).</li>
+<li><strong>FK validation failures:</strong> ensure related IDs exist in input frames or database.</li>
+<li><strong>Read rejects queryset:</strong> confirm <code>.values()</code> is called before <code>read()</code>.</li>
+<li><strong>Update inserted nothing, or raised a NOT NULL error:</strong> <code>update()</code> writes only the columns the frame carries. A primary key that already exists is updated in place; one that does not is inserted, and that insert must satisfy the table's constraints — supply the <code>NOT NULL</code> columns or use <code>create()</code>.</li>
+<li><strong>MySQL write performance falls back to row binding:</strong> if you see a <code>RuntimeWarning</code> about <code>LOAD DATA LOCAL INFILE</code>, set <code>local_infile=1</code> on the MySQL server (<code>SET GLOBAL local_infile = 1</code>) and ensure the client is connecting with <code>local_infile</code> enabled.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      ©️ 2026 Mindoff.work
+    </div>
+  
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.instant", "navigation.tracking", "content.code.copy", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest-release", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

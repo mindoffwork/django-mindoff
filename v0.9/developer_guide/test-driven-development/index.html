@@ -1,0 +1,2224 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Fast, structured, and scalable API development with django-mindoff">
+      
+      
+      
+        <link rel="canonical" href="https://django-mindoff.mindoff.work/v0.9/developer_guide/test-driven-development/">
+      
+      
+        <link rel="prev" href="../data-operations-crud/">
+      
+      
+        <link rel="next" href="../polars-utilities/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../_assets/django_mindoff_logo_filled_bg.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Test-Driven Development - Django Mindoff</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Ubuntu:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Ubuntu";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../_assets/stylesheets/style.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="amber">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#test-driven-development" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Django Mindoff" class="md-header__button md-logo" aria-label="Django Mindoff" data-md-component="logo">
+      
+  <img src="../../_assets/django_mindoff_logo_filled_bg.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Django Mindoff
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Test-Driven Development
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="amber"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/mindoffwork/django-mindoff" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    mindoffwork/django-mindoff
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../.." class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../architecture/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../community/" class="md-tabs__link">
+          
+  
+  
+  Community
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Django Mindoff" class="md-nav__button md-logo" aria-label="Django Mindoff" data-md-component="logo">
+      
+  <img src="../../_assets/django_mindoff_logo_filled_bg.png" alt="logo">
+
+    </a>
+    Django Mindoff
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/mindoffwork/django-mindoff" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    mindoffwork/django-mindoff
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Introduction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../release_notes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release Notes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation-configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation & Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../app-and-model-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App and Model Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../queued-api-processing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue Mode API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../responses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Responses
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../validations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../data-operations-crud/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data Operations (CRUD)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Test-Driven Development
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Test-Driven Development
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implementation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-mindoff-api-test-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Mindoff API Test Class
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-example-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Example Usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-running-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Running Tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-concepts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Concepts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Core Concepts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-asserts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Asserts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-mock-app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Mock App
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-mock-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Mock Model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-mock-model-frms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Mock Model Frms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-update-mock-model-frms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Update Mock Model Frms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-mock-call-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Mock Call Api
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-assert-api-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Assert Api Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#8-mock-user" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Mock User
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#practical-tdd-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Practical TDD Loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polars-utilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Polars Utilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../helper-utilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helper Utilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/management-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Management Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/api-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/response-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Response Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/validation-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Validation Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/crud-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CRUD Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/tdd-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TDD Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/polars-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Polars Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/helper-kit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helper Kit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Community
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Community
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/contribution-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contribution Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/stability-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stability & SemVer Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/deployment-versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment & Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../community/security-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Implementation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implementation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-mindoff-api-test-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Mindoff API Test Class
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-example-usage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Example Usage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-running-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Running Tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-concepts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Concepts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Core Concepts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-asserts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Asserts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-mock-app" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Mock App
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-mock-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Mock Model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-mock-model-frms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Mock Model Frms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-update-mock-model-frms" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Update Mock Model Frms
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-mock-call-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Mock Call Api
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-assert-api-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Assert Api Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#8-mock-user" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Mock User
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#practical-tdd-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Practical TDD Loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="test-driven-development">Test-Driven Development<a class="headerlink" href="#test-driven-development" title="Permanent link">&para;</a></h1>
+<p>Use TDD to keep API behavior stable as features evolve.</p>
+<h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../api-development/">API Class</a> is scaffolded and routed.</li>
+<li>Expected response codes are defined using <code>response_kit</code> (see <a href="../responses/">Responses</a>).</li>
+</ul>
+<h2 id="implementation">Implementation<a class="headerlink" href="#implementation" title="Permanent link">&para;</a></h2>
+<p>When you <a href="../api-development/#1-create-an-api">Create an API</a> using the command <code>python mindoff.py create</code>, <code>django-mindoff</code> generates test scaffolding automatically:</p>
+<ol>
+<li>API behavior test: <code>apps/&lt;app_name&gt;/tests/test_apis/test_&lt;api_name&gt;.py</code></li>
+<li>Router/version test: <code>apps/&lt;app_name&gt;/tests/test_views.py</code></li>
+</ol>
+<p>Use this scaffolding as your baseline and expand test coverage as endpoint logic evolves.</p>
+<p><strong>What the CLI Generates for Each API</strong></p>
+<p><code>python mindoff.py create</code> (option <code>2</code> for <code>api</code>) wires test artifacts together:</p>
+<ol>
+<li>Creates/updates API tests in <code>apps/&lt;app_name&gt;/tests/test_apis/test_&lt;api_name&gt;.py</code>.</li>
+<li>Creates/updates router tests in <code>apps/&lt;app_name&gt;/tests/test_views.py</code>.</li>
+<li>Keeps test names aligned with generated route names in <code>urls.py</code>.</li>
+</ol>
+<p><strong>Where Tests Live</strong></p>
+<p>Mindoff API tests are organized by purpose:</p>
+<ul>
+<li>Endpoint behavior tests in <code>apps/&lt;app_name&gt;/tests/test_apis/</code></li>
+<li>Router/version tests in <code>apps/&lt;app_name&gt;/tests/test_views.py</code></li>
+</ul>
+<p>Router tests are usually maintenance-free unless you customize version routing.
+Most of your TDD work happens inside <code>test_apis/test_&lt;api_name&gt;.py</code>.</p>
+<h3 id="1-mindoff-api-test-class">1. Mindoff API Test Class<a class="headerlink" href="#1-mindoff-api-test-class" title="Permanent link">&para;</a></h3>
+<p>The generated class extends <code>MindoffTestCase</code> and is configured with core test inputs: identity, request parameters, and assertions. These inputs control API route identification, request setup, and response validation.</p>
+<p>After you create an API, your <code>apps/&lt;app_name&gt;/tests/test_apis/test_&lt;api_name&gt;.py</code> file will include a class like this with the class name and <code>api_url_name</code> already filled in for your API.
+Override only the attributes and add test methods as needed for your endpoint behavior.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">django_mindoff</span><span class="w"> </span><span class="kn">import</span> <span class="n">MindoffTestCase</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Literal</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">django_db</span><span class="p">(</span><span class="n">transaction</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="k">class</span><span class="w"> </span><span class="nc">TestSampleAPIView</span><span class="p">(</span><span class="n">MindoffTestCase</span><span class="p">):</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="c1"># Documentation Reference:</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="c1"># https://django.mindoff.work/latest-release/developer_guide/test-driven-development/</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">api_url_name</span> <span class="o">=</span> <span class="s2">&quot;{{API_URL_NAME}}&quot;</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_acceptance_api_success</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        <span class="n">response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mo_mock_call_api</span><span class="p">(</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">api_url_name</span><span class="p">,</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>            <span class="n">url_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;version&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        <span class="p">)</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">mo_assert_api_response</span><span class="p">(</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>            <span class="n">api_url_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">api_url_name</span><span class="p">,</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>            <span class="n">response</span><span class="o">=</span><span class="n">response</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        <span class="p">)</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>        <span class="c1"># ----- 👇 Add Assertions/Logic Here -----------</span>
+</code></pre></div>
+<p><strong>Parameter Reference for <code>mo_mock_call_api</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Purpose</th>
+<th>Typical values</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_url_name</code></td>
+<td>Route identifier used by test helpers.</td>
+<td><code>&lt;app&gt;__&lt;api&gt;</code></td>
+</tr>
+<tr>
+<td><code>payload</code></td>
+<td>Request body for <code>POST</code>/<code>PUT</code> APIs.</td>
+<td>dict</td>
+</tr>
+<tr>
+<td><code>query_params</code></td>
+<td>Query string values for <code>GET</code> or filters.</td>
+<td>dict or <code>None</code></td>
+</tr>
+<tr>
+<td><code>headers</code></td>
+<td>Request headers, auth, custom metadata.</td>
+<td>dict or <code>None</code></td>
+</tr>
+<tr>
+<td><code>url_kwargs</code></td>
+<td>URL kwargs such as version segments.</td>
+<td><code>{"version": 1}</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Parameter Reference <code>mo_assert_api_response</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>Input</th>
+<th>Purpose</th>
+<th>Typical values</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_url_name</code></td>
+<td>URL name used in assertion messages.</td>
+<td><code>&lt;app&gt;__&lt;api&gt;</code></td>
+</tr>
+<tr>
+<td><code>expected_status_code</code></td>
+<td>HTTP status assertion target.</td>
+<td><code>200</code>, <code>400</code>, <code>401</code></td>
+</tr>
+<tr>
+<td><code>expected_response_type</code></td>
+<td>Response envelope type assertion.</td>
+<td><code>json</code>, <code>plain</code>, <code>html</code>, <code>binary</code>, <code>others</code></td>
+</tr>
+</tbody>
+</table>
+<p>Note: <code>mo_mock_call_api(...)</code> always forces queue-mode APIs to run in direct mode during tests for deterministic responses.</p>
+<h3 id="2-example-usage">2. Example Usage<a class="headerlink" href="#2-example-usage" title="Permanent link">&para;</a></h3>
+<p>The key is consistent use of the same <code>api_url_name</code> in both <code>mo_mock_call_api</code> and <code>mo_assert_api_response</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">django_db</span><span class="p">(</span><span class="n">transaction</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">TestCreateOrderAPIView</span><span class="p">(</span><span class="n">MindoffTestCase</span><span class="p">):</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">api_url_name</span> <span class="o">=</span> <span class="s2">&quot;orders__create_order&quot;</span> <span class="c1"># Same as API Class</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">test_acceptance_api_success</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>        <span class="n">response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mo_mock_call_api</span><span class="p">(</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>            <span class="bp">self</span><span class="o">.</span><span class="n">api_url_name</span><span class="p">,</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>            <span class="n">user</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">mo_mock_user</span><span class="p">(),</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>            <span class="n">payload</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>                <span class="s2">&quot;customer_id&quot;</span><span class="p">:</span> <span class="s2">&quot;cst_123&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>                <span class="s2">&quot;items&quot;</span><span class="p">:</span> <span class="p">[</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>                    <span class="p">{</span><span class="s2">&quot;sku&quot;</span><span class="p">:</span> <span class="s2">&quot;SKU-001&quot;</span><span class="p">,</span> <span class="s2">&quot;qty&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">},</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>                    <span class="p">{</span><span class="s2">&quot;sku&quot;</span><span class="p">:</span> <span class="s2">&quot;SKU-002&quot;</span><span class="p">,</span> <span class="s2">&quot;qty&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">},</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>                <span class="p">],</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>            <span class="p">},</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>            <span class="n">url_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;version&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>        <span class="p">)</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">mo_assert_api_response</span><span class="p">(</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>            <span class="n">api_url_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">api_url_name</span><span class="p">,</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>            <span class="n">response</span><span class="o">=</span><span class="n">response</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>        <span class="p">)</span>
+</code></pre></div>
+<h3 id="3-running-tests">3. Running Tests<a class="headerlink" href="#3-running-tests" title="Permanent link">&para;</a></h3>
+<p>From the project root:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>pytest
+</code></pre></div>
+<p>Run only one API test file while iterating:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>pytest<span class="w"> </span>apps/&lt;app_name&gt;/tests/test_apis/test_&lt;api_name&gt;.py<span class="w"> </span>-q
+</code></pre></div>
+<p>Run only router tests:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>pytest<span class="w"> </span>apps/&lt;app_name&gt;/tests/test_views.py<span class="w"> </span>-q
+</code></pre></div>
+<h2 id="core-concepts">Core Concepts<a class="headerlink" href="#core-concepts" title="Permanent link">&para;</a></h2>
+<p><code>MindoffTestCase</code> provides reusable helpers to keep tests readable and fast, part of which is used by the Mindoff API Test Classes</p>
+<h3 id="1-asserts">1. Asserts<a class="headerlink" href="#1-asserts" title="Permanent link">&para;</a></h3>
+<p>Provide shared <code>django.test.SimpleTestCase</code> assertion helpers.</p>
+<p>Usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="bp">self</span><span class="o">.</span><span class="n">asserts</span><span class="o">.</span><span class="n">assertEqual</span><span class="p">(</span><span class="n">actual</span><span class="p">,</span> <span class="n">expected</span><span class="p">)</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="bp">self</span><span class="o">.</span><span class="n">asserts</span><span class="o">.</span><span class="n">assertIn</span><span class="p">(</span><span class="s2">&quot;ok&quot;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+</code></pre></div>
+<p>Possible responses:</p>
+<ul>
+<li>Returns <code>SimpleTestCase</code> assertion helper instance.</li>
+</ul>
+<h3 id="2-mock-app">2. Mock App<a class="headerlink" href="#2-mock-app" title="Permanent link">&para;</a></h3>
+<p>Create isolated temporary Django apps for test runtime.</p>
+<p>Usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">app_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mo_mock_app</span><span class="p">()</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">app_name</span><span class="p">,</span> <span class="n">temp_dir</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mo_mock_app</span><span class="p">(</span><span class="n">is_return_path</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</code></pre></div>
+<p>Parameters:</p>
+<ul>
+<li><code>app_name</code> (<code>str | None</code>, default=<code>None</code>):
+  Optional app label. Auto-generated when omitted.</li>
+<li><code>is_return_path</code> (<code>bool</code>, default=<code>False</code>):
+  When <code>True</code>, returns both app name and temp directory path.</li>
+</ul>
+<p>Possible responses:</p>
+<ul>
+<li>Returns <code>str</code> app name when <code>is_return_path=False</code>.</li>
+<li>Returns <code>(str, pathlib.Path)</code> when <code>is_return_path=True</code>.</li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>Registers app in <code>INSTALLED_APPS</code> and injects a temporary URLConf.</li>
+<li>Automatically cleans modules, URL cache, and temp files at teardown.</li>
+</ul>
+<h3 id="3-mock-model">3. Mock Model<a class="headerlink" href="#3-mock-model" title="Permanent link">&para;</a></h3>
+<p>Create dynamic Django models/tables for integration-style tests.</p>
+<p>Usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">OrderModel</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mo_mock_model</span><span class="p">(</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="n">model_name</span><span class="o">=</span><span class="s2">&quot;OrderModel&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">table_name</span><span class="o">=</span><span class="s2">&quot;orders&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">fields</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;total&quot;</span><span class="p">:</span> <span class="n">models</span><span class="o">.</span><span class="n">FloatField</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)},</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="p">)</span>
+</code></pre></div>
+<p>Parameters:</p>
+<ul>
+<li><code>model_name</code> (<code>str | None</code>, default=<code>None</code>):
+  Optional PascalCase model name. Must end with <code>Model</code> when provided.</li>
+<li><code>app_name</code> (<code>str | None</code>, default=<code>None</code>):
+  Existing app label. Resolved/created dynamically when omitted.</li>
+<li><code>table_name</code> (<code>str | None</code>, default=<code>None</code>):
+  Optional snake_case table suffix.</li>
+<li><code>foreign_keys</code> (<code>list[tuple[str, str] | tuple[str, str, str]]</code>, default=<code>[]</code>):
+  FK specifications:
+  <code>(target_app, target_model)</code> or <code>(target_app, target_model, "required"|"optional")</code>.</li>
+<li><code>fields</code> (<code>dict</code>, default=<code>{}</code>): Extra model fields to add.</li>
+<li><code>base_model</code> (default=<code>models.Model</code>): Base class for generated model.</li>
+</ul>
+<p>Possible responses:</p>
+<ul>
+<li>Returns generated Django model class.</li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>Creates DB table on setup and drops it during teardown.</li>
+</ul>
+<h3 id="4-mock-model-frms">4. Mock Model Frms<a class="headerlink" href="#4-mock-model-frms" title="Permanent link">&para;</a></h3>
+<p>Build model-to-Polars DataFrame fixtures from bakery-generated rows.</p>
+<p>Usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">model_frms</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mo_mock_model_frms</span><span class="p">(</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="p">[</span><span class="n">OrderModel</span><span class="p">,</span> <span class="n">ItemModel</span><span class="p">],</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">counts</span><span class="o">=</span><span class="p">[</span><span class="mi">3</span><span class="p">,</span> <span class="mi">5</span><span class="p">],</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="p">)</span>
+</code></pre></div>
+<p>Parameters:</p>
+<ul>
+<li><code>models</code> (<code>list[type]</code>): Ordered model classes.</li>
+<li><code>counts</code> (<code>list[int]</code>, default=<code>[]</code>): Row counts per model index.</li>
+<li><code>exclude_columns</code> (<code>list[list[str]]</code>, default=<code>[]</code>):
+  Per-model columns to remove.</li>
+<li><code>modify</code> (<code>list[dict]</code>, default=<code>[]</code>):
+  Per-model row mutation map: <code>{row_index: {"column": value}}</code>.</li>
+<li><code>is_fk_as_id</code> (<code>bool</code>, default=<code>True</code>):
+  Convert FK values to FK ids.</li>
+<li><code>is_enforce_db_column</code> (<code>bool</code>, default=<code>True</code>):
+  Use DB column names as DataFrame columns.</li>
+<li><code>is_uuid_hex</code> (<code>bool</code>, default=<code>True</code>): Generate UUID values as hex.</li>
+</ul>
+<p>Possible responses:</p>
+<ul>
+<li>Returns <code>dict[type, polars.DataFrame]</code>.</li>
+</ul>
+<h3 id="5-update-mock-model-frms">5. Update Mock Model Frms<a class="headerlink" href="#5-update-mock-model-frms" title="Permanent link">&para;</a></h3>
+<p>Update existing model DataFrame fixtures with fresh generated values.</p>
+<p>Usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">updated</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mo_update_mock_model_frms</span><span class="p">(</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="n">model_frms</span><span class="p">,</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">keep_columns</span><span class="o">=</span><span class="p">[[</span><span class="s2">&quot;id&quot;</span><span class="p">]],</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="p">)</span>
+</code></pre></div>
+<p>Parameters:</p>
+<ul>
+<li><code>df_dict</code> (<code>dict[type, polars.DataFrame]</code>): Existing model-frame map.</li>
+<li><code>counts</code> (<code>list[int]</code>, default=<code>[]</code>): Generation counts per model index.</li>
+<li><code>exclude_columns</code> (<code>list[list[str]]</code>, default=<code>[]</code>): Columns to drop.</li>
+<li><code>modify</code> (<code>list[dict]</code>, default=<code>[]</code>): Per-model row mutation map.</li>
+<li><code>keep_columns</code> (<code>list[list[str]]</code>, default=<code>[]</code>):
+  Per-model columns preserved from replacement. PK/FK columns are always protected.</li>
+<li><code>is_uuid_hex</code> (<code>bool</code>, default=<code>True</code>): Generate UUID values as hex.</li>
+</ul>
+<p>Possible responses:</p>
+<ul>
+<li>Returns updated <code>dict[type, polars.DataFrame]</code>.</li>
+</ul>
+<h3 id="6-mock-call-api">6. Mock Call Api<a class="headerlink" href="#6-mock-call-api" title="Permanent link">&para;</a></h3>
+<p>Invoke APIs by URL name with automatic method/headers handling.</p>
+<p>Usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mo_mock_call_api</span><span class="p">(</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>    <span class="s2">&quot;orders__create_order&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    <span class="n">payload</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;item&quot;</span><span class="p">:</span> <span class="s2">&quot;A&quot;</span><span class="p">},</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="p">)</span>
+</code></pre></div>
+<p>Parameters:</p>
+<ul>
+<li><code>api_url_name</code> (<code>str</code>): Named URL route to call.</li>
+<li><code>user</code> (default=<code>None</code>): Auth user to force-authenticate.</li>
+<li><code>headers</code> (<code>dict | None</code>, default=<code>None</code>): Extra request headers.</li>
+<li><code>payload</code> (<code>list | dict | None</code>, default=<code>None</code>): Request JSON body.</li>
+<li><code>url_kwargs</code> (<code>dict | None</code>, default=<code>None</code>): URL kwargs for reverse lookup.</li>
+<li><code>query_params</code> (<code>dict | None</code>, default=<code>None</code>): Query-string params.</li>
+<li><code>**extra</code>: Passed through to Django test client call.</li>
+</ul>
+<p>Possible responses:</p>
+<ul>
+<li>Returns raw Django/DRF response object.</li>
+</ul>
+<p>Notes:</p>
+<ul>
+<li>HTTP method is resolved from API class <code>method</code>.</li>
+<li>GET/DELETE requests reject <code>payload</code> (use <code>query_params</code>).</li>
+<li>Queue-mode APIs are forced to direct mode for deterministic tests.</li>
+</ul>
+<h3 id="7-assert-api-response">7. Assert Api Response<a class="headerlink" href="#7-assert-api-response" title="Permanent link">&para;</a></h3>
+<p>Assert standardized API response contract and content type.</p>
+<p>Usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="bp">self</span><span class="o">.</span><span class="n">mo_assert_api_response</span><span class="p">(</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>    <span class="n">api_url_name</span><span class="o">=</span><span class="s2">&quot;orders__create_order&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>    <span class="n">response</span><span class="o">=</span><span class="n">response</span><span class="p">,</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>    <span class="n">expected_response_type</span><span class="o">=</span><span class="s2">&quot;json&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>    <span class="n">expected_status_code</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="p">)</span>
+</code></pre></div>
+<p>Parameters:</p>
+<ul>
+<li><code>api_url_name</code> (<code>str</code>): URL name used in assertion messages.</li>
+<li><code>response</code>: Raw Django/DRF response object.</li>
+<li><code>expected_response_type</code> (<code>Literal["json","plain","html","binary","others"]</code>, default=<code>"json"</code>):
+  Expected response media type category.</li>
+<li><code>expected_status_code</code> (<code>int</code>, default=<code>200</code>): Expected HTTP status code.</li>
+</ul>
+<p>Possible responses:</p>
+<ul>
+<li>Raises assertion error on status/content-type mismatch.</li>
+<li>Returns <code>None</code> when assertions pass.</li>
+</ul>
+<h3 id="8-mock-user">8. Mock User<a class="headerlink" href="#8-mock-user" title="Permanent link">&para;</a></h3>
+<p>Create or reuse user fixtures for authenticated API tests.</p>
+<p>Usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">user</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">mo_mock_user</span><span class="p">(</span><span class="n">username</span><span class="o">=</span><span class="s2">&quot;demo&quot;</span><span class="p">,</span> <span class="n">password</span><span class="o">=</span><span class="s2">&quot;secret123&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>Parameters:</p>
+<ul>
+<li><code>username</code> (default=<code>None</code>): Username to reuse/create.</li>
+<li><code>password</code> (<code>str</code>, default=<code>"password123"</code>): Raw password to set.</li>
+<li><code>**extra_fields</code>: Additional user model fields for bakery creation.</li>
+</ul>
+<p>Possible responses:</p>
+<ul>
+<li>Returns existing user when <code>username</code> already exists.</li>
+<li>Returns newly created user otherwise.</li>
+</ul>
+<p><code>MindoffRouterTestCase</code> is available for explicit router/version assertions in <code>test_views.py</code>.</p>
+<h3 id="practical-tdd-loop">Practical TDD Loop<a class="headerlink" href="#practical-tdd-loop" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Write one behavior-focused test in <code>test_&lt;api_name&gt;.py</code>.</li>
+<li>Arrange fixtures with <code>mo_mock_user()</code> and model helpers as needed.</li>
+<li>Call the endpoint using <code>mo_mock_call_api(...)</code>.</li>
+<li>Assert envelope and status with <code>mo_assert_api_response(...)</code>.</li>
+<li>Add endpoint-specific assertions for response <code>data</code>, side effects, and error branches.</li>
+<li>Use <code>pytest.mark.parametrize</code> for similar scenarios to avoid repetitive test code and keep test files concise.</li>
+<li>Repeat for edge cases: invalid payload, missing auth, and boundary limits.</li>
+</ol>
+<h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>NoReverseMatch</code> for <code>api_url_name</code><br />
+  Confirm <code>api_url_name</code> matches the route name in <code>apps/&lt;app_name&gt;/urls.py</code>.</li>
+<li>Test expects queue-style response<br />
+<code>mo_mock_call_api(...)</code> forces queue-mode APIs to direct mode during tests.</li>
+<li>Failing auth/permission assertions<br />
+  Ensure test user and headers align with API <code>authentication_classes</code> and <code>permission_classes</code>.</li>
+<li>Version routing failures in <code>test_views.py</code><br />
+  Check <code>VERSION_MAP</code> entries in <code>apps/&lt;app_name&gt;/views.py</code>.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      ©️ 2026 Mindoff.work
+    </div>
+  
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.instant", "navigation.tracking", "content.code.copy", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest-release", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
