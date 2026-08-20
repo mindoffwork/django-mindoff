@@ -346,6 +346,96 @@ class TestRowValidatorFieldSanitisation:
         # Both were null so both should be filled
         assert all(v is not None for v in df["created"].to_list())
 
+    def test_datetimefield_auto_now_add_naive_datetime_column(self):
+        """ACCEPTANCE: a naive-datetime source column is stamped, not rejected.
+
+        `timezone.now()` is tz-aware, so a raw `pl.lit()` of it could not be
+        merged into a naive column staged by a bulk-import pipeline -- Polars
+        has no supertype for `datetime[us, UTC]` and `datetime[us]` and raised
+        `SchemaError` before any row reached the DB.
+        """
+        import datetime
+
+        supplied = datetime.datetime(2024, 1, 1, 10, 0)
+        df = self._run(
+            {"created": models.DateTimeField(auto_now_add=True, null=True)},
+            {
+                "id": [_make_uuid(), _make_uuid()],
+                "created": pl.Series("created", [supplied, None]),
+            },
+        )
+        assert df["created"][0] == supplied
+        assert df["created"][1] is not None
+        assert df["__error__info"].to_list() == [None, None]
+
+    def test_datetimefield_auto_now_add_tz_aware_column_unchanged(self):
+        """ACCEPTANCE: already tz-aware columns keep their existing behaviour."""
+        import datetime
+
+        supplied = datetime.datetime(2024, 1, 1, 10, 0)
+        df = self._run(
+            {"created": models.DateTimeField(auto_now_add=True, null=True)},
+            {
+                "id": [_make_uuid(), _make_uuid()],
+                "created": pl.Series("created", [supplied, None]).dt.replace_time_zone(
+                    "UTC"
+                ),
+            },
+        )
+        assert df["created"][0] == supplied
+        assert df["created"][1] is not None
+        assert df["__error__info"].to_list() == [None, None]
+
+    def test_datetimefield_auto_now_add_non_utc_column_converted(self):
+        """BOUNDARY: a non-UTC column is aligned by instant, not by wall clock."""
+        import datetime
+
+        df = self._run(
+            {"created": models.DateTimeField(auto_now_add=True, null=True)},
+            {
+                "id": [_make_uuid(), _make_uuid()],
+                "created": pl.Series(
+                    "created", [datetime.datetime(2024, 1, 1, 10, 0), None]
+                ).dt.replace_time_zone("Asia/Kolkata"),
+            },
+        )
+        # 10:00 IST is 04:30 UTC -- the same instant the string path would give.
+        assert df["created"][0] == datetime.datetime(2024, 1, 1, 4, 30)
+        assert df["created"][1] is not None
+        assert df["__error__info"].to_list() == [None, None]
+
+    def test_datetimefield_auto_now_add_utf8_column_fills_nulls(self):
+        """ACCEPTANCE: a string source column has its nulls stamped, not voided."""
+        df = self._run(
+            {"created": models.DateTimeField(auto_now_add=True, null=True)},
+            {
+                "id": [_make_uuid(), _make_uuid()],
+                "created": pl.Series("created", ["2024-01-01 10:00:00", None]),
+            },
+        )
+        import datetime
+
+        assert df["created"][0] == datetime.datetime(2024, 1, 1, 10, 0)
+        assert df["created"][1] is not None
+        assert df["__error__info"].to_list() == [None, None]
+
+    def test_datetimefield_auto_now_utf8_column_replaced(self):
+        """ACCEPTANCE: `auto_now` over a string column stamps every row.
+
+        The stamp lands before `transform()`, which picks its branch from the
+        *input* dtype -- so the value has to be written in a form that branch's
+        string parser accepts, or every row is voided as an invalid value.
+        """
+        df = self._run(
+            {"updated": models.DateTimeField(auto_now=True)},
+            {
+                "id": [_make_uuid(), _make_uuid()],
+                "updated": pl.Series("updated", ["2024-01-01 10:00:00", None]),
+            },
+        )
+        assert all(v is not None for v in df["updated"].to_list())
+        assert df["__error__info"].to_list() == [None, None]
+
     def test_durationfield_int_string_parsed(self):
         """ACCEPTANCE: Durationfield int string parsed."""
         df = self._run(
@@ -3006,6 +3096,102 @@ class TestValidateOnly(MindoffTestCase):
         with connection.schema_editor() as editor:
             editor.delete_model(self._book_model)
             editor.delete_model(self._author_model)
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAutoNowNaiveDatetimeColumns(MindoffTestCase):
+    """`auto_now` / `auto_now_add` writes survive a naive-datetime source frame.
+
+    Bulk-import pipelines stage timestamps as a naive `Datetime` dtype. The
+    stamp is a tz-aware `timezone.now()`, and Polars has no supertype spanning
+    the two -- so the whole batch died with `SchemaError` inside validation,
+    before a single row reached the database.
+    """
+
+    def test_create_with_naive_datetime_auto_now_add_column(self):
+        """ACCEPTANCE: create() stamps the nulls and keeps the supplied value."""
+        import datetime
+
+        supplied = datetime.datetime(2024, 1, 1, 10, 0)
+        ids = [_make_uuid(), _make_uuid()]
+        frm = pl.DataFrame(
+            {
+                "id": ids,
+                "name": ["Staged", "Imported"],
+                "created": pl.Series("created", [supplied, None]),
+            }
+        )
+        assert frm.schema["created"] == pl.Datetime("us")
+
+        status, _valid, invalid = mo_crud_kit.create({self._stamped_model: frm})
+
+        assert status == "ok"
+        assert mo_polars_kit.is_frm_empty(invalid[self._stamped_model])
+        assert self._stamped_model.objects.count() == 2
+        rows = {
+            uuid.UUID(str(row.pk)).hex: row
+            for row in self._stamped_model.objects.filter(pk__in=ids)
+        }
+        # The value the caller supplied survives; the gap is filled.
+        assert rows[ids[0]].created.replace(tzinfo=None) == supplied
+        assert rows[ids[1]].created is not None
+        assert all(row.updated is not None for row in rows.values())
+
+    def test_update_with_naive_datetime_auto_now_add_column(self):
+        """ACCEPTANCE: update() over the same dtype advances `auto_now`."""
+        import datetime
+
+        row_id = _make_uuid()
+        seed = pl.DataFrame(
+            {
+                "id": [row_id],
+                "name": ["Seed"],
+                "created": pl.Series("created", [datetime.datetime(2024, 1, 1, 10, 0)]),
+            }
+        )
+        status, _, _ = mo_crud_kit.create({self._stamped_model: seed})
+        assert status == "ok"
+        stamped_at = self._stamped_model.objects.get(pk=row_id).updated
+
+        edit = seed.with_columns(pl.lit("Edited").alias("name"))
+        status, _valid, invalid = mo_crud_kit.update({self._stamped_model: edit})
+
+        assert status == "ok"
+        assert mo_polars_kit.is_frm_empty(invalid[self._stamped_model])
+        row = self._stamped_model.objects.get(pk=row_id)
+        assert row.name == "Edited"
+        assert row.updated >= stamped_at
+
+    @pytest.fixture(autouse=True, scope="class")
+    def _class_app(self, request):
+        app_name = f"app_{uuid.uuid4().hex[:12]}"
+        temp_dir = Path(tempfile.mkdtemp()).resolve()
+        override = _register_app(temp_dir, app_name)
+        stamped = _create_model(
+            app_name,
+            "StampedModel",
+            "stamped",
+            [],
+            {
+                "name": models.CharField(max_length=50),
+                "created": models.DateTimeField(auto_now_add=True, null=True),
+                "updated": models.DateTimeField(auto_now=True, null=True),
+            },
+        )
+        request.cls._stamped_model = stamped
+        request.cls._app_name = app_name
+        request.cls._temp_dir = temp_dir
+        request.cls._override = override
+        request.addfinalizer(lambda: _unregister_app(app_name, temp_dir, override))
+
+    @pytest.fixture(autouse=True)
+    def _models(self):
+        with connection.schema_editor() as editor:
+            editor.create_model(self._stamped_model)
+        _validate_model(self._stamped_model)
+        yield
+        with connection.schema_editor() as editor:
+            editor.delete_model(self._stamped_model)
 
 
 @pytest.mark.django_db(transaction=True)
