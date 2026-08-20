@@ -1,5 +1,6 @@
 import datetime
 import warnings
+import zoneinfo
 from typing import Dict, Type, Union
 
 import orjson
@@ -319,12 +320,14 @@ class RowValidator:
         is_time = isinstance(field, models.TimeField)
         is_date = isinstance(field, models.DateField)
 
+        stamp = _align_auto_now_value(now, dtype) if is_datetime else today
+
         if getattr(field, "auto_now", False):
-            df = df.with_columns(pl.lit(now if is_datetime else today).alias(name))
+            df = df.with_columns(pl.lit(stamp).alias(name))
         elif getattr(field, "auto_now_add", False):
             df = df.with_columns(
                 pl.when(pl.col(name).is_null())
-                .then(pl.lit(now if is_datetime else today))
+                .then(pl.lit(stamp))
                 .otherwise(pl.col(name))
                 .alias(name)
             )
@@ -806,3 +809,40 @@ class RowValidator:
         message = messages.get(error_key, "")
         output = message + " ; " if message else ""
         return output
+
+
+# ----------------
+# Functions
+# ----------------
+def _align_auto_now_value(value, dtype):
+    """
+    Shape an `auto_now` / `auto_now_add` value to match the column's own dtype.
+
+    Polars cannot find a supertype between naive and tz-aware `Datetime`, so a
+    tz-aware `timezone.now()` literal will not merge into a naive staged column
+    (nor a naive one into a tz-aware column when `USE_TZ` is off). Shifting the
+    value to the column's awareness first leaves the instant untouched and only
+    changes how it is represented.
+
+    String columns get the text form instead: the field's `transform()` picks
+    its branch from the *input* dtype, so it still runs the string parser over
+    whatever the stamp left behind.
+    """
+    if not isinstance(value, datetime.datetime):
+        return value
+    if isinstance(dtype, pl.Datetime):
+        tz = dtype.time_zone
+        if tz is None:
+            # Naive-UTC is the validator's canonical internal form: the string
+            # branch also converts to UTC before casting to a naive Datetime.
+            if timezone.is_aware(value):
+                value = timezone.make_naive(value, datetime.timezone.utc)
+            return value
+        if timezone.is_naive(value):
+            value = timezone.make_aware(value)
+        return value.astimezone(zoneinfo.ZoneInfo(tz))
+    if dtype in (pl.Utf8, pl.String):
+        # `%z` emits `+0000` (no colon), which the offset-compressing regex
+        # leaves alone and `datetime_format_tz` parses directly.
+        return value.strftime("%Y-%m-%d %H:%M:%S%z")
+    return value
