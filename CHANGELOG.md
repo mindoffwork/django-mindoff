@@ -1,5 +1,10 @@
 <h1>Release Notes</h1>
 
+## Recent Changes
+
+### Fixes
+- 🐛 Align auto_now literals with the staged column dtype ([#70](https://github.com/mindoffwork/django-mindoff/pull/70))
+
 ## v0.9.0
 
 ### Internal
