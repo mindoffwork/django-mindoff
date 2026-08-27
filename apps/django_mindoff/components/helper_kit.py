@@ -10,8 +10,10 @@ Helper Kit
 
 import importlib
 import inspect
+import logging
 import os
 import re
+import threading
 import traceback
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +21,13 @@ from django.apps import apps
 from django.conf import settings
 from django.urls import URLPattern, URLResolver, get_resolver
 from ._helper_kit import file_guardian
+
+
+# ----------------
+# Constants
+# ----------------
+logger = logging.getLogger(__name__)
+_urlconf_load_lock = threading.Lock()
 
 
 # ----------------
@@ -175,7 +184,7 @@ def get_api_class_from_url_name(*, api_url_name: str, version: int = 1):
     - Raises `LookupError` when route name is not found.
     - Raises `KeyError`/`TypeError` for invalid version-router callback shape.
     """
-    stack = list(get_resolver().url_patterns)
+    stack = list(_ensure_urlconf_loaded().url_patterns)
     while stack:
         pattern = stack.pop()
         if isinstance(pattern, URLResolver):
@@ -227,6 +236,43 @@ def get_api_class_attributes(*, api_url_name: str, version: int = 1) -> dict:
 # ----------------
 # Helper Functions
 # ----------------
+def _ensure_urlconf_loaded():
+    """Return the root URL resolver with its URLconf guaranteed to be imported.
+
+    ``URLResolver.url_patterns`` is an unlocked ``cached_property`` whose first
+    access imports the whole ``ROOT_URLCONF`` graph. Serialising that first
+    import keeps concurrent worker threads from driving a cold import graph in
+    parallel; once the value is cached the lock is never taken again.
+    """
+    resolver = get_resolver()
+    if "url_patterns" in resolver.__dict__:
+        return resolver
+    with _urlconf_load_lock:
+        resolver.url_patterns
+    return resolver
+
+
+def _warm_up_urlconf():
+    """Import the ``ROOT_URLCONF`` graph eagerly, logging instead of raising.
+
+    Called from ``queue_worker`` at worker boot so the import happens once, on
+    the process main thread, rather than inside whichever queued task runs
+    first. Failures are logged with a full traceback and swallowed: a project
+    that boots today keeps booting, and the real cause is already in the worker
+    startup log by the time the first task fails.
+    """
+    try:
+        _ensure_urlconf_loaded()
+        return True
+    except Exception:
+        logger.exception(
+            "django-mindoff: failed to load ROOT_URLCONF during queue worker "
+            "startup. Queued tasks cannot resolve their API class until this "
+            "import error is fixed."
+        )
+        return False
+
+
 def _unwrap_callback(callback):
     while hasattr(callback, "__wrapped__"):
         callback = callback.__wrapped__
