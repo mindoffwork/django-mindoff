@@ -46,6 +46,20 @@ From the same virtual environment as your project:
 dramatiq django_mindoff.queue_worker
 ```
 
+Each worker process imports your `ROOT_URLCONF` at startup, right after
+`django.setup()`. Queued tasks resolve their API class by URL name, so the worker
+needs the URL graph loaded either way — doing it at boot means an import error
+anywhere in that graph is logged once, at startup, instead of surfacing later as
+whichever queued task happened to run first failing with an unrelated traceback.
+
+<div class="admonition tip">
+<p class="admonition-title">Check worker startup logs first</p>
+<p>If queued tasks fail with an <code>ImportError</code> naming a module unrelated
+to the task, look at the top of the worker log for
+<code>failed to load ROOT_URLCONF</code>. The worker still starts, so this is a
+logged error rather than a crash.</p>
+</div>
+
 ## Implementation
 
 ### 1. Mindoff Queue API Class
