@@ -3,6 +3,7 @@
 ## Recent Changes
 
 ### Fixes
+- 🐛 Load ROOT_URLCONF at queue worker boot instead of first task ([#71](https://github.com/mindoffwork/django-mindoff/pull/71))
 - 🐛 Align auto_now literals with the staged column dtype ([#70](https://github.com/mindoffwork/django-mindoff/pull/70))
 
 ## v0.9.0
