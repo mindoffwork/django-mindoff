@@ -1,6 +1,6 @@
 <h1>Release Notes</h1>
 
-## Recent Changes
+## v0.9.1
 
 ### Fixes
 - 🐛 Load ROOT_URLCONF at queue worker boot instead of first task ([#71](https://github.com/mindoffwork/django-mindoff/pull/71))
