@@ -6,6 +6,9 @@
 - 🐛 Load ROOT_URLCONF at queue worker boot instead of first task ([#71](https://github.com/mindoffwork/django-mindoff/pull/71))
 - 🐛 Align auto_now literals with the staged column dtype ([#70](https://github.com/mindoffwork/django-mindoff/pull/70))
 
+### Internal
+- ⬆️ Update pymdown-extensions requirement from <12.0,>=10.0 to >=10.0,<13.0 ([#72](https://github.com/mindoffwork/django-mindoff/pull/72))
+
 ## v0.9.0
 
 ### Internal
